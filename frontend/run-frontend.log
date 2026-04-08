@@ -1,0 +1,48 @@
+
+> nextjs_tailwind_shadcn_ts@0.2.0 dev
+> next dev -p 3000
+
+▲ Next.js 16.2.2 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.111:3000
+✓ Ready in 709ms
+Creating turbopack project { dir: 'D:\\Aroha\\AI_EDA_ML Platform\\frontend', testMode: true }
+
+○ Compiling / ...
+ HEAD / 200 in 189ms (next.js: 10ms, application-code: 178ms)
+ GET / 200 in 219ms (next.js: 36ms, application-code: 183ms)
+✓ Compiled in 216ms
+ GET / 200 in 221ms (next.js: 15ms, application-code: 206ms)
+ GET / 200 in 493ms (next.js: 62ms, application-code: 431ms)
+ GET / 200 in 1167ms (next.js: 8ms, application-code: 1160ms)
+ GET / 200 in 1964ms (next.js: 12ms, application-code: 1952ms)
+▲ Next.js 16.2.2 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.111:3000
+✓ Ready in 470ms
+Creating turbopack project { dir: 'D:\\Aroha\\AI_EDA_ML Platform\\frontend', testMode: true }
+
+ GET / 200 in 1030ms (next.js: 348ms, application-code: 682ms)
+✓ Compiled in 430ms
+✓ Compiled in 2.4s
+ GET / 200 in 420ms (next.js: 216ms, application-code: 204ms)
+ GET / 200 in 118ms (next.js: 16ms, application-code: 102ms)
+✓ Compiled in 351ms
+✓ Compiled in 482ms
+✓ Compiled in 1533ms
+ GET / 200 in 353ms (next.js: 211ms, application-code: 143ms)
+ GET / 200 in 109ms (next.js: 11ms, application-code: 98ms)
+✓ Compiled in 405ms
+○ Compiling /_error ...
+ GET / 500 in 5.2s (next.js: 4.7s, application-code: 461ms)
+ GET / 500 in 97ms (next.js: 47ms, application-code: 50ms)
+ GET / 500 in 93ms (next.js: 50ms, application-code: 44ms)
+ GET / 500 in 53ms (next.js: 26ms, application-code: 27ms)
+✓ Compiled in 505ms
+ GET / 200 in 2.3s (next.js: 156ms, application-code: 2.2s)
+✓ Compiled in 493ms
+✓ Compiled in 378ms
+ GET / 200 in 4.6s (next.js: 528ms, application-code: 4.1s)
+ GET / 200 in 611ms (next.js: 29ms, application-code: 583ms)
+ GET / 200 in 3.0s (next.js: 127ms, application-code: 2.9s)
+[?25h

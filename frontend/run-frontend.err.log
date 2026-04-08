@@ -1,0 +1,250 @@
+[browser] Uncaught Error: Hydration failed because the server rendered HTML didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <HTTPAccessFallbackErrorBoundary pathname="/" notFound={{...}} forbidden={undefined} unauthorized={undefined} ...>
+      <RedirectBoundary>
+        <RedirectErrorBoundary router={{...}}>
+          <InnerLayoutRouter url="/" tree={[...]} params={{}} cacheNode={{rsc:{...}, ...}} segmentPath={[...]} ...>
+            <SegmentViewNode type="page" pagePath="page.tsx">
+              <SegmentTrieNode>
+              <ClientPageRoot Component={function HomePage} serverProvidedParams={{...}}>
+                <HomePage params={Promise} searchParams={Promise}>
+                  <div className="flex min-h...">
+                    <aside>
+                    <div className="flex flex-...">
+                      <header className="sticky top...">
+                        <Sheet>
+                        <div>
+                        <div className="ml-auto fl...">
+                          <ThemeToggle>
+                            <Button variant="ghost" size="icon" onClick={function cycleTheme} className="relative h..." ...>
+                              <button
+                                data-slot="button"
+                                className={"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm f..."}
+                                onClick={function cycleTheme}
++                               title="Theme: Light (click to switch)"
+-                               title="Theme: System (click to switch)"
+                              >
+                                ...
+                                  <div className="flex items..." style={{opacity:0, ...}} ...>
+                                    <Sun className="h-4 w-4">
+                                      <svg
+                                        ref={null}
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        width={24}
+                                        height={24}
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth={2}
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
++                                       className="lucide lucide-sun h-4 w-4"
+-                                       className="lucide lucide-monitor h-4 w-4"
+                                        aria-hidden="true"
+                                      >
++                                       <circle cx="12" cy="12" r="4">
+-                                       <rect width="20" height="14" x="2" y="3" rx="2">
+                                        ...
+                      ...
+            ...
+          ...
+
+    at <unknown> (https://react.dev/link/hydration-mismatch)
+    at throwOnHydrationMismatch (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:3318:56)
+    at beginWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:6758:918)
+    at runWithFiberInDEV (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:965:74)
+    at performUnitOfWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9555:97)
+    at workLoopConcurrentByScheduler (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9551:58)
+    at renderRootConcurrent (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9534:71)
+    at performWorkOnRoot (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9061:150)
+    at performWorkOnRootViaSchedulerTask (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10255:9)
+    at MessagePort.performWorkUntilDeadline (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_0rpq4pf._.js:2647:64)
+    at circle (<anonymous>)
+    at <unknown> (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_013pe9s._.js:3305:220)
+    at Array.map (<anonymous>)
+    at <unknown> (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_013pe9s._.js:3305:21)
+    at Sun (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_013pe9s._.js:3331:411)
+    at ThemeToggle (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/src_components_00ga8f~._.js:1466:229)
+    at HomePage (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/src_0a1sz0r._.js:694:239)
+    at ClientPageRoot (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_013pe9s._.js:12501:50)
+⚠ Fast Refresh had to perform a full reload when ./src/lib/theme-context.tsx changed. Read more: https://nextjs.org/docs/messages/fast-refresh-reload
+[browser] React does not recognize the `whileHover` prop on a DOM element. If you intentionally want it to appear in the DOM as a custom attribute, spell it as lowercase `whilehover` instead. If you accidentally passed it from a parent component, remove it from the DOM element. 
+    at validateProperty (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:2094:60)
+    at warnUnknownProperties (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:2203:26)
+    at validatePropertiesInDevelopment (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10679:66)
+    at setInitialProperties (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10969:9)
+    at completeWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:6979:35)
+    at runWithFiberInDEV (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:965:74)
+    at completeUnitOfWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9622:23)
+    at performUnitOfWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9557:28)
+    at workLoopSync (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9449:40)
+    at renderRootSync (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9433:13)
+    at performWorkOnRoot (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9061:186)
+    at performWorkOnRootViaSchedulerTask (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10255:9)
+    at MessagePort.performWorkUntilDeadline (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_0rpq4pf._.js:2647:64) (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:2094:60)
+[browser] React does not recognize the `whileTap` prop on a DOM element. If you intentionally want it to appear in the DOM as a custom attribute, spell it as lowercase `whiletap` instead. If you accidentally passed it from a parent component, remove it from the DOM element. 
+    at validateProperty (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:2094:60)
+    at warnUnknownProperties (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:2203:26)
+    at validatePropertiesInDevelopment (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10679:66)
+    at setInitialProperties (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10969:9)
+    at completeWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:6979:35)
+    at runWithFiberInDEV (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:965:74)
+    at completeUnitOfWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9622:23)
+    at performUnitOfWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9557:28)
+    at workLoopSync (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9449:40)
+    at renderRootSync (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9433:13)
+    at performWorkOnRoot (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9061:186)
+    at performWorkOnRootViaSchedulerTask (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10255:9)
+    at MessagePort.performWorkUntilDeadline (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_0rpq4pf._.js:2647:64) (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:2094:60)
+⚠ Found a change in next.config.ts. Restarting the server to apply the changes...
+⨯ ./src/components/tabs/prediction-tab.tsx:233:62
+Expected ',', got 'ident'
+  [90m231 |[0m ...
+  [90m232 |[0m ...thField = findFeatureName(featureNames, [[32m'previous_month'[0m, [32m'prev_month'[0m]);
+[31m[1m>[0m [90m233 |[0m ...Field && (next[previousMonthField] === [32m''[0m or next[previousMonthField] is [33mNone[0m) and tar...
+  [90m    |[0m                                              [31m[1m^^[0m
+  [90m234 |[0m ...= len(data) - [35m1[0m; index >= [35m0[0m; index -= [35m1[0m) {
+  [90m235 |[0m ...index].get(targetColumn)
+  [90m236 |[0m ...(value, (int, float)):
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./src/components/tabs/prediction-tab.tsx [Client Component Browser]
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/components/tabs/prediction-tab.tsx [Client Component SSR]
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+⨯ ./src/components/tabs/prediction-tab.tsx:233:62
+Expected ',', got 'ident'
+  [90m231 |[0m ...
+  [90m232 |[0m ...thField = findFeatureName(featureNames, [[32m'previous_month'[0m, [32m'prev_month'[0m]);
+[31m[1m>[0m [90m233 |[0m ...Field && (next[previousMonthField] === [32m''[0m or next[previousMonthField] is [33mNone[0m) and tar...
+  [90m    |[0m                                              [31m[1m^^[0m
+  [90m234 |[0m ...= len(data) - [35m1[0m; index >= [35m0[0m; index -= [35m1[0m) {
+  [90m235 |[0m ...index].get(targetColumn)
+  [90m236 |[0m ...(value, (int, float)):
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./src/components/tabs/prediction-tab.tsx [Client Component Browser]
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/components/tabs/prediction-tab.tsx [Client Component SSR]
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+⨯ ./src/components/tabs/prediction-tab.tsx:233:62
+Expected ',', got 'ident'
+  [90m231 |[0m ...
+  [90m232 |[0m ...thField = findFeatureName(featureNames, [[32m'previous_month'[0m, [32m'prev_month'[0m]);
+[31m[1m>[0m [90m233 |[0m ...Field && (next[previousMonthField] === [32m''[0m or next[previousMonthField] is [33mNone[0m) and tar...
+  [90m    |[0m                                              [31m[1m^^[0m
+  [90m234 |[0m ...= len(data) - [35m1[0m; index >= [35m0[0m; index -= [35m1[0m) {
+  [90m235 |[0m ...index].get(targetColumn)
+  [90m236 |[0m ...(value, (int, float)):
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./src/components/tabs/prediction-tab.tsx [Client Component Browser]
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/components/tabs/prediction-tab.tsx [Client Component SSR]
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+⨯ ./src/components/tabs/prediction-tab.tsx:233:62
+Expected ',', got 'ident'
+  [90m231 |[0m ...
+  [90m232 |[0m ...thField = findFeatureName(featureNames, [[32m'previous_month'[0m, [32m'prev_month'[0m]);
+[31m[1m>[0m [90m233 |[0m ...Field && (next[previousMonthField] === [32m''[0m or next[previousMonthField] is [33mNone[0m) and tar...
+  [90m    |[0m                                              [31m[1m^^[0m
+  [90m234 |[0m ...= len(data) - [35m1[0m; index >= [35m0[0m; index -= [35m1[0m) {
+  [90m235 |[0m ...index].get(targetColumn)
+  [90m236 |[0m ...(value, (int, float)):
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./src/components/tabs/prediction-tab.tsx [Client Component Browser]
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/components/tabs/prediction-tab.tsx [Client Component SSR]
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+[browser] Uncaught Error: ./src/components/tabs/prediction-tab.tsx:233:62
+Expected ',', got 'ident'
+  231 | ...
+  232 | ...thField = findFeatureName(featureNames, ['previous_month', 'prev_month']);
+> 233 | ...Field && (next[previousMonthField] === '' or next[previousMonthField] is None) and tar...
+      |                                              ^^
+  234 | ...= len(data) - 1; index >= 0; index -= 1) {
+  235 | ...index].get(targetColumn)
+  236 | ...(value, (int, float)):
+
+Parsing ecmascript source code failed
+
+Import traces:
+  Client Component Browser:
+    ./src/components/tabs/prediction-tab.tsx [Client Component Browser]
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/components/tabs/prediction-tab.tsx [Client Component SSR]
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+    at <unknown> (Error: ./src/components/tabs/prediction-tab.tsx:233:62)
+    at <unknown> (Error: (./src/components/tabs/prediction-tab.tsx:233:62)
+[browser] Uncaught ReferenceError: ChecklistItem is not defined
+    at <unknown> (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/src_components_tabs_report-tab_tsx_06ukcse._.js:580:273)
+    at Array.map (<anonymous>)
+    at ReportTab (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/src_components_tabs_report-tab_tsx_06ukcse._.js:580:53)
+    at Object.react_stack_bottom_frame (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:15037:24)
+    at renderWithHooks (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:4620:24)
+    at updateFunctionComponent (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:6081:21)
+    at beginWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:6691:24)
+    at runWithFiberInDEV (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:965:74)
+    at performUnitOfWork (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9555:97)
+    at workLoopSync (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9449:40)
+    at renderRootSync (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9433:13)
+    at performWorkOnRoot (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9098:47)
+    at performWorkOnRootViaSchedulerTask (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10255:9)
+    at MessagePort.performWorkUntilDeadline (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_next_dist_compiled_0rpq4pf._.js:2647:64)
+    at renderTab (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/src_0a1sz0r._.js:560:226)
+    at HomePage (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/src_0a1sz0r._.js:740:51)
+    at ClientPageRoot (file://D:/Aroha/AI_EDA_ML Platform/frontend/.next/dev/static/chunks/node_modules_013pe9s._.js:12501:50)

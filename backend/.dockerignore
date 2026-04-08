@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+*.pyo
+*.log
+.venv
+models
+datasets
+live-backend.out.log
+live-backend.err.log
+run-backend.log
+run-backend.err.log
+Dockerfile*
