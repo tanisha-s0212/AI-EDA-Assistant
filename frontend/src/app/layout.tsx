@@ -4,7 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/lib/theme-context";
 
 export const metadata: Metadata = {
-  title: "AI-Assisted EDA & ML Platform",
+  title: "Intelligent Data Assistant",
   description: "Universal data science platform for EDA, cleaning, ML training, and predictions. Works with any dataset.",
 };
 

@@ -63,7 +63,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
             <Bot className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-base font-bold tracking-tight">AI-EDA Platform</h1>
+            <h1 className="text-base font-bold tracking-tight">Intelligent Data Assistant</h1>
             <p className="text-xs text-muted-foreground">Universal ML Workspace</p>
           </div>
         </div>
@@ -224,7 +224,7 @@ export default function HomePage() {
         {/* Footer */}
         <footer className="border-t mt-auto">
           <div className="flex h-12 items-center justify-between px-4 lg:px-6 text-xs text-muted-foreground">
-            <span>AI-Assisted EDA & ML Platform</span>
+            <span>Intelligent Data Assistant</span>
             <span>Universal Dataset Support</span>
           </div>
         </footer>
