@@ -2108,6 +2108,11 @@ def generate_report(payload: ReportPayload) -> Response:
     )
 
 
+@router.get('/health')
+def health() -> dict[str, str]:
+    return {'status': 'healthy'}
+
+
 @app.get('/')
 def root() -> dict[str, Any]:
     return {'service': 'AI-Assisted EDA & ML Backend', 'docs': '/docs', 'api': '/api'}
@@ -2121,7 +2126,6 @@ if __name__ == '__main__':
 
     port = int(os.environ.get('ML_PORT', '3004'))
     uvicorn.run(app, host='0.0.0.0', port=port)
-
 
 
 

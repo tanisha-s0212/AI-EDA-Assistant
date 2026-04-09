@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useThemeContext();
+  const { theme, setTheme, mounted } = useThemeContext();
   const hydrated = useSyncExternalStore(
     () => () => {},
     () => true,
@@ -21,10 +21,12 @@ export function ThemeToggle() {
   ];
 
   const currentIndex = themes.findIndex((t) => t.value === theme);
-  const current = hydrated ? (themes[currentIndex] || themes[0]) : themes[2];
+  const isReady = hydrated && mounted;
+  const current = isReady ? (themes[currentIndex] || themes[0]) : themes[2];
 
   const cycleTheme = () => {
-    const nextIndex = (currentIndex + 1) % themes.length;
+    const activeIndex = currentIndex >= 0 ? currentIndex : 2;
+    const nextIndex = (activeIndex + 1) % themes.length;
     setTheme(themes[nextIndex].value);
   };
 

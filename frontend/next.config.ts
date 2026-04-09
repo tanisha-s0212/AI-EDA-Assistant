@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const backendOrigin = process.env.BACKEND_ORIGIN || 'http://127.0.0.1:3004';
+const useBackendRewrite = process.env.ENABLE_BACKEND_REWRITE === 'true';
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -13,6 +14,10 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || '/api',
   },
   async rewrites() {
+    if (!useBackendRewrite) {
+      return [];
+    }
+
     return [
       {
         source: '/api/:path*',
@@ -23,4 +28,3 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
-

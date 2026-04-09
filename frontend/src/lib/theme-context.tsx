@@ -32,7 +32,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return stored === 'dark' || stored === 'light' || stored === 'system' ? stored : 'system';
   });
   const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => getSystemTheme());
-  const mounted = true;
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');

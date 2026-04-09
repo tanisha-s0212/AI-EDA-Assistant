@@ -1,57 +1,78 @@
-services:
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_BASE_URL: /api
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: /api
-    expose:
-      - "3000"
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+name: ai-eda-assistant
 
+services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-backend
+    restart: unless-stopped
     environment:
-      ML_PORT: 3004
+      ML_PORT: ${ML_PORT:-3004}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://localhost:3000}
     expose:
       - "3004"
     volumes:
       - backend_models:/app/models
       - backend_datasets:/app/datasets
-    restart: unless-stopped
+      - backend_logs:/app/logs
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3004/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 20s
+    networks:
+      - app-network
 
-  caddy:
-    image: caddy:2-alpine
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: node:20-alpine
+        NEXT_PUBLIC_API_BASE_URL: /api
+    container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: /api
+      BACKEND_ORIGIN: http://backend:3004
+    expose:
+      - "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - app-network
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-nginx
+    restart: unless-stopped
     ports:
-      - "80:80"
+      - "${NGINX_PORT:-8888}:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       frontend:
         condition: service_healthy
       backend:
         condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
 
 volumes:
   backend_models:
   backend_datasets:
+  backend_logs:
