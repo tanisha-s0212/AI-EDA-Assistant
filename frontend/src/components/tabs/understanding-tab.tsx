@@ -26,9 +26,30 @@ export default function UnderstandingTab() {
   const hasData = !!rawData && columns.length > 0;
   const previewRows = data.slice(0, 10);
   const missingColumns = columns.filter((col) => col.nullCount > 0);
+  const numericColumns = columns.filter((col) => col.role === 'numeric');
+  const categoricalColumns = columns.filter((col) => col.role === 'categorical' || col.role === 'boolean');
+  const datetimeColumns = columns.filter((col) => col.role === 'datetime');
+  const identifierColumns = columns.filter((col) => col.role === 'identifier');
+  const highlyUniqueColumns = columns.filter((col) => totalRows > 0 && col.uniqueCount / totalRows >= 0.9);
+  const sparseColumns = [...missingColumns].sort((a, b) => b.nullCount - a.nullCount).slice(0, 3);
   const completeness = totalRows && columns.length
     ? Math.round((columns.reduce((sum, col) => sum + col.nonNull, 0) / (totalRows * columns.length)) * 1000) / 10
     : 0;
+  const qualitySignals = [
+    `${completeness}% overall completeness across ${columns.length} columns`,
+    duplicates > 0 ? `${duplicates.toLocaleString()} duplicate rows may need review` : 'No duplicate rows detected in the uploaded dataset',
+    missingColumns.length > 0 ? `${missingColumns.length} columns contain missing values` : 'No columns with missing values detected',
+  ];
+  const structureSignals = [
+    `${numericColumns.length} numeric column${numericColumns.length === 1 ? '' : 's'} for measures and trends`,
+    `${categoricalColumns.length} categorical/boolean column${categoricalColumns.length === 1 ? '' : 's'} for segments and classes`,
+    datetimeColumns.length > 0 ? `${datetimeColumns.length} datetime column${datetimeColumns.length === 1 ? '' : 's'} can support time-based analysis` : 'No datetime columns detected',
+  ];
+  const modelingSignals = [
+    identifierColumns.length > 0 ? `${identifierColumns.length} identifier-like column${identifierColumns.length === 1 ? '' : 's'} should usually be excluded from modeling` : 'No strong identifier columns detected',
+    highlyUniqueColumns.length > 0 ? `${highlyUniqueColumns.length} high-cardinality column${highlyUniqueColumns.length === 1 ? '' : 's'} may require encoding care` : 'Column cardinality looks manageable for standard ML workflows',
+    sparseColumns.length > 0 ? `Most incomplete column: ${sparseColumns[0].name} (${Math.round((sparseColumns[0].nullCount / Math.max(totalRows, 1)) * 100)}% missing)` : 'Missingness risk is low across the current dataset view',
+  ];
 
   if (!hasData) {
     return (
@@ -51,12 +72,7 @@ export default function UnderstandingTab() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Data Understanding</h2>
-        <p className="mt-1 text-muted-foreground">Review the uploaded dataset identity, quality checks, and a quick preview before cleaning and EDA.</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Badge variant="secondary" className="gap-1"><FileText className="h-3.5 w-3.5" /> {fileName ?? 'Uploaded dataset'}</Badge>
-          <Badge variant="secondary" className="gap-1"><Database className="h-3.5 w-3.5" /> {data.length.toLocaleString()} rows</Badge>
-          <Badge variant="secondary" className="gap-1"><TableIcon className="h-3.5 w-3.5" /> {columns.length} columns</Badge>
-        </div>
+        <p className="mt-1 text-muted-foreground">Review the uploaded dataset identity, quality checks, explainability signals, and a quick preview before cleaning and EDA.</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -69,7 +85,7 @@ export default function UnderstandingTab() {
         ].map(({ label, value, Icon }) => (
           <Card key={label}>
             <CardContent className="flex items-center gap-3 pt-6">
-              <div className="rounded-xl bg-emerald-500/10 p-3"><Icon className="h-5 w-5 text-emerald-600" /></div>
+              <div className="rounded-xl bg-primary/10 p-3"><Icon className="h-5 w-5 text-primary" /></div>
               <div className="min-w-0">
                 <p className="text-sm text-muted-foreground">{label}</p>
                 <p className="truncate text-lg font-semibold">{value}</p>
@@ -79,10 +95,48 @@ export default function UnderstandingTab() {
         ))}
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-3">
+        <Card className="group border-border/70 bg-card/80 transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-card hover:shadow-[0_18px_50px_-24px_rgba(37,99,235,0.35)]">
+          <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
+            <CardTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> AI Explainability</CardTitle>
+            <CardDescription>What the uploaded dataset is telling us about quality and readiness.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            {qualitySignals.map((signal) => (
+              <p key={signal} className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className="group border-border/70 bg-card/80 transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-card hover:shadow-[0_18px_50px_-24px_rgba(37,99,235,0.35)]">
+          <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
+            <CardTitle className="flex items-center gap-2"><Database className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> Dataset Structure</CardTitle>
+            <CardDescription>How the uploaded dataset is organized for analysis.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            {structureSignals.map((signal) => (
+              <p key={signal} className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className="group border-border/70 bg-card/80 transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-card hover:shadow-[0_18px_50px_-24px_rgba(37,99,235,0.35)]">
+          <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
+            <CardTitle className="flex items-center gap-2"><TableIcon className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> Modeling Readiness</CardTitle>
+            <CardDescription>Key explainability cues that can affect downstream ML behavior.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            {modelingSignals.map((signal) => (
+              <p key={signal} className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Eye className="h-4 w-4 text-teal-600" /> Data Preview</CardTitle>
+          <CardTitle className="flex items-center gap-2"><Eye className="h-4 w-4 text-primary" /> Data Preview</CardTitle>
           <CardDescription>First {Math.min(10, data.length)} rows from the current dataset view.</CardDescription>
         </CardHeader>
         <CardContent>

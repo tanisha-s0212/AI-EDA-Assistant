@@ -67,14 +67,33 @@ type ActivityResponse = {
   count: number;
 };
 
+const INDIA_TIMEZONE = 'Asia/Kolkata';
+
 function formatActivityTimestamp(value: string | null) {
-  if (!value) return 'No recent sync';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'Recent sync recorded';
-  return new Intl.DateTimeFormat(undefined, {
+  const parsed = value ? new Date(value) : new Date();
+  if (Number.isNaN(parsed.getTime())) return 'Current time unavailable';
+  const formatted = new Intl.DateTimeFormat('en-IN', {
     dateStyle: 'medium',
     timeStyle: 'short',
+    timeZone: INDIA_TIMEZONE,
   }).format(parsed);
+  return `${formatted} IST`;
+}
+
+function getSessionContinuityLabel(value: string | null) {
+  if (value) {
+    return {
+      timestamp: formatActivityTimestamp(value),
+      status: 'Last activity in IST',
+      timezone: 'India Standard Time (IST) · India UTC+5:30',
+    };
+  }
+
+  return {
+    timestamp: formatActivityTimestamp(null),
+    status: 'Current IST shown until the first recorded activity',
+    timezone: 'India Standard Time (IST) · India UTC+5:30',
+  };
 }
 
 function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
@@ -211,10 +230,10 @@ export default function HomePage() {
   const sessionSummary = hasWorkspace
     ? `Continue from ${activeTabMeta.label.toLowerCase()} with ${columns.length.toLocaleString()} profiled columns in scope.`
     : 'No active workspace is loaded in memory yet.';
-  const recentSyncLabel = formatActivityTimestamp(recentActivity?.createdAt ?? null);
+  const sessionContinuity = getSessionContinuityLabel(recentActivity?.createdAt ?? null);
   const activityLabel = recentActivity
-    ? recentActivity.action.replace(/_/g, ' ')
-    : 'Waiting for backend activity';
+    ? `Last action: ${recentActivity.action.replace(/_/g, ' ')}`
+    : sessionContinuity.status;
 
   const refreshRecentActivity = React.useCallback(async () => {
     setIsRefreshingActivity(true);
@@ -375,8 +394,9 @@ export default function HomePage() {
                           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
                             Session Continuity
                           </p>
-                          <p className="mt-2 text-lg font-semibold tracking-tight text-white">{recentSyncLabel}</p>
-                          <p className="mt-1 text-sm capitalize text-slate-300">{activityLabel}</p>
+                          <p className="mt-2 text-lg font-semibold tracking-tight text-white">{sessionContinuity.timestamp}</p>
+                          <p className="mt-1 text-sm text-slate-300">{activityLabel}</p>
+                          <p className="mt-1 text-xs text-slate-400">{sessionContinuity.timezone}</p>
                           <div className="mt-4 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3">
                             <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white">
                               <History className="h-4 w-4" />

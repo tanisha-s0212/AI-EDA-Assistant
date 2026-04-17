@@ -1,9 +1,42 @@
 import axios from 'axios';
 
 const normalizedBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || '/api').replace(/\/$/, '');
+const CLIENT_SESSION_STORAGE_KEY = 'ai-eda-client-session-id';
+
+function createClientSessionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getClientSessionId(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const existing = window.localStorage.getItem(CLIENT_SESSION_STORAGE_KEY);
+  if (existing) {
+    return existing;
+  }
+
+  const nextValue = createClientSessionId();
+  window.localStorage.setItem(CLIENT_SESSION_STORAGE_KEY, nextValue);
+  return nextValue;
+}
 
 export const apiClient = axios.create({
   baseURL: normalizedBaseUrl,
+});
+
+apiClient.interceptors.request.use((config) => {
+  const clientSessionId = getClientSessionId();
+  if (clientSessionId) {
+    config.headers = config.headers ?? {};
+    config.headers['X-Client-Session-Id'] = clientSessionId;
+  }
+  return config;
 });
 
 export function getApiErrorMessage(error: unknown, fallback: string): string {

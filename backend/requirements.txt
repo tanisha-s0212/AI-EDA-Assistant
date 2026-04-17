@@ -9,3 +9,9 @@ joblib
 python-multipart
 reportlab
 pyarrow
+matplotlib
+plotly
+kaleido
+openpyxl
+xlrd
+psycopg[binary]

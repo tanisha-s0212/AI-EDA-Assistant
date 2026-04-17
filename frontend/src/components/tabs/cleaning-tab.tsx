@@ -41,7 +41,7 @@ import {
 } from '@/components/ui/table';
 import { useAppStore, type DataRow, type ColumnInfo, type CleaningLog } from '@/lib/store';
 import { toast } from '@/hooks/use-toast';
-import { apiClient } from '@/lib/api';
+import { apiClient, getApiErrorMessage } from '@/lib/api';
 
 // ─────────────────────────────────────────────
 // Animation variants
@@ -275,9 +275,9 @@ function TypewriterDisplay({ text, speed = 4 }: { text: string | null; speed?: n
   return (
     <div className="relative">
       {!done && (
-        <span className="inline-block h-5 w-0.5 bg-emerald-500 animate-pulse ml-0.5 align-middle" />
+        <span className="ml-0.5 inline-block h-5 w-0.5 animate-pulse align-middle bg-primary" />
       )}
-      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-emerald-800 dark:prose-headings:text-emerald-300 prose-p:text-muted-foreground prose-li:text-muted-foreground prose-strong:text-foreground">
+      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-primary prose-p:text-muted-foreground prose-li:text-muted-foreground prose-strong:text-foreground">
         <ReactMarkdown>{displayed}</ReactMarkdown>
       </div>
     </div>
@@ -401,7 +401,7 @@ export default function CleaningTab() {
 
     try {
       if (datasetId) {
-        const response = await apiClient.post('/clean-parquet', {
+        const response = await apiClient.post('/clean-dataset', {
           dataset_id: datasetId,
           remove_duplicates: ops.removeDuplicates,
           handle_missing: ops.handleMissing,
@@ -440,7 +440,8 @@ export default function CleaningTab() {
           predictionAnalysis: null,
           predictionProbabilities: null,
           predictionHistory: [],
-          salesForecastResult: null,
+          timeSeriesForecastResult: null,
+          mlForecastResult: null,
           reportGenerated: false,
           reportUrl: null,
           aiInsights: null,
@@ -508,7 +509,8 @@ export default function CleaningTab() {
         predictionAnalysis: null,
         predictionProbabilities: null,
         predictionHistory: [],
-        salesForecastResult: null,
+        timeSeriesForecastResult: null,
+        mlForecastResult: null,
         reportGenerated: false,
         reportUrl: null,
         aiInsights: null,
@@ -518,6 +520,12 @@ export default function CleaningTab() {
       toast({
         title: 'Cleaning Complete',
         description: `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied successfully. ${currentData.length.toLocaleString()} rows remaining.`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Cleaning failed',
+        description: getApiErrorMessage(error, 'The cleaning workflow could not be completed for this dataset.'),
+        variant: 'destructive',
       });
     } finally {
       setIsProcessing(false);
@@ -600,8 +608,8 @@ export default function CleaningTab() {
         </div>
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/10">
-              <Database className="h-8 w-8 text-emerald-500" />
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+              <Database className="h-8 w-8 text-primary" />
             </div>
             <div className="text-center">
               <p className="text-lg font-semibold">No Data Loaded</p>
@@ -636,7 +644,7 @@ export default function CleaningTab() {
           Clean and preprocess your dataset with intelligent automation. Toggle operations and click Clean Data.
         </p>
         {datasetId && (
-          <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-2">
+          <p className="mt-2 text-xs text-primary">
             Cleaning runs on the full dataset on the backend. This page shows a preview only.
           </p>
         )}
@@ -659,7 +667,7 @@ export default function CleaningTab() {
               <Card
                 className={`relative overflow-hidden transition-all duration-300 ${
                   op.enabled
-                    ? 'border-emerald-500/30 shadow-sm shadow-emerald-500/5'
+                    ? 'border-primary/30 shadow-sm shadow-primary/10'
                     : 'border-border/50 opacity-70'
                 }`}
               >
@@ -670,7 +678,7 @@ export default function CleaningTab() {
                       initial={{ scaleY: 0 }}
                       animate={{ scaleY: 1 }}
                       exit={{ scaleY: 0 }}
-                      className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-emerald-500 to-teal-500 origin-left"
+                      className="absolute top-0 left-0 right-0 h-[2px] bg-primary origin-left"
                     />
                   )}
                 </AnimatePresence>
@@ -681,14 +689,14 @@ export default function CleaningTab() {
                       <div
                         className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
                           op.enabled
-                            ? 'bg-emerald-500/15'
+                            ? 'bg-primary/15'
                             : 'bg-muted'
                         }`}
                       >
                         <op.icon
                           className={`h-5 w-5 transition-colors ${
                             op.enabled
-                              ? 'text-emerald-600 dark:text-emerald-400'
+                              ? 'text-primary'
                               : 'text-muted-foreground'
                           }`}
                         />
@@ -700,7 +708,7 @@ export default function CleaningTab() {
                     <Switch
                       checked={op.enabled}
                       onCheckedChange={() => toggleOp(op.id)}
-                      className="data-[state=checked]:bg-emerald-600"
+                      className="data-[state=checked]:bg-primary"
                     />
                   </div>
                 </CardHeader>
@@ -711,8 +719,8 @@ export default function CleaningTab() {
                   <div
                     className={`flex items-center gap-1.5 text-xs font-medium rounded-full px-2.5 py-1 w-fit ${
                       hasEffect
-                        ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                        : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        ? 'bg-secondary text-secondary-foreground'
+                        : 'bg-primary/10 text-primary'
                     }`}
                   >
                     {hasEffect ? (
@@ -738,11 +746,11 @@ export default function CleaningTab() {
             size="lg"
             className={`relative gap-2.5 px-8 py-6 text-base font-semibold shadow-lg transition-all ${
               isProcessing
-                ? 'bg-emerald-700 cursor-wait'
+                ? 'bg-primary/80 cursor-wait'
                 : cleaningDone
-                  ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/25'
-                  : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-emerald-500/20'
-            } text-white`}
+                  ? 'bg-primary hover:bg-primary/90 shadow-primary/25'
+                  : 'bg-primary hover:bg-primary/90 shadow-primary/20'
+            } text-primary-foreground`}
           >
             <AnimatePresence mode="wait">
               {isProcessing ? (
@@ -792,20 +800,20 @@ export default function CleaningTab() {
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
           >
-            <div className="rounded-lg border border-emerald-500/20 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 p-4">
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/15 shrink-0">
-                  <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15 shrink-0">
+                  <CheckCircle2 className="h-5 w-5 text-primary" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-emerald-800 dark:text-emerald-300 text-sm">
+                  <p className="text-sm font-semibold text-primary">
                     Data Cleaned Successfully
                   </p>
-                  <p className="text-xs text-emerald-700/70 dark:text-emerald-400/70 mt-0.5">
+                  <p className="mt-0.5 text-xs text-muted-foreground">
                     {cleaningLogs.length} operations applied &middot;{' '}
                     <span className="font-semibold">{processedRowCount.toLocaleString()}</span> rows remaining
                     {removedRowCount > 0 && (
-                      <> &middot; <span className="text-amber-700 dark:text-amber-400 font-semibold">{removedRowCount.toLocaleString()} rows removed</span></>
+                      <> &middot; <span className="font-semibold text-foreground">{removedRowCount.toLocaleString()} rows removed</span></>
                     )}
                     {showingPreviewOnly && (
                       <> &middot; Previewing first {loadedRowCount.toLocaleString()} cleaned rows</>
@@ -816,7 +824,7 @@ export default function CleaningTab() {
                   variant="outline"
                   size="sm"
                   onClick={() => useAppStore.getState().setActiveTab('eda')}
-                  className="gap-1.5 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10 shrink-0"
+                  className="gap-1.5 border-primary/30 text-primary hover:bg-primary/10 shrink-0"
                 >
                   Next Step
                   <ArrowRight className="h-3.5 w-3.5" />
@@ -880,8 +888,8 @@ export default function CleaningTab() {
                           transition={{ delay: idx * 0.1 }}
                           className="flex items-start gap-3 rounded-lg border border-border/50 bg-muted/20 p-3"
                         >
-                          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15">
-                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15">
+                            <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
@@ -925,13 +933,13 @@ export default function CleaningTab() {
             transition={{ duration: 0.4, delay: 0.2 }}
             variants={itemVariants}
           >
-            <Card className="border-emerald-500/20 overflow-hidden">
-              <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500" />
+            <Card className="overflow-hidden border-primary/20">
+              <div className="absolute top-0 left-0 right-0 h-[2px] bg-primary" />
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between flex-wrap gap-3">
                   <div className="flex items-center gap-2.5">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-500/15 to-teal-500/15">
-                      <Sparkles className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15">
+                      <Sparkles className="h-5 w-5 text-primary" />
                     </div>
                     <div>
                       <CardTitle className="text-lg">AI Cleaning Justification</CardTitle>
@@ -945,7 +953,7 @@ export default function CleaningTab() {
                     disabled={isGeneratingAI}
                     variant="outline"
                     size="sm"
-                    className="gap-1.5 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10"
+                    className="gap-1.5 border-primary/30 text-primary hover:bg-primary/10"
                   >
                     {isGeneratingAI ? (
                       <>
@@ -969,7 +977,7 @@ export default function CleaningTab() {
 
               {aiJustification && (
                 <CardContent className="pt-0">
-                  <div className="rounded-lg border border-emerald-500/10 bg-emerald-50/50 dark:bg-emerald-950/20 p-5 max-h-[300px] overflow-y-auto [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-thumb]:bg-emerald-300/40 dark:[&::-webkit-scrollbar-thumb]:bg-emerald-700/40 [&::-webkit-scrollbar-thumb]:rounded-full">
+                  <div className="max-h-[300px] overflow-y-auto rounded-lg border border-border bg-muted/30 p-5 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-primary/30">
                     <TypewriterDisplay key={justificationKey} text={aiJustification} />
                   </div>
                 </CardContent>
@@ -993,8 +1001,8 @@ export default function CleaningTab() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between flex-wrap gap-3">
                   <div className="flex items-center gap-2.5">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-500/15">
-                      <Database className="h-5 w-5 text-teal-600 dark:text-teal-400" />
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary">
+                      <Database className="h-5 w-5 text-primary" />
                     </div>
                     <div>
                       <CardTitle className="text-lg">Cleaned Data Preview</CardTitle>
@@ -1007,7 +1015,7 @@ export default function CleaningTab() {
                     onClick={handleDownload}
                     variant="outline"
                     size="sm"
-                    className="gap-1.5 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10"
+                    className="gap-1.5 border-primary/30 text-primary hover:bg-primary/10"
                   >
                     <Download className="h-3.5 w-3.5" />
                     {showingPreviewOnly ? 'Download Preview CSV' : 'Download Cleaned Data'}

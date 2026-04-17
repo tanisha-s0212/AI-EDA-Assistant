@@ -24,10 +24,11 @@ const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementT
   { id: 'understanding', label: 'Understanding', shortLabel: 'Understand', icon: Database, step: 2 },
   { id: 'cleaning', label: 'Cleaning', shortLabel: 'Clean', icon: Sparkles, step: 3 },
   { id: 'eda', label: 'EDA', shortLabel: 'EDA', icon: BarChart3, step: 4 },
-  { id: 'sales_forecast', label: 'Sales Forecast', shortLabel: 'Forecast', icon: LineChart, step: 5 },
-  { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit, step: 6 },
-  { id: 'prediction', label: 'Prediction', shortLabel: 'Predict', icon: Target, step: 7 },
-  { id: 'report', label: 'Report', shortLabel: 'Report', icon: FileText, step: 8 },
+  { id: 'forecast_ts', label: 'Forecast TS', shortLabel: 'TS', icon: LineChart, step: 5 },
+  { id: 'forecast_ml', label: 'Forecast ML', shortLabel: 'MLF', icon: LineChart, step: 6 },
+  { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit, step: 7 },
+  { id: 'prediction', label: 'Prediction', shortLabel: 'Predict', icon: Target, step: 8 },
+  { id: 'report', label: 'Report', shortLabel: 'Report', icon: FileText, step: 9 },
 ];
 
 const mlSteps = [
@@ -170,9 +171,9 @@ export default function StepNavigator({
                   disabled={!enabled}
                   className={cn(
                     'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-2 text-xs font-medium whitespace-nowrap transition-all duration-200',
-                    isActive && enabled && 'border-transparent bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-md shadow-emerald-500/25',
-                    !isActive && enabled && isPast && 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400',
-                    !isActive && enabled && !isPast && 'border-muted bg-background text-muted-foreground hover:border-emerald-300 hover:text-emerald-600 dark:hover:border-emerald-700',
+                    isActive && enabled && 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20',
+                    !isActive && enabled && isPast && 'border-border bg-secondary text-secondary-foreground',
+                    !isActive && enabled && !isPast && 'border-border bg-background text-muted-foreground hover:border-primary/30 hover:text-primary',
                     !enabled && 'cursor-not-allowed border-muted/50 bg-muted/30 text-muted-foreground/30',
                   )}
                 >
@@ -185,7 +186,7 @@ export default function StepNavigator({
                   />
                   <span className="hidden sm:inline">{tab.label}</span>
                   <span className="sm:hidden">{tab.shortLabel}</span>
-                  {isPast && enabled && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
+                  {isPast && enabled && <CheckCircle2 className="h-3 w-3 text-primary" />}
                   <span
                     className={cn(
                       'text-[10px] font-mono',
@@ -210,7 +211,7 @@ export default function StepNavigator({
             disabled={!canGoPrev}
             className={cn(
               'gap-1.5 text-xs',
-              canGoPrev && 'hover:border-emerald-300 hover:text-emerald-600 dark:hover:border-emerald-700',
+              canGoPrev && 'hover:border-primary/30 hover:text-primary',
             )}
           >
             <ChevronLeft className="h-3.5 w-3.5" />
@@ -232,11 +233,11 @@ export default function StepNavigator({
                     className={cn(
                       'rounded-full transition-all duration-300',
                       isActive
-                        ? 'h-2 w-6 bg-gradient-to-r from-emerald-500 to-teal-500'
+                        ? 'h-2 w-6 bg-primary'
                         : isPast && enabled
-                          ? 'h-2 w-2 bg-emerald-400'
+                          ? 'h-2 w-2 bg-primary/60'
                           : enabled
-                            ? 'h-2 w-2 bg-muted-foreground/30 hover:bg-emerald-400/60'
+                            ? 'h-2 w-2 bg-muted-foreground/30 hover:bg-primary/60'
                             : 'h-2 w-2 bg-muted/20',
                       !enabled && 'cursor-not-allowed',
                     )}
@@ -258,11 +259,11 @@ export default function StepNavigator({
                     className={cn(
                       'rounded-full transition-all duration-300',
                       isActive
-                        ? 'h-2 w-6 bg-gradient-to-r from-emerald-500 to-teal-500'
+                        ? 'h-2 w-6 bg-primary'
                         : isPast && enabled
-                          ? 'h-2 w-2 bg-emerald-400'
+                          ? 'h-2 w-2 bg-primary/60'
                           : enabled
-                            ? 'h-2 w-2 bg-muted-foreground/30 hover:bg-emerald-400/60'
+                            ? 'h-2 w-2 bg-muted-foreground/30 hover:bg-primary/60'
                             : 'h-2 w-2 bg-muted/20',
                       !enabled && 'cursor-not-allowed',
                     )}
@@ -281,7 +282,7 @@ export default function StepNavigator({
             title={nextDisabledReason ?? undefined}
             className={cn(
               'gap-1.5 text-xs',
-              canGoNext && 'hover:border-emerald-300 hover:text-emerald-600 dark:hover:border-emerald-700',
+              canGoNext && 'hover:border-primary/30 hover:text-primary',
             )}
           >
             <span className="hidden sm:inline">{nextButtonLabel}</span>

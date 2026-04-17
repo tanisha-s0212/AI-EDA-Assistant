@@ -12,20 +12,26 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { buildCorrelationHeatmap, computeEdaStats, formatMetric } from '@/lib/eda';
+import { buildCorrelationHeatmap, computeEdaStats, formatMetric, heatColor } from '@/lib/eda';
 import { useAppStore } from '@/lib/store';
+import EdaAdvancedModules from '@/components/tabs/eda-advanced-modules';
 
 export default function EdaTab() {
   const rawData = useAppStore((s) => s.rawData);
   const cleanedData = useAppStore((s) => s.cleanedData);
   const columns = useAppStore((s) => s.columns);
   const totalRows = useAppStore((s) => s.totalRows);
+  const loadedRowCount = useAppStore((s) => s.loadedRowCount);
+  const previewLoaded = useAppStore((s) => s.previewLoaded);
+  const datasetId = useAppStore((s) => s.datasetId);
 
   const data = cleanedData ?? rawData ?? [];
   const hasData = !!rawData && columns.length > 0;
 
   const stats = useMemo(() => computeEdaStats(data, columns), [data, columns]);
   const heatmap = useMemo(() => buildCorrelationHeatmap(data, stats.numericColumns), [data, stats.numericColumns]);
+  const analysisBaseLabel = previewLoaded && totalRows > loadedRowCount ? 'preview dataset sample' : 'current working dataset';
+  const numericSummaryScope = stats.numericColumns.length ? `Computed from the ${analysisBaseLabel} for responsive analysis.` : 'Descriptive statistics for numeric columns.';
   const numericRows = useMemo(
     () => stats.numericColumns.map((name) => ({ name, summary: stats.stats[name] })).filter((item) => item.summary),
     [stats.numericColumns, stats.stats]
@@ -54,14 +60,28 @@ export default function EdaTab() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Exploratory Data Analysis</h2>
-          <p className="mt-1 text-muted-foreground">Schema, descriptive statistics, relationships, and the correlation heatmap for the current dataset.</p>
+          <p className="mt-1 text-muted-foreground">Schema, descriptive statistics, relationship signals, and visual correlation summaries for the active dataset.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge variant="secondary" className="gap-1"><Database className="h-3.5 w-3.5" /> {data.length.toLocaleString()} rows</Badge>
+          <Badge variant="secondary" className="gap-1"><Database className="h-3.5 w-3.5" /> {totalRows.toLocaleString()} total rows</Badge>
+          <Badge variant="secondary" className="gap-1"><Database className="h-3.5 w-3.5" /> {data.length.toLocaleString()} in workspace</Badge>
           <Badge variant="secondary" className="gap-1"><Sigma className="h-3.5 w-3.5" /> {stats.numericColumns.length} numeric</Badge>
           <Badge variant="secondary" className="gap-1"><TableIcon className="h-3.5 w-3.5" /> {columns.length} columns</Badge>
         </div>
       </div>
+
+      {previewLoaded && totalRows > loadedRowCount && (
+        <Card className="border border-amber-300 bg-amber-50">
+          <CardContent className="space-y-2 text-sm text-amber-900">
+            <p>
+              Showing a preview of {loadedRowCount.toLocaleString()} rows from {totalRows.toLocaleString()} total. The full dataset is cached on the backend so cleaning, advanced EDA, forecasting, and training can still use the complete source.
+            </p>
+            <p>
+              On-screen summary cards in this tab use the loaded workspace rows to stay responsive with larger files.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -108,7 +128,7 @@ export default function EdaTab() {
       <Card>
         <CardHeader>
           <CardTitle>Statistical Summary</CardTitle>
-          <CardDescription>Descriptive statistics for numeric columns.</CardDescription>
+          <CardDescription>{numericSummaryScope}</CardDescription>
         </CardHeader>
         <CardContent>
           {numericRows.length ? (
@@ -153,18 +173,29 @@ export default function EdaTab() {
       <div className="grid gap-6 xl:grid-cols-2">
         <Card className="h-full">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><TrendingUp className="h-4 w-4 text-emerald-600" /> Relationships</CardTitle>
-            <CardDescription>{strongestCorrelation ? `Strongest: ${strongestCorrelation.pair}` : 'Top numeric correlations.'}</CardDescription>
+            <CardTitle className="flex items-center gap-2"><TrendingUp className="h-4 w-4 text-primary" /> Relationships</CardTitle>
+            <CardDescription>{strongestCorrelation ? `Strongest sampled relationship: ${strongestCorrelation.pair}` : 'Top numeric correlations from the loaded workspace rows.'}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {stats.correlations.length ? stats.correlations.slice(0, 8).map((item) => (
               <div key={item.pair} className="rounded-xl border bg-background p-4 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium">{item.pair}</span>
-                  <Badge variant="outline">{item.correlation >= 0 ? '+' : ''}{item.correlation}</Badge>
+                  <Badge
+                    variant="outline"
+                    className={item.correlation >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}
+                  >
+                    {item.correlation >= 0 ? '+' : ''}{item.correlation}
+                  </Badge>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-                  <div className={`h-full rounded-full ${item.correlation >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${Math.max(8, Math.abs(item.correlation) * 100)}%` }} />
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.max(8, Math.abs(item.correlation) * 100)}%`,
+                      backgroundColor: item.correlation >= 0 ? '#10b981' : '#ef4444',
+                    }}
+                  />
                 </div>
               </div>
             )) : <p className="text-sm text-muted-foreground">Need at least two numeric columns.</p>}
@@ -172,9 +203,9 @@ export default function EdaTab() {
         </Card>
 
         <Card className="h-full overflow-hidden">
-          <CardHeader className="border-b bg-gradient-to-r from-emerald-50 via-white to-sky-50 dark:from-emerald-950/20 dark:via-background dark:to-sky-950/20">
-            <CardTitle className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-emerald-600" /> Correlation Heatmap</CardTitle>
-            <CardDescription>Matrix view for up to five numeric columns.</CardDescription>
+          <CardHeader className="border-b bg-secondary/60">
+            <CardTitle className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-primary" /> Correlation Heatmap</CardTitle>
+            <CardDescription>Matrix view for up to five numeric columns from the active in-app dataset slice.</CardDescription>
           </CardHeader>
           <CardContent className="pt-6">
             {stats.numericColumns.length >= 2 ? (
@@ -194,7 +225,7 @@ export default function EdaTab() {
                       {stats.numericColumns.slice(0, 5).map((column) => {
                         const cell = heatmap.find((item) => item.x === rowLabel && item.y === column);
                         const value = cell?.value ?? 0;
-                        const bg = value >= 0 ? `rgba(16,185,129,${0.15 + Math.abs(value) * 0.55})` : `rgba(239,68,68,${0.15 + Math.abs(value) * 0.55})`;
+                        const bg = heatColor(value);
                         return <div key={`${rowLabel}-${column}`} className="flex min-h-[72px] items-center justify-center rounded-lg border text-sm font-semibold shadow-sm" style={{ backgroundColor: bg }}>{value.toFixed(2)}</div>;
                       })}
                     </div>
@@ -207,6 +238,8 @@ export default function EdaTab() {
           </CardContent>
         </Card>
       </div>
+
+      <EdaAdvancedModules datasetId={datasetId} data={data} columns={columns} />
     </div>
   );
 }

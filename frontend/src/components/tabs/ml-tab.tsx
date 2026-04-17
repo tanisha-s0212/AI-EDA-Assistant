@@ -156,7 +156,7 @@ const itemVariants: Variants = {
   visible: {
     opacity: 1,
     y: 0,
-    transition: { type: 'spring', stiffness: 300, damping: 30 },
+    transition: { type: 'spring', stiffness: 240, damping: 28 },
   },
 };
 
@@ -165,9 +165,19 @@ const scaleVariants: Variants = {
   visible: {
     opacity: 1,
     scale: 1,
-    transition: { type: 'spring', stiffness: 300, damping: 25 },
+    transition: { type: 'spring', stiffness: 220, damping: 24 },
   },
 };
+
+const ML_CHART_COLORS = {
+  primary: '#2563eb',
+  secondary: '#7c3aed',
+  accent: '#14b8a6',
+  warning: '#f59e0b',
+  danger: '#ef4444',
+  grid: '#cbd5e1',
+  bars: ['#2563eb', '#7c3aed', '#14b8a6', '#f59e0b', '#ef4444', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'],
+} as const;
 
 // ─── Helper Functions ─────────────────────────────────────────────────────────
 
@@ -316,8 +326,8 @@ function StepIndicator({ currentStep, totalSteps = 6 }: { currentStep: number; t
             <motion.div
               className={cn(
                 'flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors',
-                isActive && 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-                isDone && 'text-emerald-500',
+                isActive && 'bg-primary/10 text-primary',
+                isDone && 'text-primary',
                 !isActive && !isDone && 'text-muted-foreground/50',
               )}
               animate={isActive ? { scale: 1.05 } : { scale: 1 }}
@@ -325,8 +335,8 @@ function StepIndicator({ currentStep, totalSteps = 6 }: { currentStep: number; t
             >
               <div className={cn(
                 'flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold',
-                isActive && 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/30',
-                isDone && 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400',
+                isActive && 'bg-primary text-primary-foreground shadow-sm shadow-primary/30',
+                isDone && 'bg-primary/10 text-primary',
                 !isActive && !isDone && 'bg-muted text-muted-foreground/50',
               )}>
                 {isDone ? <CheckCircle2 className="h-3 w-3" /> : step.num}
@@ -336,7 +346,7 @@ function StepIndicator({ currentStep, totalSteps = 6 }: { currentStep: number; t
             {idx < steps.length - 1 && (
               <div className={cn(
                 'h-px w-4 sm:w-8',
-                isDone ? 'bg-emerald-500/50' : 'bg-border',
+                isDone ? 'bg-primary/40' : 'bg-border',
               )} />
             )}
           </React.Fragment>
@@ -356,14 +366,14 @@ function EmptyState() {
       animate={{ opacity: 1, y: 0 }}
       className="flex flex-col items-center justify-center py-20"
     >
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/10 mb-4">
-        <BrainCircuit className="h-8 w-8 text-emerald-500" />
+      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+        <BrainCircuit className="h-8 w-8 text-primary" />
       </div>
       <h3 className="text-lg font-semibold">No Data Loaded</h3>
       <p className="text-sm text-muted-foreground mt-1 mb-4">Upload a dataset first to start training ML models.</p>
       <Button
         variant="outline"
-        className="border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+        className="border-primary/20 text-primary hover:bg-primary/5"
         onClick={() => setActiveTab('upload')}
       >
         Go to Upload
@@ -770,13 +780,13 @@ export default function MlTab() {
   const handleAskAssistant = useCallback(() => {
     const question = mlQuestion.trim();
     if (!question) {
-      toast({ title: 'Enter a question', description: 'Ask about model choice, training quality, or prediction behavior.', variant: 'destructive' });
+      toast({ title: 'Enter a problem', description: 'Describe the modeling problem, training quality concern, or prediction behavior you want help with.', variant: 'destructive' });
       return;
     }
 
     const lower = question.toLowerCase();
     const response: string[] = [];
-    response.push(`Question: ${question}`);
+    response.push(`Problem: ${question}`);
 
     if (!selectedTarget) {
       response.push('Choose a target column first so the assistant can give dataset-specific ML guidance.');
@@ -799,7 +809,7 @@ export default function MlTab() {
         response.push(`Latest training metrics: ${metricsSummary}.`);
       }
     } else {
-      response.push('No trained model is available yet, so answers are based on the current configuration rather than measured performance.');
+      response.push('No trained model is available yet, so the solution is based on the current configuration rather than measured performance.');
     }
 
     if (/(feature|important|importance)/.test(lower)) {
@@ -828,7 +838,7 @@ export default function MlTab() {
     }
 
     if (response.length <= 3) {
-      response.push('Ask about model recommendation, feature importance, prediction behavior, or how to improve training quality for a more targeted answer.');
+      response.push('Describe model selection, feature importance, prediction behavior, or training quality to get a more targeted solution.');
     }
 
     setMlAssistantReply(response.join('\n\n'));
@@ -940,10 +950,10 @@ export default function MlTab() {
     if (value === null) return 'text-muted-foreground';
     const good = ['R²', 'Accuracy', 'Precision', 'Recall', 'F1'];
     if (good.includes(key)) {
-      return value >= 0.9 ? 'text-emerald-500' : value >= 0.7 ? 'text-amber-500' : 'text-rose-500';
+      return value >= 0.9 ? 'text-primary' : value >= 0.7 ? 'text-amber-500' : 'text-rose-500';
     }
     // For RMSE, MAE - lower is better, we can't easily judge without context
-    return 'text-emerald-500';
+    return 'text-primary';
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -956,17 +966,17 @@ export default function MlTab() {
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <BrainCircuit className="h-6 w-6 text-emerald-500" />
+            <BrainCircuit className="h-6 w-6 text-primary" />
             ML Assistant
           </h2>
           <p className="text-muted-foreground mt-1">Train and evaluate machine learning models with AI-powered guidance.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="border-emerald-500/20 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400">
+          <Badge variant="outline" className="border-primary/20 bg-primary/5 text-primary">
             <Bot className="mr-1 h-3 w-3" />
             {data?.length ?? 0} rows
           </Badge>
-          <Badge variant="outline" className="border-teal-500/20 bg-teal-500/5 text-teal-600 dark:text-teal-400">
+          <Badge variant="outline" className="border-secondary bg-secondary text-secondary-foreground">
             {columns.length} features
           </Badge>
         </div>
@@ -976,13 +986,13 @@ export default function MlTab() {
       {/* Step Indicator */}
       <StepIndicator currentStep={currentStep} />
 
-      <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-teal-500/5">
+      <Card className="border border-primary/20 bg-gradient-to-br from-primary/6 to-secondary/70">
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-emerald-500" />
+            <Bot className="h-4 w-4 text-primary" />
             <CardTitle className="text-base">Ask The ML Assistant</CardTitle>
           </div>
-          <CardDescription>Enter a question about model analysis, training quality, or prediction behavior.</CardDescription>
+          <CardDescription>Enter a problem about model analysis, training quality, or prediction behavior.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Textarea
@@ -994,13 +1004,13 @@ export default function MlTab() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
             <Button
               onClick={handleAskAssistant}
-              className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
               <Sparkles className="mr-2 h-4 w-4" />
-              Analyze Question
+              Analyze Problem
             </Button>
             <p className="text-xs text-muted-foreground sm:pt-2">
-              The answer uses your current target, selected features, chosen model, and latest training results when available.
+              The solution uses your current target, selected features, chosen model, and latest training results when available.
             </p>
           </div>
           {mlAssistantReply && (
@@ -1025,11 +1035,11 @@ export default function MlTab() {
             <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
               {/* Auto Detection Card */}
               <motion.div variants={itemVariants}>
-                <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-teal-500/5">
+                <Card className="border border-primary/20 bg-gradient-to-br from-primary/6 to-secondary/70">
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
-                        <Sparkles className="h-4 w-4 text-emerald-500" />
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                        <Sparkles className="h-4 w-4 text-primary" />
                       </div>
                       <CardTitle className="text-lg">Smart Recommendation</CardTitle>
                     </div>
@@ -1040,11 +1050,11 @@ export default function MlTab() {
                     <div className="flex items-center gap-3">
                       <div className={cn(
                         'flex h-10 w-10 items-center justify-center rounded-xl',
-                        detectedType === 'regression' ? 'bg-emerald-500/10' : 'bg-teal-500/10',
+                        detectedType === 'regression' ? 'bg-primary/10' : 'bg-secondary',
                       )}>
                         {detectedType === 'regression'
-                          ? <TrendingUp className="h-5 w-5 text-emerald-500" />
-                          : <Tag className="h-5 w-5 text-teal-500" />
+                          ? <TrendingUp className="h-5 w-5 text-primary" />
+                          : <Tag className="h-5 w-5 text-secondary-foreground" />
                         }
                       </div>
                       <div className="flex-1">
@@ -1052,7 +1062,7 @@ export default function MlTab() {
                           <p className="text-sm font-medium capitalize">{detectedType}</p>
                           <Badge variant="outline" className={cn(
                             'text-xs',
-                            confidence >= 80 ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                            confidence >= 80 ? 'border-primary/20 bg-primary/10 text-primary'
                               : confidence >= 60 ? 'border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400'
                               : 'border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-400',
                           )}>
@@ -1084,7 +1094,7 @@ export default function MlTab() {
                   <Card>
                     <CardHeader className="pb-3">
                       <div className="flex items-center gap-2">
-                        <Target className="h-4 w-4 text-emerald-500" />
+                        <Target className="h-4 w-4 text-primary" />
                         <CardTitle className="text-base">Target Column</CardTitle>
                       </div>
                       <CardDescription>Select the variable to predict</CardDescription>
@@ -1098,7 +1108,7 @@ export default function MlTab() {
                           {columns.map(col => (
                             <SelectItem key={col.name} value={col.name}>
                               <div className="flex items-center gap-2">
-                                {col.role === 'numeric' ? <Hash className="h-3 w-3 text-emerald-500" /> : <Tag className="h-3 w-3 text-teal-500" />}
+                                {col.role === 'numeric' ? <Hash className="h-3 w-3 text-primary" /> : <Tag className="h-3 w-3 text-secondary-foreground" />}
                                 <span>{col.name}</span>
                                 <span className="text-xs text-muted-foreground">({col.dtype})</span>
                               </div>
@@ -1115,7 +1125,7 @@ export default function MlTab() {
                   <Card>
                     <CardHeader className="pb-3">
                       <div className="flex items-center gap-2">
-                        <BrainCircuit className="h-4 w-4 text-emerald-500" />
+                        <BrainCircuit className="h-4 w-4 text-primary" />
                         <CardTitle className="text-base">Problem Type</CardTitle>
                       </div>
                       <CardDescription>Auto-detected based on target column</CardDescription>
@@ -1127,11 +1137,11 @@ export default function MlTab() {
                           className={cn(
                             'flex-1 rounded-lg border-2 p-3 text-center transition-all',
                             targetProblemType === 'regression'
-                              ? 'border-emerald-500 bg-emerald-500/5'
+                              ? 'border-primary bg-primary/5'
                               : 'border-transparent bg-muted/50 hover:bg-muted',
                           )}
                         >
-                          <TrendingUp className={cn('h-5 w-5 mx-auto mb-1', targetProblemType === 'regression' ? 'text-emerald-500' : 'text-muted-foreground')} />
+                          <TrendingUp className={cn('mx-auto mb-1 h-5 w-5', targetProblemType === 'regression' ? 'text-primary' : 'text-muted-foreground')} />
                           <p className="text-sm font-medium">Regression</p>
                           <p className="text-xs text-muted-foreground">Predict numbers</p>
                         </button>
@@ -1140,11 +1150,11 @@ export default function MlTab() {
                           className={cn(
                             'flex-1 rounded-lg border-2 p-3 text-center transition-all',
                             targetProblemType === 'classification'
-                              ? 'border-teal-500 bg-teal-500/5'
+                              ? 'border-secondary-foreground/20 bg-secondary'
                               : 'border-transparent bg-muted/50 hover:bg-muted',
                           )}
                         >
-                          <Tag className={cn('h-5 w-5 mx-auto mb-1', targetProblemType === 'classification' ? 'text-teal-500' : 'text-muted-foreground')} />
+                          <Tag className={cn('mx-auto mb-1 h-5 w-5', targetProblemType === 'classification' ? 'text-secondary-foreground' : 'text-muted-foreground')} />
                           <p className="text-sm font-medium">Classification</p>
                           <p className="text-xs text-muted-foreground">Predict categories</p>
                         </button>
@@ -1160,7 +1170,7 @@ export default function MlTab() {
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <BarChart3 className="h-4 w-4 text-emerald-500" />
+                        <BarChart3 className="h-4 w-4 text-primary" />
                         <CardTitle className="text-base">Feature Selection</CardTitle>
                         <Badge variant="secondary" className="text-xs">{selectedFeatures.length} selected</Badge>
                       </div>
@@ -1188,7 +1198,7 @@ export default function MlTab() {
                             key={feature}
                             className={cn(
                               'flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer transition-colors',
-                              isSelected ? 'bg-emerald-500/5' : 'hover:bg-muted/50',
+                              isSelected ? 'bg-primary/5' : 'hover:bg-muted/50',
                             )}
                             whileHover={{ x: 2 }}
                             transition={{ type: 'spring', stiffness: 300, damping: 25 }}
@@ -1202,7 +1212,7 @@ export default function MlTab() {
                             </div>
                             {col && (
                               <Badge variant="outline" className="text-[10px] shrink-0">
-                                {col.role === 'numeric' ? <Hash className="mr-1 h-2.5 w-2.5 text-emerald-500" /> : <Tag className="mr-1 h-2.5 w-2.5 text-teal-500" />}
+                                {col.role === 'numeric' ? <Hash className="mr-1 h-2.5 w-2.5 text-primary" /> : <Tag className="mr-1 h-2.5 w-2.5 text-secondary-foreground" />}
                                 {col.dtype}
                               </Badge>
                             )}
@@ -1228,10 +1238,10 @@ export default function MlTab() {
                   <motion.div variants={scaleVariants}>
                     <Card
                       className={cn(
-                        'cursor-pointer transition-all duration-200 hover:shadow-lg hover:shadow-emerald-500/5',
+                        'cursor-pointer transition-all duration-200 hover:shadow-lg hover:shadow-primary/10',
                         selectedModel === recommendedModel.id
-                          ? 'border-emerald-500 bg-emerald-500/5 ring-2 ring-emerald-500/20'
-                          : 'hover:border-emerald-500/30',
+                          ? 'border-primary bg-primary/5 ring-2 ring-primary/20'
+                          : 'hover:border-primary/30',
                       )}
                       onClick={() => setSelectedModel(recommendedModel.id)}
                       whileHover={{ y: -2, scale: 1.01 }}
@@ -1242,7 +1252,7 @@ export default function MlTab() {
                           <div className="flex items-center gap-2">
                             <div className={cn(
                               'flex h-8 w-8 items-center justify-center rounded-lg',
-                              selectedModel === recommendedModel.id ? 'bg-emerald-500 text-white' : 'bg-emerald-500/10 text-emerald-500',
+                              selectedModel === recommendedModel.id ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary',
                             )}>
                               <BrainCircuit className="h-4 w-4" />
                             </div>
@@ -1250,7 +1260,7 @@ export default function MlTab() {
                           </div>
                           {selectedModel === recommendedModel.id && (
                             <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}>
-                              <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                              <CheckCircle2 className="h-5 w-5 text-primary" />
                             </motion.div>
                           )}
                         </div>
@@ -1258,7 +1268,7 @@ export default function MlTab() {
                       <CardContent className="space-y-3">
                         <p className="text-sm text-muted-foreground">{recommendedModel.description}</p>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <Badge className="bg-emerald-500 text-white text-[10px]">Best Choice</Badge>
+                          <Badge className="bg-primary text-primary-foreground text-[10px]">Best Choice</Badge>
                         </div>
                         <div className="rounded-lg border bg-muted/30 px-3 py-3 text-sm text-muted-foreground">
                           <span className="font-medium text-foreground">Why this model:</span> {recommendedModel.whyRecommended}
@@ -1284,8 +1294,8 @@ export default function MlTab() {
                           className={cn(
                             'cursor-pointer transition-all duration-200 hover:shadow-md',
                             selectedModel === model.id
-                              ? 'border-emerald-500 bg-emerald-500/5 ring-2 ring-emerald-500/20'
-                              : 'hover:border-emerald-500/30',
+                              ? 'border-primary bg-primary/5 ring-2 ring-primary/20'
+                              : 'hover:border-primary/30',
                           )}
                           onClick={() => setSelectedModel(model.id)}
                           whileHover={{ y: -1, scale: 1.005 }}
@@ -1296,7 +1306,7 @@ export default function MlTab() {
                               <div className="flex items-center gap-3">
                                 <div className={cn(
                                   'flex h-8 w-8 items-center justify-center rounded-lg',
-                                  selectedModel === model.id ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground',
+                                  selectedModel === model.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
                                 )}>
                                   <BrainCircuit className="h-4 w-4" />
                                 </div>
@@ -1307,7 +1317,7 @@ export default function MlTab() {
                               </div>
                               <div className="flex flex-col items-end gap-1">
                                 {selectedModel === model.id && (
-                                  <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                                  <CheckCircle2 className="h-5 w-5 text-primary" />
                                 )}
                               </div>
                             </div>
@@ -1329,7 +1339,7 @@ export default function MlTab() {
                 <Card>
                   <CardHeader>
                     <div className="flex items-center gap-2">
-                      <Gauge className="h-5 w-5 text-emerald-500" />
+                      <Gauge className="h-5 w-5 text-primary" />
                       <CardTitle>Training Configuration</CardTitle>
                     </div>
                     <CardDescription>Configure hyperparameters for model training</CardDescription>
@@ -1380,7 +1390,7 @@ export default function MlTab() {
                             className={cn(
                               'flex-1 rounded-lg border-2 p-3 text-center transition-all',
                               cvFolds === fold
-                                ? 'border-emerald-500 bg-emerald-500/5'
+                                ? 'border-primary bg-primary/5'
                                 : 'border-transparent bg-muted/50 hover:bg-muted',
                             )}
                           >
@@ -1423,7 +1433,7 @@ export default function MlTab() {
                         type="number"
                         value={randomState}
                         onChange={(e) => setRandomState(parseInt(e.target.value) || 0)}
-                        className="w-32 rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                        className="w-32 rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                       />
                     </div>
                   </CardContent>
@@ -1448,7 +1458,7 @@ export default function MlTab() {
                             setSelectedModel(recommendedModel?.id || '');
                             setTimeout(() => { updateMlStep(4); handleTrain(); }, 100);
                           }}
-                          className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                          className="bg-primary text-primary-foreground hover:bg-primary/90"
                         >
                           <Zap className="mr-2 h-4 w-4" />
                           Auto-Train Best
@@ -1456,7 +1466,7 @@ export default function MlTab() {
                         <Button
                           onClick={handleTrainAndGoPredict}
                           variant="outline"
-                          className="border-teal-500/30 text-teal-600 dark:text-teal-400"
+                          className="border-secondary text-secondary-foreground"
                         >
                           <ArrowRight className="mr-2 h-4 w-4" />
                           One-Click Train To Prediction
@@ -1468,7 +1478,7 @@ export default function MlTab() {
                               setTimeout(handleTrain, 300);
                             }}
                             variant="outline"
-                            className="border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
+                            className="border-primary/20 text-primary"
                           >
                             <Play className="mr-2 h-4 w-4" />
                             Train Selected
@@ -1487,7 +1497,7 @@ export default function MlTab() {
               {/* Training Progress */}
               {(isTraining || (!trainResults && !trainingError)) && (
                 <motion.div variants={itemVariants}>
-                  <Card className="border-emerald-500/20">
+                  <Card className="border border-primary/20">
                     <CardContent className="p-8 text-center">
                       <AnimatePresence mode="wait">
                         {isTraining ? (
@@ -1500,13 +1510,13 @@ export default function MlTab() {
                           >
                             <div className="relative mx-auto h-20 w-20">
                               <motion.div
-                                className="absolute inset-0 rounded-full border-4 border-emerald-500/20"
-                                style={{ borderTopColor: '#10b981' }}
+                                className="absolute inset-0 rounded-full border-4 border-primary/20"
+                                style={{ borderTopColor: 'hsl(var(--primary))' }}
                                 animate={{ rotate: 360 }}
                                 transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
                               />
                               <div className="absolute inset-0 flex items-center justify-center">
-                                <BrainCircuit className="h-8 w-8 text-emerald-500" />
+                                <BrainCircuit className="h-8 w-8 text-primary" />
                               </div>
                             </div>
                             <p className="text-sm font-medium">Training Model...</p>
@@ -1518,11 +1528,11 @@ export default function MlTab() {
                           </motion.div>
                         ) : (
                           <motion.div key="ready" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-                            <Loader2 className="h-8 w-8 text-emerald-500 mx-auto animate-spin" />
+                            <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
                             <p className="text-sm text-muted-foreground">Click below to start training</p>
                             <Button
                               onClick={handleTrain}
-                              className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                              className="bg-primary text-primary-foreground hover:bg-primary/90"
                             >
                               <Play className="mr-2 h-4 w-4" />
                               Start Training
@@ -1557,7 +1567,7 @@ export default function MlTab() {
                 <>
                   {/* Success Banner */}
                   <motion.div variants={itemVariants}>
-                    <Card className="border-emerald-500/20 bg-gradient-to-r from-emerald-500/5 to-teal-500/5">
+                    <Card className="border border-primary/20 bg-gradient-to-r from-primary/6 to-secondary/70">
                       <CardContent className="p-4">
                         <div className="flex items-center gap-3">
                           <motion.div
@@ -1565,7 +1575,7 @@ export default function MlTab() {
                             animate={{ scale: 1 }}
                             transition={{ type: 'spring', stiffness: 300, damping: 15 }}
                           >
-                            <CheckCircle2 className="h-6 w-6 text-emerald-500" />
+                            <CheckCircle2 className="h-6 w-6 text-primary" />
                           </motion.div>
                           <div>
                             <p className="text-sm font-medium">Training Complete!</p>
@@ -1581,7 +1591,7 @@ export default function MlTab() {
                   {/* Metrics Cards */}
                   <motion.div variants={itemVariants}>
                     <h3 className="text-base font-semibold mb-3 flex items-center gap-2">
-                      <BarChart3 className="h-4 w-4 text-emerald-500" />
+                      <BarChart3 className="h-4 w-4 text-primary" />
                       Performance Metrics
                     </h3>
                     <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
@@ -1591,8 +1601,8 @@ export default function MlTab() {
                           <motion.div key={key} variants={scaleVariants}>
                             <Card className="text-center">
                               <CardContent className="p-4">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 mx-auto mb-2">
-                                  <Icon className="h-5 w-5 text-emerald-500" />
+                                <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+                                  <Icon className="h-5 w-5 text-primary" />
                                 </div>
                                 <p className={cn('text-2xl font-bold', getMetricColor(key, value))}>
                                   {value !== null ? formatMetricValue(value) : '—'}
@@ -1611,7 +1621,7 @@ export default function MlTab() {
                       <Card>
                         <CardHeader className="pb-3">
                           <div className="flex items-center gap-2">
-                            <Gauge className="h-4 w-4 text-emerald-500" />
+                            <Gauge className="h-4 w-4 text-primary" />
                             <CardTitle className="text-base">Large Dataset Optimization</CardTitle>
                           </div>
                           <CardDescription>Training performance details for this run</CardDescription>
@@ -1650,7 +1660,7 @@ export default function MlTab() {
                       <Card>
                         <CardHeader className="pb-3">
                           <div className="flex items-center gap-2">
-                            <Shield className="h-4 w-4 text-emerald-500" />
+                            <Shield className="h-4 w-4 text-primary" />
                             <CardTitle className="text-base">Model Health</CardTitle>
                           </div>
                         </CardHeader>
@@ -1661,7 +1671,7 @@ export default function MlTab() {
                               <Badge
                                 variant={overfittingStatus === 'detected' ? 'destructive' : 'outline'}
                                 className={cn(
-                                  overfittingStatus === 'healthy' && 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+                                  overfittingStatus === 'healthy' && 'border-primary/20 bg-primary/10 text-primary',
                                   overfittingStatus === 'watch' && 'border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400',
                                 )}
                               >
@@ -1683,7 +1693,7 @@ export default function MlTab() {
                             </div>
                             <div className="flex items-center justify-between">
                               <span className="text-sm">CV Mean</span>
-                              <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                              <span className="text-sm font-medium text-primary">
                                 {cvDisplayValue}
                               </span>
                             </div>
@@ -1715,7 +1725,7 @@ export default function MlTab() {
                       <Card>
                         <CardHeader className="pb-3">
                           <div className="flex items-center gap-2">
-                            <Activity className="h-4 w-4 text-emerald-500" />
+                            <Activity className="h-4 w-4 text-primary" />
                             <CardTitle className="text-base">Cross-Validation Scores</CardTitle>
                           </div>
                         </CardHeader>
@@ -1730,10 +1740,10 @@ export default function MlTab() {
                                     <span className="text-xs text-muted-foreground w-12">Fold {idx + 1}</span>
                                     <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                                       <motion.div
-                                        className={cn('h-full rounded-full', isAboveMean ? 'bg-emerald-500' : 'bg-amber-500')}
+                                        className={cn('h-full rounded-full', isAboveMean ? 'bg-primary' : 'bg-amber-500')}
                                         initial={{ width: 0 }}
                                         animate={{ width: `${Math.min(score * 100, 100)}%` }}
-                                        transition={{ duration: 0.5, delay: idx * 0.1 }}
+                                        transition={{ duration: 0.6, delay: idx * 0.08, ease: 'easeOut' }}
                                       />
                                     </div>
                                     <span className="text-xs font-mono w-16 text-right">{score.toFixed(4)}</span>
@@ -1755,7 +1765,7 @@ export default function MlTab() {
                       <Card>
                         <CardHeader className="pb-3">
                           <div className="flex items-center gap-2">
-                            <BarChart3 className="h-4 w-4 text-emerald-500" />
+                            <BarChart3 className="h-4 w-4 text-primary" />
                             <CardTitle className="text-base">Feature Importance</CardTitle>
                           </div>
                           <CardDescription>Relative importance of each feature in model predictions</CardDescription>
@@ -1764,9 +1774,9 @@ export default function MlTab() {
                           <div className="h-80">
                             <ResponsiveContainer width="100%" height="100%">
                               <BarChart data={trainResults.feature_importance.slice(0, 15)} layout="vertical" margin={{ left: 80, right: 20, top: 5, bottom: 5 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                                <XAxis type="number" tick={{ fontSize: 11 }} />
-                                <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={75} />
+                                <CartesianGrid strokeDasharray="3 3" stroke={ML_CHART_COLORS.grid} />
+                                <XAxis type="number" tick={{ fontSize: 11, fill: '#64748b' }} />
+                                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#475569' }} width={120} />
                                 <RechartsTooltip
                                   contentStyle={{
                                     backgroundColor: 'hsl(var(--popover))',
@@ -1777,7 +1787,18 @@ export default function MlTab() {
                                 />
                                 <Bar dataKey="importance" radius={[0, 4, 4, 0]} isAnimationActive={false}>
                                   {trainResults.feature_importance.slice(0, 15).map((entry, index) => (
-                                    <Cell key={index} fill={index === 0 ? '#10b981' : index === 1 ? '#14b8a6' : index === 2 ? '#0d9488' : '#99f6e4'} />
+                                    <Cell
+                                      key={index}
+                                      fill={
+                                        index === 0
+                                          ? ML_CHART_COLORS.primary
+                                          : index === 1
+                                          ? ML_CHART_COLORS.secondary
+                                          : index === 2
+                                          ? ML_CHART_COLORS.accent
+                                          : ML_CHART_COLORS.bars[index % ML_CHART_COLORS.bars.length]
+                                      }
+                                    />
                                   ))}
                                 </Bar>
                               </BarChart>
@@ -1793,7 +1814,7 @@ export default function MlTab() {
                       <Card>
                         <CardHeader className="pb-3">
                           <div className="flex items-center gap-2">
-                            <Activity className="h-4 w-4 text-emerald-500" />
+                            <Activity className="h-4 w-4 text-primary" />
                             <CardTitle className="text-base">Actual vs Predicted</CardTitle>
                           </div>
                           <CardDescription>Sample prediction quality from the latest training run</CardDescription>
@@ -1802,7 +1823,7 @@ export default function MlTab() {
                           <div className="h-80">
                             <ResponsiveContainer width="100%" height="100%">
                               <ScatterChart margin={{ top: 20, right: 20, bottom: 10, left: 10 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                                <CartesianGrid strokeDasharray="3 3" stroke={ML_CHART_COLORS.grid} />
                                 <XAxis
                                   type="number"
                                   dataKey="actualStandardized"
@@ -1835,11 +1856,10 @@ export default function MlTab() {
                                     { x: actualVsPredictedDomain[0], y: actualVsPredictedDomain[0] },
                                     { x: actualVsPredictedDomain[1], y: actualVsPredictedDomain[1] },
                                   ]}
-                                  stroke="#14b8a6"
+                                  stroke={ML_CHART_COLORS.secondary}
                                   strokeDasharray="4 4"
                                 />
-                                <Scatter data={actualVsPredictedData} fill="#10b981" isAnimationActive={false} />
-                                <Scatter data={actualVsPredictedData} fill="#10b981" isAnimationActive={false} />
+                                <Scatter data={actualVsPredictedData} fill={ML_CHART_COLORS.primary} isAnimationActive={false} />
                               </ScatterChart>
                             </ResponsiveContainer>
                           </div>
@@ -1853,26 +1873,26 @@ export default function MlTab() {
                     const parsedAnalysis = parseModelAnalysis(modelAnalysis);
                     return (
                       <motion.div variants={itemVariants}>
-                        <Card className="overflow-hidden border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-background to-teal-500/5">
+                        <Card className="overflow-hidden border border-primary/20 bg-gradient-to-br from-primary/6 via-background to-secondary/70">
                           <CardHeader className="pb-4">
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex items-center gap-2">
-                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10">
-                                  <Bot className="h-4 w-4 text-emerald-500" />
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+                                  <Bot className="h-4 w-4 text-primary" />
                                 </div>
                                 <div>
                                   <CardTitle className="text-base">Model Analysis</CardTitle>
                                   <CardDescription>AI-generated insights about your trained model</CardDescription>
                                 </div>
                               </div>
-                              <Badge variant="outline" className="border-emerald-500/20 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400">
+                              <Badge variant="outline" className="border-primary/20 bg-primary/5 text-primary">
                                 Insight Summary
                               </Badge>
                             </div>
                           </CardHeader>
                           <CardContent className="space-y-4">
-                            <div className="rounded-xl border border-emerald-500/15 bg-background/70 p-4">
-                              <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+                            <div className="rounded-xl border border-primary/15 bg-background/70 p-4">
+                              <div className="flex items-center gap-2 text-primary">
                                 <Lightbulb className="h-4 w-4" />
                                 <p className="text-sm font-semibold">{parsedAnalysis.title}</p>
                               </div>
@@ -1885,7 +1905,7 @@ export default function MlTab() {
                               <div className="grid gap-3 md:grid-cols-2">
                                 {parsedAnalysis.bullets.map((bullet, index) => (
                                   <div key={index} className="flex items-start gap-2 rounded-xl border bg-background/60 p-3">
-                                    <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500">
+                                    <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-primary">
                                       <Sparkles className="h-3.5 w-3.5" />
                                     </div>
                                     <p className="text-sm text-muted-foreground leading-relaxed">{bullet}</p>
@@ -1923,7 +1943,7 @@ export default function MlTab() {
                     <div className="flex flex-col sm:flex-row items-center gap-4">
                       <div className="flex-1 text-center sm:text-left">
                         <p className="text-sm font-medium flex items-center justify-center sm:justify-start gap-2">
-                          <GitCompareArrows className="h-4 w-4 text-emerald-500" />
+                          <GitCompareArrows className="h-4 w-4 text-primary" />
                           Compare Top Models
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">
@@ -1933,7 +1953,7 @@ export default function MlTab() {
                       <Button
                         onClick={handleCompare}
                         disabled={isComparing}
-                        className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                        className="bg-primary text-primary-foreground hover:bg-primary/90"
                       >
                         {isComparing ? (
                           <>
@@ -1965,7 +1985,7 @@ export default function MlTab() {
                         <CardTitle className="text-lg">Comparison Results</CardTitle>
                       </div>
                       <CardDescription>
-                        {bestModel && <span className="text-emerald-600 dark:text-emerald-400 font-medium">🏆 {bestModel.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} performs best</span>}
+                        {bestModel && <span className="font-medium text-primary">🏆 {bestModel.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} performs best</span>}
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -1989,7 +2009,7 @@ export default function MlTab() {
                                   key={result.modelId}
                                   className={cn(
                                     'border-b last:border-0 transition-colors',
-                                    isBest && 'bg-emerald-500/5',
+                                    isBest && 'bg-primary/5',
                                   )}
                                   initial={{ opacity: 0, x: -10 }}
                                   animate={{ opacity: 1, x: 0 }}
@@ -1997,7 +2017,7 @@ export default function MlTab() {
                                   <td className="py-3 px-3">
                                     <div className="flex items-center gap-2">
                                       {isBest && <Trophy className="h-3.5 w-3.5 text-amber-500" />}
-                                      <span className={cn('font-medium', isBest && 'text-emerald-600 dark:text-emerald-400')}>
+                                      <span className={cn('font-medium', isBest && 'text-primary')}>
                                         {result.modelName}
                                       </span>
                                     </div>
@@ -2007,7 +2027,7 @@ export default function MlTab() {
                                     const bestVal = comparisonResults.reduce((max, r) => Math.max(max, r.metrics[key] || 0), 0);
                                     const isTop = val === bestVal && comparisonResults.filter(r => r.metrics[key] === bestVal).length === 1;
                                     return (
-                                      <td key={key} className={cn('text-right py-3 px-3 font-mono text-xs', isTop && 'text-emerald-600 dark:text-emerald-400 font-bold')}>
+                                      <td key={key} className={cn('text-right py-3 px-3 font-mono text-xs', isTop && 'text-primary font-bold')}>
                                         {val !== undefined ? formatMetricValue(val) : '—'}
                                       </td>
                                     );
@@ -2032,7 +2052,7 @@ export default function MlTab() {
                               setSelectedModel(bestModel);
                               toast({ title: 'Model Selected', description: `${bestModel.replace(/_/g, ' ')} is now the active model.` });
                             }}
-                            className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                            className="bg-primary text-primary-foreground hover:bg-primary/90"
                           >
                             <CheckCircle2 className="mr-2 h-4 w-4" />
                             Use Best Model
@@ -2053,10 +2073,10 @@ export default function MlTab() {
                 <>
                   {/* Model Summary Card */}
                   <motion.div variants={itemVariants}>
-                    <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-teal-500/5">
+                    <Card className="border border-primary/20 bg-gradient-to-br from-primary/6 to-secondary/70">
                       <CardHeader>
                         <div className="flex items-center gap-2">
-                          <Award className="h-5 w-5 text-emerald-500" />
+                          <Award className="h-5 w-5 text-primary" />
                           <CardTitle className="text-lg">Model Summary</CardTitle>
                         </div>
                         <CardDescription>Your trained model is ready for predictions</CardDescription>
@@ -2117,8 +2137,8 @@ export default function MlTab() {
                               const Icon = metricIcons[key] || BarChart3;
                               return (
                                 <div key={key} className="flex items-center gap-2 rounded-lg bg-background/50 p-3">
-                                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
-                                    <Icon className="h-4 w-4 text-emerald-500" />
+                                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                                    <Icon className="h-4 w-4 text-primary" />
                                   </div>
                                   <div>
                                     <p className={cn('text-sm font-bold', getMetricColor(key, value))}>
@@ -2145,7 +2165,7 @@ export default function MlTab() {
                                     <span className="text-xs font-medium w-24 truncate">{f.name}</span>
                                     <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                                       <motion.div
-                                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500"
+                                        className="h-full rounded-full bg-gradient-to-r from-primary to-primary/70"
                                         initial={{ width: 0 }}
                                         animate={{ width: `${(f.importance / maxImportance) * 100}%` }}
                                         transition={{ duration: 0.5, delay: i * 0.1 }}
@@ -2176,7 +2196,7 @@ export default function MlTab() {
                       <Button
                         onClick={goToPredict}
                         size="lg"
-                        className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                        className="bg-primary text-primary-foreground hover:bg-primary/90"
                       >
                         Proceed to Predictions
                         <ArrowRight className="ml-2 h-4 w-4" />
@@ -2184,7 +2204,7 @@ export default function MlTab() {
                       <Button
                         onClick={handleTrainAndGoPredict}
                         variant="outline"
-                        className="border-teal-500/30 text-teal-600 dark:text-teal-400"
+                        className="border-secondary text-secondary-foreground"
                       >
                         <Zap className="mr-2 h-4 w-4" />
                         Retrain And Open Prediction

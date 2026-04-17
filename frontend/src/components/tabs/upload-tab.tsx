@@ -1,8 +1,6 @@
 'use client';
 
 import React, { useCallback, useRef, useState, useMemo } from 'react';
-import ExcelJS from 'exceljs';
-import Papa from 'papaparse';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
 import {
   Upload,
@@ -30,7 +28,7 @@ const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
 const COLUMN_ANALYSIS_SAMPLE_SIZE = 5000;
 const DUPLICATE_CHECK_LIMIT = 10000;
 const MEMORY_ESTIMATE_SAMPLE_SIZE = 200;
-const PARQUET_PREVIEW_ROW_LIMIT = 20000;
+const DATASET_PREVIEW_ROW_LIMIT = 20000;
 
 function normalizeExcelValue(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;
@@ -62,40 +60,6 @@ function normalizeExcelValue(value: unknown): string | number | boolean | null {
   }
 
   return String(value);
-}
-
-function parseExcelWorkbook(worksheet: ExcelJS.Worksheet): DataRow[] {
-  const headerRow = worksheet.getRow(1);
-  const columnCount = headerRow.cellCount || worksheet.columnCount;
-
-  if (columnCount === 0) return [];
-
-  const headers = Array.from({ length: columnCount }, (_, index) => {
-    const headerValue = normalizeExcelValue(headerRow.getCell(index + 1).value);
-    return (typeof headerValue === 'string' && headerValue.trim()) || `column_${index + 1}`;
-  });
-
-  const rows: DataRow[] = [];
-
-  for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-    const row = worksheet.getRow(rowNumber);
-    const record: DataRow = {};
-    let hasValue = false;
-
-    headers.forEach((header, index) => {
-      const value = normalizeExcelValue(row.getCell(index + 1).value);
-      record[header] = value;
-      if (value !== null && value !== '') {
-        hasValue = true;
-      }
-    });
-
-    if (hasValue) {
-      rows.push(record);
-    }
-  }
-
-  return rows;
 }
 
 function formatBytes(bytes: number): string {
@@ -276,7 +240,8 @@ function buildFreshDatasetState(
     predictionAnalysis: null,
     predictionProbabilities: null,
     predictionHistory: [],
-    salesForecastResult: null,
+    timeSeriesForecastResult: null,
+    mlForecastResult: null,
     reportGenerated: false,
     reportUrl: null,
     aiInsights: null,
@@ -363,132 +328,65 @@ export default function UploadTab() {
       setIsProcessing(true);
       const ext = file.name.split('.').pop()?.toLowerCase();
 
-      if (ext === 'csv') {
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: true,
-          dynamicTyping: true,
-          complete: (results) => {
-            if (results.errors.length > 0) {
-              console.warn('CSV parse warnings:', results.errors);
-            }
-            if (results.data.length === 0) {
-              toast({
-                title: 'Empty file',
-                description: 'No data rows found in the CSV file.',
-                variant: 'destructive',
-              });
-              setIsProcessing(false);
-              return;
-            }
-            void pushToStore(results.data as DataRow[], file.name).finally(() => setIsProcessing(false));
-          },
-          error: (err) => {
-            toast({
-              title: 'Parse error',
-              description: `Failed to parse CSV: ${err.message}`,
-              variant: 'destructive',
-            });
-            setIsProcessing(false);
-          },
-        });
-      } else if (ext === 'xlsx') {
-        try {
-          const buffer = await file.arrayBuffer();
-          const workbook = new ExcelJS.Workbook();
-          await workbook.xlsx.load(buffer);
-
-          const worksheet = workbook.worksheets[0];
-          if (!worksheet) {
-            toast({
-              title: 'Empty file',
-              description: 'No worksheet found in the Excel file.',
-              variant: 'destructive',
-            });
-            setIsProcessing(false);
-            return;
-          }
-
-          const jsonData = parseExcelWorkbook(worksheet);
-
-          if (jsonData.length === 0) {
-            toast({
-              title: 'Empty file',
-              description: 'No data rows found in the Excel file.',
-              variant: 'destructive',
-            });
-            setIsProcessing(false);
-            return;
-          }
-
-          await pushToStore(jsonData, file.name);
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          toast({
-            title: 'Parse error',
-            description: `Failed to parse Excel file: ${message}`,
-            variant: 'destructive',
-          });
-        }
-        setIsProcessing(false);
-      } else if (ext === 'parquet') {
-        // Send to backend for parsing
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-          const { data: result } = await apiClient.post('/parse-parquet', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-          });
-
-          if (!result) {
-            toast({
-              title: 'Parquet parse error',
-              description: 'Failed to parse Parquet file.',
-              variant: 'destructive',
-            });
-            setIsProcessing(false);
-            return;
-          }
-
-          if (result.data && result.data.length > 0) {
-            await pushToStore(result.data as DataRow[], file.name, {
-              datasetId: result.datasetId ?? null,
-              totalRows: result.rowCount,
-              previewLoaded: !!result.previewLoaded,
-              loadedRowCount: result.loadedRowCount ?? result.data.length,
-              columnsOverride: Array.isArray(result.columnInfo) ? result.columnInfo as ColumnInfo[] : undefined,
-            });
-
-            if (result.previewLoaded) {
-              toast({
-                title: 'Parquet preview loaded',
-                description: `Loaded the first ${(result.loadedRowCount ?? PARQUET_PREVIEW_ROW_LIMIT).toLocaleString()} of ${Number(result.rowCount ?? result.loadedRowCount ?? PARQUET_PREVIEW_ROW_LIMIT).toLocaleString()} rows from ${file.name}. Training can still use the full cached parquet dataset on the backend.`,
-              });
-            }
-          } else {
-            toast({
-              title: 'Empty file',
-              description: 'No data rows found in the Parquet file.',
-              variant: 'destructive',
-            });
-          }
-        } catch (error) {
-          toast({
-            title: 'Parquet error',
-            description: getApiErrorMessage(error, 'Failed to send file to server for parsing.'),
-            variant: 'destructive',
-          });
-        }
-        setIsProcessing(false);
-      } else {
+      const supportedExtensions = ['csv', 'tsv', 'xlsx', 'xls', 'parquet'];
+      if (!ext || !supportedExtensions.includes(ext)) {
         toast({
           title: 'Unsupported format',
-          description: 'Please upload a CSV, Excel (.xlsx), or Parquet file.',
+          description: 'Please upload a CSV, TSV, Excel (.xlsx/.xls), or Parquet file.',
           variant: 'destructive',
         });
         setIsProcessing(false);
+        return;
       }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const { data: result } = await apiClient.post('/parse-dataset', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+
+        if (!result) {
+          toast({
+            title: 'Upload parse error',
+            description: 'Failed to parse the dataset file.',
+            variant: 'destructive',
+          });
+          setIsProcessing(false);
+          return;
+        }
+
+        if (result.data && result.data.length > 0) {
+          await pushToStore(result.data as DataRow[], file.name, {
+            datasetId: result.datasetId ?? null,
+            totalRows: result.rowCount,
+            previewLoaded: !!result.previewLoaded,
+            loadedRowCount: result.loadedRowCount ?? result.data.length,
+            columnsOverride: Array.isArray(result.columnInfo) ? (result.columnInfo as ColumnInfo[]) : undefined,
+          });
+
+          if (result.previewLoaded) {
+            toast({
+              title: 'Dataset preview loaded',
+              description: `Loaded the first ${(result.loadedRowCount ?? DATASET_PREVIEW_ROW_LIMIT).toLocaleString()} of ${Number(result.rowCount ?? result.loadedRowCount ?? DATASET_PREVIEW_ROW_LIMIT).toLocaleString()} rows from ${file.name}. Full-scale EDA, cleaning, and training can still use the cached backend dataset.`,
+            });
+          }
+        } else {
+          toast({
+            title: 'Empty file',
+            description: 'No data rows found in the uploaded file.',
+            variant: 'destructive',
+          });
+        }
+      } catch (error) {
+        toast({
+          title: 'Upload parsing error',
+          description: getApiErrorMessage(error, 'Failed to send file to server for parsing.'),
+          variant: 'destructive',
+        });
+      }
+      setIsProcessing(false);
     },
     [pushToStore, toast],
   );
@@ -558,25 +456,33 @@ export default function UploadTab() {
       {
         title: 'CSV Files',
         icon: FileText,
-        color: 'text-emerald-600 dark:text-emerald-400',
-        bgColor: 'bg-emerald-500/10',
-        description: 'Comma-separated values with automatic type detection. Most universal format for data exchange.',
+        color: 'text-primary',
+        bgColor: 'bg-primary/10',
+        description: 'Comma-separated datasets with automatic type detection and backend preview scaling for larger row counts.',
         badge: '.csv',
+      },
+      {
+        title: 'TSV Files',
+        icon: FileText,
+        color: 'text-primary',
+        bgColor: 'bg-secondary',
+        description: 'Tab-separated datasets for export pipelines that preserve commas inside values more cleanly than CSV.',
+        badge: '.tsv',
       },
       {
         title: 'Excel Workbooks',
         icon: FileSpreadsheet,
-        color: 'text-teal-600 dark:text-teal-400',
-        bgColor: 'bg-teal-500/10',
-        description: 'Multi-sheet .xlsx workbooks with cell formatting support. Reads the first sheet automatically.',
-        badge: '.xlsx',
+        color: 'text-primary',
+        bgColor: 'bg-secondary',
+        description: 'Excel workbooks in .xlsx and .xls format, parsed on the backend with first-sheet preview support.',
+        badge: '.xlsx/.xls',
       },
       {
         title: 'Parquet Files',
         icon: Database,
-        color: 'text-cyan-600 dark:text-cyan-400',
-        bgColor: 'bg-cyan-500/10',
-        description: 'High-performance columnar storage format used in data lakes. Parsed server-side with full type support.',
+        color: 'text-primary',
+        bgColor: 'bg-secondary',
+        description: 'Parquet columnar datasets with efficient backend parsing for wide schemas and higher row volumes.',
         badge: '.parquet',
       },
     ],
@@ -593,11 +499,11 @@ export default function UploadTab() {
       className="space-y-8"
     >
       {/* ── Hero Section ─────────────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 border border-emerald-500/10 p-8 md:p-12">
+      <motion.div variants={itemVariants} className="relative overflow-hidden rounded-2xl border border-border bg-card p-8 md:p-12">
         {/* Background decoration */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-emerald-500/5 blur-3xl" />
-          <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-teal-500/5 blur-3xl" />
+          <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-primary/8 blur-3xl" />
+          <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-secondary blur-3xl" />
         </div>
 
         <div className="relative flex flex-col md:flex-row items-center gap-6 md:gap-10">
@@ -615,8 +521,8 @@ export default function UploadTab() {
             }}
           >
             <div className="relative">
-              <div className="h-24 w-24 md:h-32 md:w-32 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-2xl shadow-emerald-500/30">
-                <Bot className="h-12 w-12 md:h-16 md:w-16 text-white" />
+              <div className="flex h-24 w-24 items-center justify-center rounded-3xl bg-primary shadow-2xl shadow-primary/25 md:h-32 md:w-32">
+                <Bot className="h-12 w-12 text-primary-foreground md:h-16 md:w-16" />
               </div>
               <motion.div
                 className="absolute -top-1 -right-1 h-6 w-6 rounded-full bg-yellow-400 border-2 border-white dark:border-gray-900 flex items-center justify-center"
@@ -636,9 +542,7 @@ export default function UploadTab() {
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.6, delay: 0.2 }}
             >
-              <span className="bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 dark:from-emerald-400 dark:via-teal-400 dark:to-cyan-400 bg-clip-text text-transparent">
-                Upload Your Dataset
-              </span>
+              <span className="text-primary">Load Your Dataset</span>
             </motion.h1>
             <motion.p
               className="mt-3 text-base md:text-lg text-muted-foreground max-w-xl"
@@ -646,8 +550,8 @@ export default function UploadTab() {
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.6, delay: 0.35 }}
             >
-              Begin your AI-assisted exploratory data analysis by uploading a dataset.
-              Drag & drop your file or browse from your computer to get started.
+              Ingest CSV, Excel, TSV, or Parquet data into a workflow built for profiling, cleaning, EDA, forecasting, and model development.
+              Drag and drop a file or browse from your device to begin.
             </motion.p>
             <motion.div
               className="mt-4 flex flex-wrap justify-center md:justify-start gap-2"
@@ -655,13 +559,16 @@ export default function UploadTab() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.5 }}
             >
-              <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20">
+              <Badge variant="secondary" className="bg-secondary text-secondary-foreground">
                 CSV
               </Badge>
-              <Badge variant="secondary" className="bg-teal-500/10 text-teal-700 dark:text-teal-300 border-teal-500/20">
-                Excel (.xlsx)
+              <Badge variant="secondary" className="bg-secondary text-secondary-foreground">
+                TSV
               </Badge>
-              <Badge variant="secondary" className="bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-500/20">
+              <Badge variant="secondary" className="bg-secondary text-secondary-foreground">
+                Excel (.xlsx/.xls)
+              </Badge>
+              <Badge variant="secondary" className="bg-secondary text-secondary-foreground">
                 Parquet
               </Badge>
               <Badge variant="outline" className="text-muted-foreground">
@@ -682,22 +589,22 @@ export default function UploadTab() {
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.4 }}
-              className="rounded-2xl border-2 border-emerald-500/30 bg-emerald-500/5 p-8 md:p-12 flex flex-col items-center justify-center text-center"
+              className="flex flex-col items-center justify-center rounded-2xl border-2 border-primary/30 bg-primary/5 p-8 text-center md:p-12"
             >
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
-                className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10 mb-6"
+                className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-primary/10"
               >
-                <CheckCircle2 className="h-10 w-10 text-emerald-500" />
+                <CheckCircle2 className="h-10 w-10 text-primary" />
               </motion.div>
               <h3 className="text-xl font-semibold mb-2">Dataset Loaded</h3>
               <p className="text-sm text-muted-foreground mb-6">
                 <span className="font-medium text-foreground">{uploadedFileName}</span> has been
                 loaded successfully. Redirecting to Data Understanding...
               </p>
-              <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-sm font-medium">
+              <div className="flex items-center gap-2 text-sm font-medium text-primary">
                 <span>Proceeding to analysis</span>
                 <motion.span
                   animate={{ x: [0, 4, 0] }}
@@ -725,8 +632,8 @@ export default function UploadTab() {
                   relative cursor-pointer rounded-2xl border-2 border-dashed transition-all duration-300 ease-in-out
                   ${
                     isDragging
-                      ? 'border-emerald-500 bg-emerald-500/5 shadow-lg shadow-emerald-500/10 scale-[1.01]'
-                      : 'border-muted-foreground/25 hover:border-emerald-500/50 hover:bg-accent/50'
+                      ? 'scale-[1.01] border-primary bg-primary/5 shadow-lg shadow-primary/10'
+                      : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-accent/50'
                   }
                   ${isProcessing ? 'pointer-events-none opacity-70' : ''}
                 `}
@@ -738,7 +645,7 @@ export default function UploadTab() {
                       initial={{ opacity: 0, scale: 0.95 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.95 }}
-                      className="absolute inset-0 rounded-2xl border-2 border-emerald-500/30 pointer-events-none"
+                      className="absolute inset-0 rounded-2xl border-2 border-primary/30 pointer-events-none"
                       style={{
                         animation: 'pulse 1.5s ease-in-out infinite',
                       }}
@@ -756,7 +663,7 @@ export default function UploadTab() {
                         exit={{ opacity: 0, scale: 0.8 }}
                         className="flex flex-col items-center gap-4"
                       >
-                        <Loader2 className="h-14 w-14 text-emerald-500 animate-spin" />
+                        <Loader2 className="h-14 w-14 animate-spin text-primary" />
                         <div className="text-center">
                           <p className="text-lg font-semibold">Parsing your file...</p>
                           <p className="text-sm text-muted-foreground mt-1">
@@ -776,13 +683,13 @@ export default function UploadTab() {
                         <motion.div
                           animate={isDragging ? { scale: 1.15, y: -4 } : { scale: 1, y: 0 }}
                           transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                          className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border border-emerald-500/10"
+                          className="flex h-20 w-20 items-center justify-center rounded-2xl border border-border bg-secondary"
                         >
                           <motion.div
                             animate={isDragging ? { y: -6 } : { y: 0 }}
                             transition={{ duration: 0.8, repeat: Infinity, ease: 'easeInOut' }}
                           >
-                            <Upload className="h-10 w-10 text-emerald-500" />
+                            <Upload className="h-10 w-10 text-primary" />
                           </motion.div>
                         </motion.div>
 
@@ -792,7 +699,7 @@ export default function UploadTab() {
                             {isDragging ? 'Drop your file here' : 'Drag & drop your file here'}
                           </h3>
                           <p className="text-sm text-muted-foreground">
-                            or <span className="text-emerald-600 dark:text-emerald-400 font-medium underline underline-offset-2">click to browse</span> from your computer
+                            or <span className="font-medium text-primary underline underline-offset-2">click to browse</span> from your computer
                           </p>
                         </div>
 
@@ -802,7 +709,7 @@ export default function UploadTab() {
                           <span className="text-xs text-muted-foreground">CSV</span>
                           <span className="text-muted-foreground/30">·</span>
                           <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-xs text-muted-foreground">Excel (.xlsx)</span>
+                          <span className="text-xs text-muted-foreground">TSV | Excel (.xlsx/.xls)</span>
                           <span className="text-muted-foreground/30">·</span>
                           <Database className="h-4 w-4 text-muted-foreground" />
                           <span className="text-xs text-muted-foreground">Parquet</span>
@@ -822,7 +729,7 @@ export default function UploadTab() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.xlsx,.parquet"
+                accept=".csv,.tsv,.xlsx,.xls,.parquet"
                 className="hidden"
                 onChange={handleFileInputChange}
               />
@@ -838,7 +745,7 @@ export default function UploadTab() {
           <File className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Supported Formats</h2>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {formatCards.map((fmt, idx) => {
             const Icon = fmt.icon;
             return (
@@ -847,7 +754,7 @@ export default function UploadTab() {
                 whileHover={cardHover}
                 transition={{ duration: 0.2 }}
               >
-                <Card className="h-full border-border/50 hover:border-emerald-500/20 transition-colors overflow-hidden group">
+                <Card className="h-full overflow-hidden border-border/50 transition-colors group hover:border-primary/20">
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between">
                       <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${fmt.bgColor}`}>
@@ -857,7 +764,7 @@ export default function UploadTab() {
                         {fmt.badge}
                       </Badge>
                     </div>
-                    <CardTitle className="text-base mt-3 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+                    <CardTitle className="mt-3 text-base transition-colors group-hover:text-primary">
                       {fmt.title}
                     </CardTitle>
                   </CardHeader>
@@ -865,10 +772,10 @@ export default function UploadTab() {
                     <CardDescription className="text-xs leading-relaxed">
                       {fmt.description}
                     </CardDescription>
-                    {fmt.badge === '.parquet' && (
-                      <div className="mt-3 flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                    {(fmt.badge === '.parquet' || fmt.badge === '.tsv') && (
+                      <div className="mt-3 flex items-center gap-1.5 text-xs text-primary">
                         <Sparkles className="h-3 w-3" />
-                        <span>Server-side parsing with full type detection</span>
+                        <span>{fmt.badge === '.tsv' ? 'Backend parsing with tab separator detection' : 'Server-side parsing with full type detection'}</span>
                       </div>
                     )}
                   </CardContent>
@@ -884,13 +791,13 @@ export default function UploadTab() {
         variants={itemVariants}
         className="rounded-xl border border-border/50 bg-muted/30 p-4 flex items-start gap-3"
       >
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 mt-0.5">
-          <Sparkles className="h-4 w-4 text-emerald-500" />
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+          <Sparkles className="h-4 w-4 text-primary" />
         </div>
         <div>
           <p className="text-sm font-medium">What happens after upload?</p>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            CSV and Excel files are parsed in the browser. Parquet files are sent to the backend parser so we can preserve their schema and types. After loading, we detect column types, count unique values and nulls, and identify potential duplicate rows before guiding you through understanding, cleaning, EDA, and ML modeling.
+            CSV, TSV, Excel, and Parquet files are parsed on the backend so larger datasets can be previewed, cached, and analyzed without overloading the browser. Once the dataset is loaded, the app profiles column roles, null patterns, uniqueness, and potential duplicates, then carries you into understanding, cleaning, EDA, forecasting, and ML without disrupting the current session state.
           </p>
         </div>
       </motion.div>

@@ -84,7 +84,7 @@ function ImageFrame({
 
   return (
     <div className={cn('overflow-hidden rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-3 shadow-sm dark:border-slate-800 dark:bg-[linear-gradient(180deg,#0f172a_0%,#111827_100%)]', className)}>
-      <div className="rounded-xl border border-slate-200/80 bg-white p-3 dark:border-slate-800 dark:bg-slate-950">
+      <div className="flex h-full items-center justify-center rounded-xl border border-slate-200/80 bg-white p-3 dark:border-slate-800 dark:bg-slate-950">
         <img src={src} alt={alt} className={cn('mx-auto block h-auto w-full max-w-full rounded-lg object-contain', imageClassName)} />
       </div>
     </div>
@@ -136,7 +136,7 @@ function ChartPanel({
         <Dialog open={isExpanded} onOpenChange={setIsExpanded}>
           <DialogContent
             showCloseButton={false}
-            className="h-[92vh] max-h-[92vh] w-[94vw] max-w-[94vw] gap-0 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(180deg,rgba(248,250,252,0.98),rgba(244,247,251,0.96))] p-0 shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(15,23,42,0.95))]"
+            className="flex h-[96vh] max-h-[96vh] w-[98vw] max-w-[98vw] flex-col gap-0 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(180deg,rgba(248,250,252,0.98),rgba(244,247,251,0.96))] p-0 shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(15,23,42,0.95))]"
           >
             <div className="flex items-center justify-between gap-4 border-b border-border/70 px-5 py-4">
               <div className="min-w-0">
@@ -147,12 +147,12 @@ function ChartPanel({
                 Close
               </Button>
             </div>
-            <div className="flex-1 overflow-auto p-4">
+            <div className="flex min-h-0 flex-1 overflow-auto p-3 sm:p-4">
               <ImageFrame
                 src={chartImage.src}
                 alt={chartImage.alt}
-                className="h-full border-transparent bg-transparent p-0 shadow-none"
-                imageClassName="h-full max-h-[calc(92vh-8rem)] w-full"
+                className="flex-1 border-transparent bg-transparent p-0 shadow-none"
+                imageClassName="h-full max-h-none w-full"
               />
             </div>
           </DialogContent>

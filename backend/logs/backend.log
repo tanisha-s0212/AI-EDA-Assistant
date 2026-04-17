@@ -138,3 +138,5 @@
 2026-04-08 16:13:15,081 INFO Train request completed successfully model_id=cb09d546 model_name=Gradient Boosting
 2026-04-08 16:13:15,094 INFO Train request received problem_type=regression model_type=ridge_regression dataset_id=311705d6 feature_count=7 test_size=0.2 cv_folds=3 training_mode=fast
 2026-04-08 16:13:15,967 INFO Train request completed successfully model_id=9c4935bb model_name=Ridge Regression
+2026-04-16 17:03:20,866 INFO HTTP Request: POST http://testserver/api/cache-dataset "HTTP/1.1 200 OK"
+2026-04-16 17:03:20,874 INFO HTTP Request: GET http://testserver/api/activities?client_session_id=verification-session&limit=5 "HTTP/1.1 200 OK"

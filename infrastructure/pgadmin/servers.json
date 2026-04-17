@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "AI EDA Assistant Postgres",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "ai_eda_assistant",
+      "Username": "postgres",
+      "SSLMode": "prefer"
+    }
+  }
+}

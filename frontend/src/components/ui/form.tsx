@@ -5,9 +5,6 @@ import * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"
 import {
   Controller,
-  FormProvider,
-  useFormContext,
-  useFormState,
   type ControllerProps,
   type FieldPath,
   type FieldValues,
@@ -16,7 +13,25 @@ import {
 import { cn } from "@/lib/utils"
 import { Label } from "@/components/ui/label"
 
-const Form = FormProvider
+type FormContextValue = {
+  getFieldState?: (name: string, formState?: unknown) => {
+    error?: { message?: string } | undefined
+  }
+  formState?: unknown
+}
+
+const FormContext = React.createContext<FormContextValue | null>(null)
+
+function Form({
+  children,
+  ...methods
+}: React.PropsWithChildren<Record<string, unknown>>) {
+  return (
+    <FormContext.Provider value={methods}>
+      {children}
+    </FormContext.Provider>
+  )
+}
 
 type FormFieldContextValue<
   TFieldValues extends FieldValues = FieldValues,
@@ -45,13 +60,18 @@ const FormField = <
 const useFormField = () => {
   const fieldContext = React.useContext(FormFieldContext)
   const itemContext = React.useContext(FormItemContext)
-  const { getFieldState } = useFormContext()
-  const formState = useFormState({ name: fieldContext.name })
-  const fieldState = getFieldState(fieldContext.name, formState)
 
-  if (!fieldContext) {
+  if (!fieldContext?.name) {
     throw new Error("useFormField should be used within <FormField>")
   }
+
+  if (!itemContext?.id) {
+    throw new Error("useFormField should be used within <FormItem>")
+  }
+
+  const form = React.useContext(FormContext)
+  const fieldState =
+    form?.getFieldState?.(String(fieldContext.name), form.formState) ?? {}
 
   const { id } = itemContext
 
