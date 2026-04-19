@@ -136,9 +136,9 @@ function ChartPanel({
         <Dialog open={isExpanded} onOpenChange={setIsExpanded}>
           <DialogContent
             showCloseButton={false}
-            className="flex h-[96vh] max-h-[96vh] w-[98vw] max-w-[98vw] flex-col gap-0 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(180deg,rgba(248,250,252,0.98),rgba(244,247,251,0.96))] p-0 shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(15,23,42,0.95))]"
+            className="top-0 right-0 bottom-0 left-0 flex h-dvh w-dvw max-h-none max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-[linear-gradient(180deg,rgba(248,250,252,0.99),rgba(244,247,251,0.97))] p-0 shadow-none sm:max-w-none dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.99),rgba(15,23,42,0.97))]"
           >
-            <div className="flex items-center justify-between gap-4 border-b border-border/70 px-5 py-4">
+            <div className="flex items-center justify-between gap-4 border-b border-border/70 px-5 py-4 sm:px-6">
               <div className="min-w-0">
                 <DialogTitle className="truncate text-base">{title}</DialogTitle>
                 <DialogDescription className="mt-1">{description}</DialogDescription>
@@ -147,12 +147,12 @@ function ChartPanel({
                 Close
               </Button>
             </div>
-            <div className="flex min-h-0 flex-1 overflow-auto p-3 sm:p-4">
+            <div className="flex min-h-0 flex-1 overflow-auto p-2 sm:p-4">
               <ImageFrame
                 src={chartImage.src}
                 alt={chartImage.alt}
-                className="flex-1 border-transparent bg-transparent p-0 shadow-none"
-                imageClassName="h-full max-h-none w-full"
+                className="h-full flex-1 border-transparent bg-transparent p-0 shadow-none"
+                imageClassName="h-auto min-h-full w-auto min-w-full max-w-none"
               />
             </div>
           </DialogContent>

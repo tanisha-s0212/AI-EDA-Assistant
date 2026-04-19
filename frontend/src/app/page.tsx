@@ -8,6 +8,7 @@ import StepNavigator from '@/components/step-navigator';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import {
   Upload,
@@ -20,14 +21,15 @@ import {
   FileText,
   Menu,
   ChevronRight,
-  Bot,
   ShieldCheck,
-  Building2,
   History,
   CheckCircle2,
   AlertCircle,
   RotateCcw,
   RefreshCw,
+  Clock3,
+  Orbit,
+  Radar,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -44,9 +46,9 @@ import ReportTab from '@/components/tabs/report-tab';
 
 const tabs: { id: TabId; label: string; icon: React.ElementType; step: number }[] = [
   { id: 'upload', label: 'Data Upload', icon: Upload, step: 1 },
-  { id: 'understanding', label: 'Understanding', icon: Database, step: 2 },
-  { id: 'cleaning', label: 'Cleaning', icon: Sparkles, step: 3 },
-  { id: 'eda', label: 'EDA', icon: BarChart3, step: 4 },
+  { id: 'understanding', label: 'Data Understanding', icon: Database, step: 2 },
+  { id: 'eda', label: 'Exploratory Data Analysis', icon: BarChart3, step: 3 },
+  { id: 'cleaning', label: 'Data Cleaning', icon: Sparkles, step: 4 },
   { id: 'forecast_ts', label: 'Forecast TS', icon: LineChart, step: 5 },
   { id: 'forecast_ml', label: 'Forecast ML', icon: LineChart, step: 6 },
   { id: 'ml', label: 'ML Assistant', icon: BrainCircuit, step: 7 },
@@ -80,20 +82,78 @@ function formatActivityTimestamp(value: string | null) {
   return `${formatted} IST`;
 }
 
+function getRelativeActivityAge(value: string | null) {
+  if (!value) return 'Awaiting backend activity';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Timestamp unavailable';
+
+  const diffMinutes = Math.max(0, Math.round((Date.now() - parsed.getTime()) / 60000));
+  if (diffMinutes < 1) return 'Updated just now';
+  if (diffMinutes < 60) return `Updated ${diffMinutes} min ago`;
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `Updated ${diffHours} hr ago`;
+
+  const diffDays = Math.round(diffHours / 24);
+  return `Updated ${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+}
+
 function getSessionContinuityLabel(value: string | null) {
+  const parsed = value ? new Date(value) : new Date();
+  const timeLabel = Number.isNaN(parsed.getTime())
+    ? 'Time unavailable'
+    : new Intl.DateTimeFormat('en-IN', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: INDIA_TIMEZONE,
+      }).format(parsed);
+  const dateLabel = Number.isNaN(parsed.getTime())
+    ? 'Date unavailable'
+    : new Intl.DateTimeFormat('en-IN', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: INDIA_TIMEZONE,
+      }).format(parsed);
+
   if (value) {
     return {
       timestamp: formatActivityTimestamp(value),
-      status: 'Last activity in IST',
-      timezone: 'India Standard Time (IST) · India UTC+5:30',
+      status: 'Last synced activity',
+      timezone: 'India Standard Time (IST) | India UTC+5:30',
+      timeLabel,
+      dateLabel,
+      freshness: getRelativeActivityAge(value),
     };
   }
 
   return {
     timestamp: formatActivityTimestamp(null),
     status: 'Current IST shown until the first recorded activity',
-    timezone: 'India Standard Time (IST) · India UTC+5:30',
+    timezone: 'India Standard Time (IST) | India UTC+5:30',
+    timeLabel,
+    dateLabel,
+    freshness: getRelativeActivityAge(null),
   };
+}
+
+function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={cn(
+        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-[22px] border border-white/15 bg-[linear-gradient(145deg,#0f172a_0%,#1d4ed8_46%,#22d3ee_100%)] text-white shadow-[0_22px_55px_-28px_rgba(37,99,235,0.6)]',
+        compact ? 'h-11 w-11' : 'h-12 w-12'
+      )}
+    >
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_20%,rgba(255,255,255,0.35),transparent_34%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_78%_82%,rgba(16,185,129,0.22),transparent_34%)]" />
+      <Orbit className={cn('absolute opacity-35', compact ? 'h-8 w-8' : 'h-9 w-9')} strokeWidth={1.6} />
+      <Radar className={cn('absolute opacity-85', compact ? 'h-4.5 w-4.5' : 'h-5 w-5')} strokeWidth={2} />
+      <Sparkles className={cn('absolute text-cyan-100', compact ? '-right-0.5 -top-0.5 h-3 w-3' : 'right-0 top-0 h-3.5 w-3.5')} />
+    </div>
+  );
 }
 
 function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
@@ -107,18 +167,16 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary p-2 text-primary-foreground shadow-lg shadow-primary/20">
-            <Bot className="h-6 w-6" />
-          </div>
+          <BrandMark compact />
           <div className="min-w-0">
             <h1 className="whitespace-nowrap text-[15px] font-bold tracking-tight text-foreground sm:text-base">
               Intelligent Data Assistant
             </h1>
-            <p className="text-xs text-muted-foreground">AI-guided dataset understanding, analysis, and modeling.</p>
+            <p className="text-xs text-muted-foreground">Connected analytics workspace for understanding, EDA, and modeling.</p>
           </div>
         </div>
       </div>
@@ -135,7 +193,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
             return (
               <React.Fragment key={tab.id}>
                 <motion.button
-                  whileHover={enabled ? { x: 4 } : undefined}
+                  whileHover={enabled ? { x: 4, scale: 1.01 } : undefined}
                   whileTap={enabled ? { scale: 0.98 } : undefined}
                   onClick={() => {
                     if (enabled) {
@@ -144,12 +202,15 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
                     }
                   }}
                   className={cn(
-                    'group relative flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-sm font-medium transition-all duration-200',
-                    isActive && enabled && 'border-primary/30 bg-primary/10 text-primary shadow-sm',
-                    !isActive && enabled && 'bg-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-accent-foreground',
+                    'group relative flex w-full items-center gap-3 overflow-hidden rounded-2xl border px-3 py-3 text-left text-sm font-medium transition-all duration-300',
+                    isActive && enabled && 'border-primary/25 bg-[linear-gradient(135deg,rgba(59,130,246,0.16),rgba(125,211,252,0.08))] text-primary shadow-[0_18px_40px_-24px_rgba(37,99,235,0.5)]',
+                    !isActive && enabled && 'border-transparent bg-transparent text-muted-foreground hover:border-border/70 hover:bg-card/80 hover:text-foreground hover:shadow-[0_14px_36px_-28px_rgba(15,23,42,0.2)]',
                     !enabled && 'cursor-not-allowed text-muted-foreground/40',
                   )}
                 >
+                  <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100" aria-hidden>
+                    <div className="absolute inset-y-0 left-0 w-20 bg-gradient-to-r from-primary/8 to-transparent" />
+                  </div>
                   {isActive && enabled && (
                     <motion.div
                       layoutId="activeTab"
@@ -158,14 +219,19 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
                     />
                   )}
                   <div className={cn(
-                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors',
-                    isActive && enabled && 'bg-primary text-primary-foreground shadow-sm shadow-primary/25',
-                    !isActive && enabled && 'bg-secondary text-secondary-foreground',
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-300',
+                    isActive && enabled && 'bg-primary text-primary-foreground shadow-sm shadow-primary/25 ring-4 ring-primary/10',
+                    !isActive && enabled && 'bg-secondary text-secondary-foreground group-hover:scale-105 group-hover:bg-primary/10 group-hover:text-primary',
                     !enabled && 'bg-muted/50 text-muted-foreground/40',
                   )}>
                     <Icon className="h-4 w-4" />
                   </div>
-                  <span className="truncate">{tab.label}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate">{tab.label}</span>
+                      {enabled ? <span className="rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">{tab.step}</span> : null}
+                    </div>
+                  </div>
                   {isActive && enabled && (
                     <ChevronRight className="ml-auto h-4 w-4 text-primary" />
                   )}
@@ -183,7 +249,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
 
       {/* Footer */}
       <div className="border-t p-4 sm:p-5">
-        <div className="rounded-xl border border-border bg-secondary/60 p-3">
+        <div className="rounded-2xl border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(248,250,252,0.94))] p-3 shadow-[0_18px_50px_-32px_rgba(15,23,42,0.25)] dark:bg-[linear-gradient(180deg,rgba(30,41,59,0.72),rgba(15,23,42,0.95))]">
           <p className="text-xs font-semibold text-secondary-foreground">
             AI-Powered Analysis
           </p>
@@ -203,12 +269,16 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
 export default function HomePage() {
   const {
     activeTab,
+    activeDatasetKey,
+    datasets,
+    datasetOrder,
     rawData,
     fileName,
     columns,
     previewLoaded,
     loadedRowCount,
     totalRows,
+    selectDataset,
     setActiveTab,
     resetWorkspace,
     hasHydrated,
@@ -216,7 +286,12 @@ export default function HomePage() {
   const [isRefreshingActivity, setIsRefreshingActivity] = React.useState(false);
   const [recentActivity, setRecentActivity] = React.useState<ActivityResponse['activities'][number] | null>(null);
   const activeTabMeta = tabs.find((t) => t.id === activeTab) ?? tabs[0];
+  const availableDatasets = React.useMemo(
+    () => datasetOrder.map((key) => datasets[key]).filter(Boolean),
+    [datasetOrder, datasets]
+  );
   const hasWorkspace = Boolean(rawData?.length);
+  const hasDatasetLibrary = availableDatasets.length > 0;
   const datasetStatus = rawData
     ? previewLoaded
       ? `${loadedRowCount.toLocaleString()} preview rows of ${totalRows.toLocaleString()}`
@@ -266,6 +341,10 @@ export default function HomePage() {
     resetWorkspace();
   }, [resetWorkspace]);
 
+  const handleAddDataset = React.useCallback(() => {
+    setActiveTab('upload');
+  }, [setActiveTab]);
+
   const renderTab = () => {
     switch (activeTab) {
       case 'upload': return <UploadTab />;
@@ -283,8 +362,14 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-background">
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+        <div className="app-grid-bg absolute inset-x-0 top-0 h-[520px] opacity-60" />
+        <div className="absolute left-[-8rem] top-20 h-72 w-72 rounded-full bg-sky-400/10 blur-3xl" />
+        <div className="absolute right-[-6rem] top-36 h-80 w-80 rounded-full bg-primary/10 blur-3xl" />
+        <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-emerald-400/10 blur-3xl" />
+      </div>
       {/* Desktop Sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-border bg-sidebar/95 shadow-[0_24px_80px_-28px_rgba(15,23,42,0.18)] backdrop-blur-xl lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-border/70 bg-sidebar/82 shadow-[0_24px_80px_-28px_rgba(15,23,42,0.18)] backdrop-blur-2xl lg:flex">
         <SidebarContent />
       </aside>
 
@@ -295,7 +380,12 @@ export default function HomePage() {
           <div className="mx-auto max-w-7xl px-4 pb-6 pt-3 sm:px-6 sm:pt-4 lg:px-8">
             <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-4 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-5 lg:-mx-8 lg:px-8">
               <div className="mx-auto max-w-7xl">
-                <div className="overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] p-4 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-5">
+                <div className="group relative overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] p-4 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-5">
+                  <div className="pointer-events-none absolute inset-0 opacity-80">
+                    <div className="absolute -left-12 top-10 h-32 w-32 rounded-full bg-sky-400/12 blur-3xl transition-transform duration-700 group-hover:scale-125" />
+                    <div className="absolute right-0 top-0 h-40 w-40 rounded-full bg-blue-500/10 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
+                    <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
+                  </div>
                   <div className="flex flex-col gap-5">
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                       <div className="flex items-start gap-3">
@@ -311,14 +401,12 @@ export default function HomePage() {
                         </Sheet>
                         <div className="min-w-0">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-white ring-1 ring-white/15">
-                              <Building2 className="h-5 w-5" />
-                            </div>
+                            <BrandMark />
                             <div className="min-w-0">
                               <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-300">Workspace Session</p>
                               <p className="text-xl font-semibold tracking-tight text-white">Intelligent Data Assistant</p>
                               <p className="text-sm text-slate-300">
-                                Standardized analytics workspace with session continuity, guided modeling, and report-ready outputs.
+                                Standardized analytics workspace with live continuity, guided modeling, and report-ready outputs.
                               </p>
                             </div>
                           </div>
@@ -336,15 +424,19 @@ export default function HomePage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                        <Button size="sm" className="h-10 rounded-full border border-white/10 bg-white text-slate-950 px-4 shadow-sm hover:bg-slate-100" onClick={handleResumeWorkspace}>
+                        <Button size="sm" className="h-10 rounded-full border border-white/10 bg-white text-slate-950 px-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
                           <History className="mr-2 h-4 w-4" />
                           {hasWorkspace ? 'Resume Previous Workspace' : 'Open Saved Workspace'}
                         </Button>
-                        <Button size="sm" variant="outline" className="h-10 rounded-full border-white/20 bg-white/5 px-4 text-white hover:bg-white/10 hover:text-white" onClick={handleFreshStart}>
+                        <Button size="sm" className="h-10 rounded-full border border-sky-300/20 bg-sky-400/15 px-4 text-white shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-sky-400/22 hover:shadow-lg" onClick={handleAddDataset}>
+                          <Upload className="mr-2 h-4 w-4" />
+                          Add Dataset
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-10 rounded-full border-white/20 bg-white/5 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleFreshStart}>
                           <RotateCcw className="mr-2 h-4 w-4" />
                           Fresh Start
                         </Button>
-                        <Button size="sm" variant="ghost" className="h-10 rounded-full px-3 text-slate-200 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
+                        <Button size="sm" variant="ghost" className="h-10 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
                           <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshingActivity && 'animate-spin')} />
                           Refresh Sync
                         </Button>
@@ -365,7 +457,7 @@ export default function HomePage() {
                       </div>
 
                       <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="rounded-2xl border border-white/10 bg-white/6 px-4 py-4 shadow-sm backdrop-blur-sm">
+                        <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-4 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
                             Dataset Summary
                           </p>
@@ -374,14 +466,14 @@ export default function HomePage() {
                             {fileName ? fileName : 'No source selected'}
                           </p>
                           <div className="mt-4 flex flex-wrap gap-2">
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
                               <Database className="h-3 w-3" />
                               {hasWorkspace ? totalRows.toLocaleString() : 0} rows
                             </span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
                               {columns.length.toLocaleString()} columns
                             </span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
                               {previewLoaded ? 'Preview + cached' : 'Fully loaded'}
                             </span>
                           </div>
@@ -390,14 +482,31 @@ export default function HomePage() {
                           </p>
                         </div>
 
-                        <div className="rounded-2xl border border-white/10 bg-white/6 px-4 py-4 shadow-sm backdrop-blur-sm">
+                        <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-4 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
                             Session Continuity
                           </p>
-                          <p className="mt-2 text-lg font-semibold tracking-tight text-white">{sessionContinuity.timestamp}</p>
-                          <p className="mt-1 text-sm text-slate-300">{activityLabel}</p>
-                          <p className="mt-1 text-xs text-slate-400">{sessionContinuity.timezone}</p>
-                          <div className="mt-4 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3">
+                          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 text-slate-300">
+                                <Clock3 className="h-3.5 w-3.5 text-sky-300" />
+                                <p className="text-xs font-semibold uppercase tracking-[0.18em]">{sessionContinuity.status}</p>
+                              </div>
+                              <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-1">
+                                <p className="text-2xl font-semibold tracking-tight text-white">{sessionContinuity.timeLabel}</p>
+                                <span className="rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
+                                  {sessionContinuity.freshness}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-sm text-slate-300">{sessionContinuity.dateLabel}</p>
+                              <p className="mt-1 text-xs text-slate-400">{sessionContinuity.timezone}</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-slate-950/30 px-3 py-2 text-right shadow-inner">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Recorded</p>
+                              <p className="mt-1 text-xs text-slate-200">{sessionContinuity.timestamp}</p>
+                            </div>
+                          </div>
+                          <div className="mt-4 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3 transition-all duration-300 hover:border-white/20 hover:bg-slate-950/40">
                             <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white">
                               <History className="h-4 w-4" />
                             </div>
@@ -406,8 +515,9 @@ export default function HomePage() {
                                 {recentActivity?.detail || 'The workspace can continue from the last saved browser state and backend activity trail.'}
                               </p>
                               <p className="mt-1 text-xs text-slate-400">
-                                {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} was the latest backend-linked session.` : 'Load a dataset to establish a persisted working session.'}
+                                {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} is the latest backend-linked session.` : 'Load a dataset to establish a persisted working session.'}
                               </p>
+                              <p className="mt-1 text-xs text-slate-500">{activityLabel}</p>
                             </div>
                           </div>
                         </div>
@@ -418,7 +528,45 @@ export default function HomePage() {
               </div>
             </div>
             <div className="relative">
-              {renderTab()}
+              <div className="glass-panel rounded-[30px] border border-border/70 px-3 py-4 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.32)] sm:px-5 sm:py-5">
+                <div className="mb-5 flex flex-col gap-3 rounded-[24px] border border-border/70 bg-background/70 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.2)] backdrop-blur-sm lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Active Dataset</p>
+                    <p className="mt-1 truncate text-base font-semibold text-foreground">
+                      {fileName ?? 'No dataset selected'}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {hasDatasetLibrary
+                        ? `${availableDatasets.length} dataset${availableDatasets.length === 1 ? '' : 's'} available in this workspace.`
+                        : 'Upload datasets to build a multi-dataset workspace.'}
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Select value={activeDatasetKey ?? undefined} onValueChange={selectDataset} disabled={!hasDatasetLibrary}>
+                      <SelectTrigger className="w-full min-w-[260px] rounded-2xl border-border/70 bg-card/80 sm:w-[320px]">
+                        <SelectValue placeholder="Choose a dataset" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableDatasets.map((dataset) => (
+                          <SelectItem key={dataset.key} value={dataset.key}>
+                            <span className="flex min-w-0 flex-col">
+                              <span className="truncate font-medium">{dataset.fileName ?? dataset.datasetId ?? dataset.key}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {dataset.totalRows.toLocaleString()} rows · {dataset.columns.length.toLocaleString()} cols
+                              </span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button type="button" variant="outline" className="rounded-2xl" onClick={handleAddDataset}>
+                      <Upload className="mr-2 h-4 w-4" />
+                      Upload Another
+                    </Button>
+                  </div>
+                </div>
+                {renderTab()}
+              </div>
             </div>
             <StepNavigator showTabs={false} showSwipeHint={false} className="mt-8 mb-2" />
           </div>
@@ -427,7 +575,7 @@ export default function HomePage() {
         {/* Footer */}
         <footer className="mt-auto border-t border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-4 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="flex flex-col gap-2 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-4 text-base font-bold text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-2 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-4 text-base font-bold text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] transition-all duration-300 hover:shadow-[0_30px_100px_-40px_rgba(15,23,42,0.78)] lg:flex-row lg:items-center lg:justify-between">
               <span>Intelligent Data Assistant</span>
               <span className="text-sm font-bold text-slate-300">
                 AI-guided dataset understanding, analysis, and predictive modeling.

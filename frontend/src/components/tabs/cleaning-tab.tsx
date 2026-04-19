@@ -823,7 +823,7 @@ export default function CleaningTab() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => useAppStore.getState().setActiveTab('eda')}
+                  onClick={() => useAppStore.getState().setActiveTab('forecast_ts')}
                   className="gap-1.5 border-primary/30 text-primary hover:bg-primary/10 shrink-0"
                 >
                   Next Step

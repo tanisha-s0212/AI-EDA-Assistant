@@ -21,9 +21,9 @@ import { motion } from 'framer-motion';
 
 const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementType; step: number }[] = [
   { id: 'upload', label: 'Data Upload', shortLabel: 'Upload', icon: Upload, step: 1 },
-  { id: 'understanding', label: 'Understanding', shortLabel: 'Understand', icon: Database, step: 2 },
-  { id: 'cleaning', label: 'Cleaning', shortLabel: 'Clean', icon: Sparkles, step: 3 },
-  { id: 'eda', label: 'EDA', shortLabel: 'EDA', icon: BarChart3, step: 4 },
+  { id: 'understanding', label: 'Data Understanding', shortLabel: 'Understand', icon: Database, step: 2 },
+  { id: 'eda', label: 'Exploratory Data Analysis', shortLabel: 'EDA', icon: BarChart3, step: 3 },
+  { id: 'cleaning', label: 'Data Cleaning', shortLabel: 'Clean', icon: Sparkles, step: 4 },
   { id: 'forecast_ts', label: 'Forecast TS', shortLabel: 'TS', icon: LineChart, step: 5 },
   { id: 'forecast_ml', label: 'Forecast ML', shortLabel: 'MLF', icon: LineChart, step: 6 },
   { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit, step: 7 },
@@ -150,14 +150,14 @@ export default function StepNavigator({
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
-          className="relative"
+          className="relative rounded-[24px] border border-border/70 bg-card/70 px-3 py-3 shadow-[0_20px_50px_-34px_rgba(15,23,42,0.2)] backdrop-blur-sm"
         >
           <div className="absolute inset-0 pointer-events-none rounded-xl overflow-hidden">
             <div className="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-background/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
             <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-r from-transparent to-background/80 opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
 
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
             {tabs.map((tab, index) => {
               const isActive = activeTab === tab.id;
               const enabled = isTabEnabled(tab.id);
@@ -170,10 +170,10 @@ export default function StepNavigator({
                   onClick={() => goToTab(tab.id)}
                   disabled={!enabled}
                   className={cn(
-                    'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-2 text-xs font-medium whitespace-nowrap transition-all duration-200',
-                    isActive && enabled && 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20',
-                    !isActive && enabled && isPast && 'border-border bg-secondary text-secondary-foreground',
-                    !isActive && enabled && !isPast && 'border-border bg-background text-muted-foreground hover:border-primary/30 hover:text-primary',
+                    'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-2 text-xs font-medium whitespace-nowrap transition-all duration-300',
+                    isActive && enabled && 'border-primary/30 bg-[linear-gradient(135deg,rgba(59,130,246,0.95),rgba(14,165,233,0.95))] text-primary-foreground shadow-[0_18px_40px_-24px_rgba(37,99,235,0.55)]',
+                    !isActive && enabled && isPast && 'border-border bg-secondary text-secondary-foreground shadow-sm',
+                    !isActive && enabled && !isPast && 'border-border bg-background/90 text-muted-foreground hover:-translate-y-0.5 hover:border-primary/25 hover:bg-card hover:text-primary hover:shadow-md',
                     !enabled && 'cursor-not-allowed border-muted/50 bg-muted/30 text-muted-foreground/30',
                   )}
                 >
@@ -203,7 +203,7 @@ export default function StepNavigator({
       )}
 
       {showControls && (
-        <div className="flex items-center justify-between gap-3">
+        <div className="glass-panel flex items-center justify-between gap-3 rounded-[22px] border border-border/70 px-3 py-2">
           <Button
             variant="outline"
             size="sm"

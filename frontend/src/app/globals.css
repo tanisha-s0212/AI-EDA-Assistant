@@ -46,6 +46,9 @@
 
 :root {
   --radius: 0.625rem;
+  --app-glow-a: rgba(37, 99, 235, 0.14);
+  --app-glow-b: rgba(14, 165, 233, 0.1);
+  --app-grid: rgba(148, 163, 184, 0.12);
   --background: oklch(0.985 0.008 248);
   --foreground: oklch(0.205 0.03 258);
   --card: oklch(0.995 0.004 248);
@@ -81,6 +84,9 @@
 }
 
 .dark {
+  --app-glow-a: rgba(59, 130, 246, 0.2);
+  --app-glow-b: rgba(16, 185, 129, 0.1);
+  --app-grid: rgba(148, 163, 184, 0.08);
   --background: oklch(0.17 0.02 258);
   --foreground: oklch(0.965 0.01 255);
   --card: oklch(0.22 0.02 258);
@@ -126,11 +132,45 @@
   }
   body {
     @apply min-h-full overflow-x-hidden bg-background text-foreground;
+    background-image:
+      radial-gradient(circle at top left, var(--app-glow-a), transparent 30%),
+      radial-gradient(circle at top right, var(--app-glow-b), transparent 24%),
+      linear-gradient(180deg, color-mix(in srgb, var(--background) 92%, white 8%), var(--background));
+    background-attachment: fixed;
     scrollbar-width: none;
     -ms-overflow-style: none;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 24%, white 76%);
+    color: var(--foreground);
   }
   html::-webkit-scrollbar,
   body::-webkit-scrollbar {
     display: none;
+  }
+}
+
+@layer utilities {
+  .app-grid-bg {
+    background-image:
+      linear-gradient(to right, transparent 0, transparent calc(100% - 1px), var(--app-grid) calc(100% - 1px)),
+      linear-gradient(to bottom, transparent 0, transparent calc(100% - 1px), var(--app-grid) calc(100% - 1px));
+    background-size: 36px 36px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 80%);
+  }
+
+  .glass-panel {
+    background: color-mix(in srgb, var(--card) 78%, white 22%);
+    box-shadow:
+      0 24px 80px -34px rgba(15, 23, 42, 0.24),
+      inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(18px);
+  }
+
+  .dark .glass-panel {
+    background: color-mix(in srgb, var(--card) 88%, black 12%);
+    box-shadow:
+      0 24px 80px -34px rgba(2, 6, 23, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
   }
 }

@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
-import { useAppStore, type ColumnInfo, type DataRow } from '@/lib/store';
+import { useAppStore, type ColumnInfo, type DataRow, type DatasetWorkspaceDraft } from '@/lib/store';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -212,7 +212,7 @@ function buildFreshDatasetState(
   fileName: string,
   columns: ColumnInfo[],
   options?: { datasetId?: string | null; totalRows?: number; previewLoaded?: boolean; loadedRowCount?: number },
-) {
+): DatasetWorkspaceDraft {
   return {
     fileName,
     datasetId: options?.datasetId ?? null,
@@ -250,7 +250,7 @@ function buildFreshDatasetState(
 }
 
 export default function UploadTab() {
-  const { setActiveTab } = useAppStore();
+  const { setActiveTab, addDataset } = useAppStore();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -292,12 +292,7 @@ export default function UploadTab() {
       }
 
       window.setTimeout(() => {
-        const previousReportUrl = useAppStore.getState().reportUrl;
-        if (previousReportUrl) {
-          URL.revokeObjectURL(previousReportUrl);
-        }
-
-        useAppStore.setState(buildFreshDatasetState(data, fileName, columns, resolvedOptions));
+        addDataset(buildFreshDatasetState(data, fileName, columns, resolvedOptions));
 
         setUploadedFileName(fileName);
         const totalRows = resolvedOptions?.totalRows ?? data.length;
@@ -309,7 +304,7 @@ export default function UploadTab() {
         setTimeout(() => setActiveTab('understanding'), 800);
       }, 0);
     },
-    [setActiveTab, toast],
+    [addDataset, setActiveTab, toast],
   );
 
   // ── File Processing ──────────────────────────────────────────────────────
@@ -369,7 +364,7 @@ export default function UploadTab() {
           if (result.previewLoaded) {
             toast({
               title: 'Dataset preview loaded',
-              description: `Loaded the first ${(result.loadedRowCount ?? DATASET_PREVIEW_ROW_LIMIT).toLocaleString()} of ${Number(result.rowCount ?? result.loadedRowCount ?? DATASET_PREVIEW_ROW_LIMIT).toLocaleString()} rows from ${file.name}. Full-scale EDA, cleaning, and training can still use the cached backend dataset.`,
+              description: `Loaded the first ${(result.loadedRowCount ?? DATASET_PREVIEW_ROW_LIMIT).toLocaleString()} of ${Number(result.rowCount ?? result.loadedRowCount ?? DATASET_PREVIEW_ROW_LIMIT).toLocaleString()} rows from ${file.name}. Full-scale data understanding, exploratory data analysis, data cleaning, and training can still use the cached backend dataset.`,
             });
           }
         } else {
@@ -550,7 +545,7 @@ export default function UploadTab() {
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.6, delay: 0.35 }}
             >
-              Ingest CSV, Excel, TSV, or Parquet data into a workflow built for profiling, cleaning, EDA, forecasting, and model development.
+              Ingest CSV, Excel, TSV, or Parquet data into a workflow built for data understanding, exploratory data analysis, data cleaning, forecasting, and model development.
               Drag and drop a file or browse from your device to begin.
             </motion.p>
             <motion.div
@@ -797,7 +792,7 @@ export default function UploadTab() {
         <div>
           <p className="text-sm font-medium">What happens after upload?</p>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            CSV, TSV, Excel, and Parquet files are parsed on the backend so larger datasets can be previewed, cached, and analyzed without overloading the browser. Once the dataset is loaded, the app profiles column roles, null patterns, uniqueness, and potential duplicates, then carries you into understanding, cleaning, EDA, forecasting, and ML without disrupting the current session state.
+            CSV, TSV, Excel, and Parquet files are parsed on the backend so larger datasets can be previewed, cached, and analyzed without overloading the browser. Once the dataset is loaded, the app profiles column roles, null patterns, uniqueness, and potential duplicates, then carries you into data understanding, exploratory data analysis, data cleaning, forecasting, and ML without disrupting the current session state.
           </p>
         </div>
       </motion.div>

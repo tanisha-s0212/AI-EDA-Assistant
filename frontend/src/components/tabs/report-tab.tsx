@@ -14,8 +14,8 @@ import { apiClient, getApiErrorMessage } from '@/lib/api';
 const STEP_TAB_MAP = {
   1: 'upload',
   2: 'understanding',
-  3: 'cleaning',
-  4: 'eda',
+  3: 'eda',
+  4: 'cleaning',
   5: 'forecast_ts',
   6: 'forecast_ml',
   7: 'ml',
@@ -132,7 +132,7 @@ export default function ReportTab() {
     },
     {
       step: 2,
-      title: 'Understanding',
+      title: 'Data Understanding',
       icon: Database,
       status: columns.length > 0 ? 'Completed' : 'Pending',
       detail: columns.length > 0
@@ -141,21 +141,21 @@ export default function ReportTab() {
     },
     {
       step: 3,
-      title: 'Cleaning',
-      icon: Sparkles,
-      status: cleaningDone ? 'Completed' : 'Pending',
-      detail: cleaningDone
-        ? `${cleaningLogs.length} cleaning actions were recorded and the cleaned dataset retained ${(cleanedRowCount ?? rawData?.length ?? 0).toLocaleString()} rows for analysis.`
-        : 'Cleaning is the continuity step for the rest of the application and should be completed before reporting.',
-    },
-    {
-      step: 4,
-      title: 'EDA',
+      title: 'Exploratory Data Analysis',
       icon: Database,
       status: columns.length > 0 ? 'Completed' : 'Pending',
       detail: columns.length > 0
         ? `Exploratory analysis summarized ${edaStats.numericColumns.length} numeric columns, ${edaStats.categoricalColumns.length} categorical columns, and ${edaStats.correlations.length} correlation signals.`
-        : 'EDA output is not available yet.',
+        : 'Exploratory data analysis output is not available yet.',
+    },
+    {
+      step: 4,
+      title: 'Data Cleaning',
+      icon: Sparkles,
+      status: cleaningDone ? 'Completed' : 'Pending',
+      detail: cleaningDone
+        ? `${cleaningLogs.length} cleaning actions were recorded and the cleaned dataset retained ${(cleanedRowCount ?? rawData?.length ?? 0).toLocaleString()} rows for analysis.`
+        : 'Data cleaning follows exploratory data analysis and should be completed before final reporting when data corrections are needed.',
     },
     {
       step: 5,
@@ -375,7 +375,7 @@ export default function ReportTab() {
             <div className="max-w-4xl">
               <h1 className="text-2xl font-bold tracking-tight">Generate Final Workflow Report</h1>
               <p className="mt-2 text-sm text-primary-foreground/80">
-                This tab is now focused on one job: generate presentation-ready workflow reports that package the complete application process from upload, understanding, cleaning, and EDA through forecasting, ML training, and final prediction.
+                This tab is now focused on one job: generate presentation-ready workflow reports that package the complete application process from data upload through data understanding, exploratory data analysis, data cleaning, forecasting, ML training, and final prediction.
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{fileName ?? 'Untitled Dataset'}</Badge>

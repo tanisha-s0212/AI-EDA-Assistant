@@ -5,7 +5,7 @@ import { ThemeProvider } from "@/lib/theme-context";
 
 export const metadata: Metadata = {
   title: "Intelligent Data Assistant",
-  description: "Universal data science platform for EDA, cleaning, ML training, and predictions. Works with any dataset.",
+  description: "Universal data science platform for EDA, data cleaning, ML training, and predictions. Works with any dataset.",
 };
 
 export default function RootLayout({

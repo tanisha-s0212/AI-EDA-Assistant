@@ -111,17 +111,7 @@ export interface ModelInfo {
   features: string[];
 }
 
-export interface AppState {
-  // Navigation
-  activeTab: TabId;
-  setActiveTab: (tab: TabId) => void;
-  resetWorkspace: () => void;
-  hasHydrated: boolean;
-  setHasHydrated: (value: boolean) => void;
-  mlWorkflowStep: number;
-  setMlWorkflowStep: (step: number) => void;
-
-  // Data
+export interface DatasetWorkspaceState {
   fileName: string | null;
   datasetId: string | null;
   previewLoaded: boolean;
@@ -133,12 +123,8 @@ export interface AppState {
   totalRows: number;
   duplicates: number;
   memoryUsage: string;
-
-  // Cleaning
   cleaningLogs: CleaningLog[];
   cleaningDone: boolean;
-
-  // ML
   targetColumn: string | null;
   problemType: 'regression' | 'classification';
   selectedFeatures: string[];
@@ -147,110 +133,160 @@ export interface AppState {
   modelMetrics: Record<string, number> | null;
   modelTrained: boolean;
   featureImportance: { name: string; importance: number }[] | null;
-
-  // Prediction
   uploadedModel: ModelInfo | null;
   predictionResult: number | string | null;
   predictionAnalysis: string | null;
   predictionProbabilities: Record<string, number> | null;
   predictionHistory: { id: string; prediction: number | string; confidence?: number; probabilities?: Record<string, number>; features: Record<string, string | number>; timestamp: string }[];
-
-  // Forecasting
   timeSeriesForecastResult: TimeSeriesForecastResult | null;
   mlForecastResult: MlForecastResult | null;
-
-  // Report
   reportGenerated: boolean;
   reportUrl: string | null;
-  setReportGenerated: (v: boolean) => void;
-  setReportUrl: (v: string | null) => void;
-
-  // AI
   aiInsights: string | null;
   aiChatHistory: { role: 'user' | 'assistant'; content: string }[];
+}
+
+export interface DatasetWorkspace extends DatasetWorkspaceState {
+  key: string;
+  createdAt: string;
+}
+
+export type DatasetWorkspaceDraft = DatasetWorkspaceState;
+
+export interface AppState extends DatasetWorkspaceState {
+  activeTab: TabId;
+  setActiveTab: (tab: TabId) => void;
+  resetWorkspace: () => void;
+  hasHydrated: boolean;
+  setHasHydrated: (value: boolean) => void;
+  mlWorkflowStep: number;
+  setMlWorkflowStep: (step: number) => void;
+  datasets: Record<string, DatasetWorkspace>;
+  datasetOrder: string[];
+  activeDatasetKey: string | null;
+  addDataset: (dataset: DatasetWorkspaceDraft, options?: { key?: string; activate?: boolean }) => string;
+  selectDataset: (key: string) => void;
+  setReportGenerated: (v: boolean) => void;
+  setReportUrl: (v: string | null) => void;
 }
 
 type PersistedAppSlice = Pick<
   AppState,
   | 'activeTab'
   | 'mlWorkflowStep'
-  | 'fileName'
-  | 'datasetId'
-  | 'previewLoaded'
-  | 'loadedRowCount'
-  | 'cleanedRowCount'
-  | 'rawData'
-  | 'cleanedData'
-  | 'columns'
-  | 'totalRows'
-  | 'duplicates'
-  | 'memoryUsage'
-  | 'cleaningLogs'
-  | 'cleaningDone'
-  | 'targetColumn'
-  | 'problemType'
-  | 'selectedFeatures'
-  | 'selectedModel'
-  | 'modelId'
-  | 'modelMetrics'
-  | 'modelTrained'
-  | 'featureImportance'
-  | 'uploadedModel'
-  | 'predictionResult'
-  | 'predictionAnalysis'
-  | 'predictionProbabilities'
-  | 'predictionHistory'
-  | 'timeSeriesForecastResult'
-  | 'mlForecastResult'
-  | 'reportGenerated'
-  | 'aiInsights'
-  | 'aiChatHistory'
+  | 'hasHydrated'
+  | 'datasets'
+  | 'datasetOrder'
+  | 'activeDatasetKey'
+  | keyof DatasetWorkspaceState
 >;
 
-const STORE_PERSIST_KEY = 'ai-eda-workspace-v1';
+const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
+
+function createEmptyDatasetState(): DatasetWorkspaceState {
+  return {
+    fileName: null,
+    datasetId: null,
+    previewLoaded: false,
+    loadedRowCount: 0,
+    cleanedRowCount: null,
+    rawData: null,
+    cleanedData: null,
+    columns: [],
+    totalRows: 0,
+    duplicates: 0,
+    memoryUsage: '',
+    cleaningLogs: [],
+    cleaningDone: false,
+    targetColumn: null,
+    problemType: 'regression',
+    selectedFeatures: [],
+    selectedModel: null,
+    modelId: null,
+    modelMetrics: null,
+    modelTrained: false,
+    featureImportance: null,
+    uploadedModel: null,
+    predictionResult: null,
+    predictionAnalysis: null,
+    predictionProbabilities: null,
+    predictionHistory: [],
+    timeSeriesForecastResult: null,
+    mlForecastResult: null,
+    reportGenerated: false,
+    reportUrl: null,
+    aiInsights: null,
+    aiChatHistory: [],
+  };
+}
+
+const datasetStateKeys: Array<keyof DatasetWorkspaceState> = [
+  'fileName',
+  'datasetId',
+  'previewLoaded',
+  'loadedRowCount',
+  'cleanedRowCount',
+  'rawData',
+  'cleanedData',
+  'columns',
+  'totalRows',
+  'duplicates',
+  'memoryUsage',
+  'cleaningLogs',
+  'cleaningDone',
+  'targetColumn',
+  'problemType',
+  'selectedFeatures',
+  'selectedModel',
+  'modelId',
+  'modelMetrics',
+  'modelTrained',
+  'featureImportance',
+  'uploadedModel',
+  'predictionResult',
+  'predictionAnalysis',
+  'predictionProbabilities',
+  'predictionHistory',
+  'timeSeriesForecastResult',
+  'mlForecastResult',
+  'reportGenerated',
+  'reportUrl',
+  'aiInsights',
+  'aiChatHistory',
+];
+
+function getDatasetSnapshot(state: DatasetWorkspaceState): DatasetWorkspaceState {
+  return Object.fromEntries(datasetStateKeys.map((key) => [key, state[key]])) as unknown as DatasetWorkspaceState;
+}
+
+function buildDatasetStatePatch(dataset: DatasetWorkspaceState) {
+  return Object.fromEntries(datasetStateKeys.map((key) => [key, dataset[key]])) as unknown as DatasetWorkspaceState;
+}
+
+function buildDatasetKey(dataset: DatasetWorkspaceDraft, preferredKey?: string) {
+  if (preferredKey) return preferredKey;
+  const base = (dataset.datasetId ?? dataset.fileName ?? 'dataset')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return `${base || 'dataset'}-${Date.now().toString(36)}`;
+}
 
 const initialPersistedState: PersistedAppSlice = {
   activeTab: 'upload',
   mlWorkflowStep: 1,
-  fileName: null,
-  datasetId: null,
-  previewLoaded: false,
-  loadedRowCount: 0,
-  cleanedRowCount: null,
-  rawData: null,
-  cleanedData: null,
-  columns: [],
-  totalRows: 0,
-  duplicates: 0,
-  memoryUsage: '',
-  cleaningLogs: [],
-  cleaningDone: false,
-  targetColumn: null,
-  problemType: 'regression',
-  selectedFeatures: [],
-  selectedModel: null,
-  modelId: null,
-  modelMetrics: null,
-  modelTrained: false,
-  featureImportance: null,
-  uploadedModel: null,
-  predictionResult: null,
-  predictionAnalysis: null,
-  predictionProbabilities: null,
-  predictionHistory: [],
-  timeSeriesForecastResult: null,
-  mlForecastResult: null,
-  reportGenerated: false,
-  aiInsights: null,
-  aiChatHistory: [],
+  hasHydrated: false,
+  datasets: {},
+  datasetOrder: [],
+  activeDatasetKey: null,
+  ...createEmptyDatasetState(),
 };
 
-export const useAppStore = create<AppState>()(
+const store = create<AppState>()(
   persist(
     (set, get) => ({
       ...initialPersistedState,
-      reportUrl: null,
-      hasHydrated: false,
       setActiveTab: (tab) => set({ activeTab: tab }),
       resetWorkspace: () => {
         const previousReportUrl = get().reportUrl;
@@ -259,12 +295,54 @@ export const useAppStore = create<AppState>()(
         }
         set({
           ...initialPersistedState,
-          reportUrl: null,
           hasHydrated: true,
         });
       },
       setHasHydrated: (value) => set({ hasHydrated: value }),
       setMlWorkflowStep: (step) => set({ mlWorkflowStep: Math.max(1, Math.min(6, step)) }),
+      addDataset: (dataset, options) => {
+        const nextKey = buildDatasetKey(dataset, options?.key);
+        const nextDataset: DatasetWorkspace = {
+          key: nextKey,
+          createdAt: new Date().toISOString(),
+          ...createEmptyDatasetState(),
+          ...dataset,
+        };
+
+        set((state) => {
+          const previousReportUrl = state.reportUrl;
+          if (previousReportUrl && previousReportUrl !== nextDataset.reportUrl && typeof URL !== 'undefined') {
+            URL.revokeObjectURL(previousReportUrl);
+          }
+
+          return {
+            datasets: {
+              ...state.datasets,
+              [nextKey]: nextDataset,
+            },
+            datasetOrder: state.datasetOrder.includes(nextKey) ? state.datasetOrder : [nextKey, ...state.datasetOrder],
+            activeDatasetKey: options?.activate === false ? state.activeDatasetKey : nextKey,
+            ...(options?.activate === false ? {} : buildDatasetStatePatch(nextDataset)),
+          };
+        });
+
+        return nextKey;
+      },
+      selectDataset: (key) => {
+        const state = get();
+        const nextDataset = state.datasets[key];
+        if (!nextDataset) return;
+
+        const previousReportUrl = state.reportUrl;
+        if (previousReportUrl && previousReportUrl !== nextDataset.reportUrl && typeof URL !== 'undefined') {
+          URL.revokeObjectURL(previousReportUrl);
+        }
+
+        set({
+          activeDatasetKey: key,
+          ...buildDatasetStatePatch(nextDataset),
+        });
+      },
       setReportGenerated: (v) => set({ reportGenerated: v }),
       setReportUrl: (v) => set({ reportUrl: v }),
     }),
@@ -274,37 +352,22 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         activeTab: state.activeTab,
         mlWorkflowStep: state.mlWorkflowStep,
-        fileName: state.fileName,
-        datasetId: state.datasetId,
-        previewLoaded: state.previewLoaded,
-        loadedRowCount: state.loadedRowCount,
-        cleanedRowCount: state.cleanedRowCount,
-        rawData: state.rawData,
-        cleanedData: state.cleanedData,
-        columns: state.columns,
-        totalRows: state.totalRows,
-        duplicates: state.duplicates,
-        memoryUsage: state.memoryUsage,
-        cleaningLogs: state.cleaningLogs,
-        cleaningDone: state.cleaningDone,
-        targetColumn: state.targetColumn,
-        problemType: state.problemType,
-        selectedFeatures: state.selectedFeatures,
-        selectedModel: state.selectedModel,
-        modelId: state.modelId,
-        modelMetrics: state.modelMetrics,
-        modelTrained: state.modelTrained,
-        featureImportance: state.featureImportance,
-        uploadedModel: state.uploadedModel,
-        predictionResult: state.predictionResult,
-        predictionAnalysis: state.predictionAnalysis,
-        predictionProbabilities: state.predictionProbabilities,
-        predictionHistory: state.predictionHistory,
-        timeSeriesForecastResult: state.timeSeriesForecastResult,
-        mlForecastResult: state.mlForecastResult,
-        reportGenerated: state.reportGenerated,
-        aiInsights: state.aiInsights,
-        aiChatHistory: state.aiChatHistory,
+        hasHydrated: state.hasHydrated,
+        datasets: Object.fromEntries(
+          Object.entries(state.datasets).map(([key, dataset]) => [
+            key,
+            {
+              ...dataset,
+              reportUrl: null,
+            },
+          ])
+        ),
+        datasetOrder: state.datasetOrder,
+        activeDatasetKey: state.activeDatasetKey,
+        ...buildDatasetStatePatch({
+          ...getDatasetSnapshot(state),
+          reportUrl: null,
+        }),
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);
@@ -313,3 +376,28 @@ export const useAppStore = create<AppState>()(
   ),
 );
 
+let isSyncingDatasetRegistry = false;
+
+store.subscribe((state) => {
+  if (isSyncingDatasetRegistry || !state.activeDatasetKey) return;
+  const activeDataset = state.datasets[state.activeDatasetKey];
+  if (!activeDataset) return;
+
+  const nextSnapshot = getDatasetSnapshot(state);
+  const changed = datasetStateKeys.some((key) => activeDataset[key] !== nextSnapshot[key]);
+  if (!changed) return;
+
+  isSyncingDatasetRegistry = true;
+  store.setState((currentState) => ({
+    datasets: {
+      ...currentState.datasets,
+      [state.activeDatasetKey as string]: {
+        ...currentState.datasets[state.activeDatasetKey as string],
+        ...nextSnapshot,
+      },
+    },
+  }));
+  isSyncingDatasetRegistry = false;
+});
+
+export const useAppStore = store;

@@ -72,7 +72,7 @@ export default function UnderstandingTab() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Data Understanding</h2>
-        <p className="mt-1 text-muted-foreground">Review the uploaded dataset identity, quality checks, explainability signals, and a quick preview before cleaning and EDA.</p>
+        <p className="mt-1 text-muted-foreground">Review the uploaded dataset identity, quality checks, explainability signals, and a quick preview before exploratory data analysis and data cleaning.</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -83,9 +83,10 @@ export default function UnderstandingTab() {
           { label: 'Duplicates Found', value: duplicates.toLocaleString(), Icon: Sparkles },
           { label: 'Memory Estimate', value: memoryUsage || 'N/A', Icon: Database },
         ].map(({ label, value, Icon }) => (
-          <Card key={label}>
-            <CardContent className="flex items-center gap-3 pt-6">
-              <div className="rounded-xl bg-primary/10 p-3"><Icon className="h-5 w-5 text-primary" /></div>
+          <Card key={label} className="group overflow-hidden border-border/70 bg-card/75 transition-all duration-300 hover:-translate-y-1.5 hover:border-primary/25 hover:shadow-[0_20px_55px_-30px_rgba(37,99,235,0.28)]">
+            <CardContent className="relative flex items-center gap-3 pt-6">
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/70 via-sky-400/65 to-emerald-400/65 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+              <div className="rounded-2xl bg-primary/10 p-3 transition-all duration-300 group-hover:scale-105 group-hover:bg-primary/15"><Icon className="h-5 w-5 text-primary" /></div>
               <div className="min-w-0">
                 <p className="text-sm text-muted-foreground">{label}</p>
                 <p className="truncate text-lg font-semibold">{value}</p>
@@ -134,13 +135,13 @@ export default function UnderstandingTab() {
       </div>
 
 
-      <Card>
+      <Card className="overflow-hidden border-border/70 bg-card/80 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.22)]">
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><Eye className="h-4 w-4 text-primary" /> Data Preview</CardTitle>
           <CardDescription>First {Math.min(10, data.length)} rows from the current dataset view.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="max-h-[420px] overflow-auto rounded-lg border">
+          <div className="max-h-[420px] overflow-auto rounded-2xl border border-border/70 bg-background/70 shadow-inner">
             <ShadTable>
               <TableHeader>
                 <TableRow>
