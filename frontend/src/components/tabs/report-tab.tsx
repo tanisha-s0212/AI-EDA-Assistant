@@ -198,8 +198,8 @@ export default function ReportTab() {
     },
   ], [
     cleanedRowCount, cleaningDone, cleaningLogs.length, columns.length, edaStats.categoricalColumns.length, edaStats.correlations.length,
-    edaStats.numericColumns.length, fileName, mlForecastResult, modelTrained, predictionResult, problemType, rawData, selectedFeatures.length,
-    selectedModel, targetColumn, timeSeriesForecastResult, totalRows,
+    edaStats.numericColumns.length, fileName, loadedRowCount, mlForecastResult, modelTrained, predictionResult, previewLoaded, problemType,
+    rawData, selectedFeatures.length, selectedModel, targetColumn, timeSeriesForecastResult, totalRows,
   ]);
 
   const reportNarrative = useMemo(() => {
@@ -219,7 +219,7 @@ export default function ReportTab() {
         : 'The report will still generate without a prediction, but the final outcome section will be lighter.',
     ];
     return sections;
-  }, [cleaningDone, mlForecastResult, predictionResult, timeSeriesForecastResult]);
+  }, [cleaningDone, loadedRowCount, mlForecastResult, predictionResult, previewLoaded, rawData, timeSeriesForecastResult, totalRows]);
 
   const completedSteps = workflowSteps.filter((step) => step.status === 'Completed').length;
   const pendingSteps = workflowSteps.filter((step) => step.status === 'Pending').length;

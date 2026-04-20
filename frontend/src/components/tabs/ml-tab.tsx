@@ -734,7 +734,7 @@ export default function MlTab() {
 
     if (results.length > 0) {
       // Find best model based on primary metric
-      const primaryMetric = targetProblemType === 'regression' ? 'R??' : 'Accuracy';
+      const primaryMetric = targetProblemType === 'regression' ? 'R2' : 'Accuracy';
       let best = results[0];
       for (const r of results) {
         if ((r.metrics[primaryMetric] || 0) > (best.metrics[primaryMetric] || 0)) {
