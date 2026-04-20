@@ -155,7 +155,9 @@ export type DatasetWorkspaceDraft = DatasetWorkspaceState;
 
 export interface AppState extends DatasetWorkspaceState {
   activeTab: TabId;
+  uploadPickerRequestId: number;
   setActiveTab: (tab: TabId) => void;
+  requestUploadPicker: () => void;
   resetWorkspace: () => void;
   hasHydrated: boolean;
   setHasHydrated: (value: boolean) => void;
@@ -297,7 +299,9 @@ const store = create<AppState>()(
   persist(
     (set, get) => ({
       ...initialPersistedState,
+      uploadPickerRequestId: 0,
       setActiveTab: (tab) => set({ activeTab: tab }),
+      requestUploadPicker: () => set((state) => ({ uploadPickerRequestId: state.uploadPickerRequestId + 1 })),
       resetWorkspace: () => {
         const previousReportUrl = get().reportUrl;
         if (previousReportUrl && typeof URL !== 'undefined') {
