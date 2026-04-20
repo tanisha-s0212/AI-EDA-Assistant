@@ -459,9 +459,9 @@ export default function HomePage() {
       case 'understanding': return <UnderstandingTab />;
       case 'cleaning': return <CleaningTab />;
       case 'eda': return <EdaTab />;
-      case 'ml': return <MlTab />;
       case 'forecast_ts': return <TimeSeriesForecastTab />;
       case 'forecast_ml': return <MlForecastTab />;
+      case 'ml': return <MlTab />;
       case 'prediction': return <PredictionTab />;
       case 'report': return <ReportTab />;
       default: return <UploadTab />;
