@@ -7,4 +7,3 @@ backend/*.log
 *.pyc
 .env
 .env.local
-*.tsbuildinfo
