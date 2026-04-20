@@ -678,6 +678,8 @@ class ReportPayload(BaseModel):
     sessionId: str | None = None
     fileName: str
     totalRows: int
+    previewLoaded: bool = False
+    loadedRowCount: int | None = None
     columns: list[ColumnInfo]
     duplicates: int
     memoryUsage: str
@@ -3691,6 +3693,14 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
             return f'{value:,.3f}'
         return str(value)
 
+    loaded_row_count = payload.loadedRowCount or payload.totalRows
+    preview_mode = payload.previewLoaded and payload.totalRows > loaded_row_count
+    workspace_scope = (
+        f'{loaded_row_count:,} preview rows were rendered in the browser while the full {payload.totalRows:,}-row dataset remained cached on the backend.'
+        if preview_mode
+        else f'The full {payload.totalRows:,}-row dataset was loaded directly into the active workspace.'
+    )
+
     def latest_prediction_feature_summary() -> list[list[Any]] | None:
         if not payload.predictionHistory:
             return None
@@ -3715,10 +3725,10 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     workflow_rows = [
         ['Step', 'Tab', 'Status', 'Coverage'],
-        ['1', 'Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.fileName} with {payload.totalRows:,} rows and {len(payload.columns)} columns'],
+        ['1', 'Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.fileName} with {payload.totalRows:,} rows, {len(payload.columns)} columns, and {"preview-backed caching" if preview_mode else "full workspace loading"}'],
         ['2', 'Understanding', 'Completed' if payload.columns else 'Pending', f'Role inference, null counts, unique counts, and schema profiling across {len(payload.columns)} columns'],
-        ['3', 'Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} logged operations and {payload.cleanedRowCount:,} cleaned rows retained'],
-        ['4', 'EDA', 'Completed' if payload.edaStats.numericColumns or payload.edaStats.categoricalColumns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric and {len(payload.edaStats.categoricalColumns)} categorical columns summarized'],
+        ['3', 'EDA', 'Completed' if payload.columns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric and {len(payload.edaStats.categoricalColumns)} categorical columns summarized with {len(payload.edaStats.correlations)} sampled correlation signals'],
+        ['4', 'Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} logged operations and {payload.cleanedRowCount:,} cleaned rows retained'],
         ['5', 'Forecast TS', 'Completed' if ts_result else 'Skipped', 'Time-driven forecasting, backtest metrics, horizon outputs, and interval-aware charting'],
         ['6', 'Forecast ML', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting, SHAP importance, generated features, and projected horizon'],
         ['7', 'ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'Model selection, target setup, {len(payload.selectedFeatures)} features, and training metrics'],
@@ -3762,8 +3772,8 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         'Executive Summary',
         (
             f'The dataset entered the platform as {payload.fileName}. '
+            f'{len(payload.edaStats.numericColumns)} numeric fields and {len(payload.edaStats.categoricalColumns)} categorical fields were profiled during EDA, '
             f'{len(payload.cleaningLogs)} cleaning actions were recorded, '
-            f'{len(payload.edaStats.numericColumns)} numeric fields and {len(payload.edaStats.categoricalColumns)} categorical fields were profiled, '
             f'and the latest workflow outcome is {payload.predictionResult if payload.predictionResult is not None else "still pending prediction"}.'
         ),
         tone='#ecfeff',
@@ -3773,6 +3783,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     add_table([
         ['Metric', 'Value'],
         ['Dataset File', payload.fileName],
+        ['Workspace Scope', workspace_scope],
         ['Duplicates Detected', payload.duplicates],
         ['Estimated Memory', payload.memoryUsage],
         ['Forecast Paths Run', forecast_status],
@@ -3788,12 +3799,13 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     add_stat_cards([
         ('Dataset ID', payload.datasetId or 'Session only'),
         ('Rows Loaded', f'{payload.totalRows:,}'),
+        ('Browser Rows', f'{loaded_row_count:,}'),
         ('Columns Found', len(payload.columns)),
-        ('Memory Footprint', payload.memoryUsage),
+        ('Workspace Mode', 'Preview + cached backend' if preview_mode else 'Full in-browser dataset'),
     ])
     elements.append(Spacer(1, 8))
     add_paragraph(
-        f'The uploaded dataset entered the application as {payload.fileName}. This report is designed to remain dataset-agnostic, so downstream sections rely on detected roles, computed statistics, and executed workflow steps rather than hard-coded assumptions about specific fields.'
+        f'The uploaded dataset entered the application as {payload.fileName}. {workspace_scope} This report is designed to remain dataset-agnostic, so downstream sections rely on detected roles, computed statistics, and executed workflow steps rather than hard-coded assumptions about specific fields.'
     )
     elements.append(Spacer(1, 10))
 
@@ -3813,24 +3825,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         add_paragraph(f'Showing the first 20 columns out of {len(payload.columns)} profiled columns.', small_style)
     elements.append(PageBreak())
 
-    add_section('Tab 3: Data Cleaning', 'Cleaning prepares the stable analysis layer used by EDA, forecasting, ML training, and final prediction.')
-    add_stat_cards([
-        ('Cleaning Done', 'Yes' if payload.cleaningDone else 'No'),
-        ('Logged Actions', len(payload.cleaningLogs)),
-        ('Rows Removed', max(0, payload.totalRows - payload.cleanedRowCount)),
-        ('Rows Retained', f'{payload.cleanedRowCount:,}'),
-    ])
-    elements.append(Spacer(1, 8))
-    if payload.cleaningLogs:
-        cleaning_rows = [['Action', 'Detail', 'Timestamp']]
-        for log in payload.cleaningLogs[:24]:
-            cleaning_rows.append([log.action, log.detail, log.timestamp])
-        add_table(cleaning_rows, [content_width * 0.18, content_width * 0.57, content_width * 0.18], header_bg='#0f766e')
-    else:
-        add_paragraph('No cleaning logs were captured for this run. The report still remains valid and summarizes the workflow with the currently available state.', small_style)
-    elements.append(PageBreak())
-
-    add_section('Tab 4: Exploratory Data Analysis', 'EDA summarizes the dataset structure, descriptive behavior, and strongest relationships so later modeling choices have context.')
+    add_section('Tab 3: Exploratory Data Analysis', 'EDA summarizes the dataset structure, descriptive behavior, and strongest relationships so later cleaning and modeling choices have context.')
     add_stat_cards([
         ('Numeric Fields', len(payload.edaStats.numericColumns)),
         ('Categorical Fields', len(payload.edaStats.categoricalColumns)),
@@ -3863,6 +3858,23 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     if payload.aiInsights:
         elements.append(Spacer(1, 8))
         add_callout('AI Insight Summary', str(payload.aiInsights), tone='#eff6ff', border='#93c5fd')
+    elements.append(PageBreak())
+
+    add_section('Tab 4: Data Cleaning', 'Cleaning follows exploratory analysis and prepares the stable analysis layer used by forecasting, ML training, and final prediction.')
+    add_stat_cards([
+        ('Cleaning Done', 'Yes' if payload.cleaningDone else 'No'),
+        ('Logged Actions', len(payload.cleaningLogs)),
+        ('Rows Removed', max(0, payload.totalRows - payload.cleanedRowCount)),
+        ('Rows Retained', f'{payload.cleanedRowCount:,}'),
+    ])
+    elements.append(Spacer(1, 8))
+    if payload.cleaningLogs:
+        cleaning_rows = [['Action', 'Detail', 'Timestamp']]
+        for log in payload.cleaningLogs[:24]:
+            cleaning_rows.append([log.action, log.detail, log.timestamp])
+        add_table(cleaning_rows, [content_width * 0.18, content_width * 0.57, content_width * 0.18], header_bg='#0f766e')
+    else:
+        add_paragraph('No cleaning logs were captured for this run. The report still remains valid and summarizes the workflow with the currently available state.', small_style)
 
     if ts_result:
         elements.append(PageBreak())
@@ -4046,6 +4058,18 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
         [item.get('period', 'N/A'), item.get('predicted', 'N/A')]
         for item in (ml_forecast_result or {}).get('future_forecast', [])[:10]
     ]
+    loaded_row_count = payload.loadedRowCount or payload.totalRows
+    preview_mode = payload.previewLoaded and payload.totalRows > loaded_row_count
+    workflow_rows = [
+        ['1', 'Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.totalRows:,} total rows; {loaded_row_count:,} browser rows'],
+        ['2', 'Understanding', 'Completed' if payload.columns else 'Pending', f'{len(payload.columns)} columns profiled'],
+        ['3', 'EDA', 'Completed' if payload.columns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric, {len(payload.edaStats.categoricalColumns)} categorical, {len(payload.edaStats.correlations)} correlations'],
+        ['4', 'Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} actions, {payload.cleanedRowCount:,} rows retained'],
+        ['5', 'Forecast TS', 'Completed' if ts_result else 'Skipped', 'Chronology-first forecasting branch'],
+        ['6', 'Forecast ML', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting branch'],
+        ['7', 'ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'{len(payload.selectedFeatures)} selected features'],
+        ['8', 'Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction records'],
+    ]
 
     workflow_status = 'Complete workflow captured' if payload.predictionResult is not None else 'Workflow summary generated'
     forecast_status = ', '.join(name for name, present in [('Time Series', bool(ts_result)), ('ML Forecast', bool(ml_forecast_result))] if present) or 'No forecasting branch executed'
@@ -4142,9 +4166,9 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
       <table class="stats">
         <tr>
           <td class="stat"><div class="label">Rows</div><div class="value">{payload.totalRows:,}</div></td>
+          <td class="stat"><div class="label">Browser Rows</div><div class="value">{loaded_row_count:,}</div></td>
           <td class="stat"><div class="label">Columns</div><div class="value">{len(payload.columns)}</div></td>
-          <td class="stat"><div class="label">Cleaned Rows</div><div class="value">{payload.cleanedRowCount:,}</div></td>
-          <td class="stat"><div class="label">Duplicates</div><div class="value">{payload.duplicates:,}</div></td>
+          <td class="stat"><div class="label">Workspace Mode</div><div class="value">{escape('Preview + backend cache' if preview_mode else 'Full dataset')}</div></td>
         </tr>
       </table>
     </div>
@@ -4152,32 +4176,34 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
     <div class="summary">
       <div class="section-label">Executive Summary</div>
       <h2>Workflow Narrative</h2>
-      <p>The uploaded dataset entered the application as <strong>{escape(payload.fileName)}</strong>. The current export reflects the executed workflow path across ingestion, profiling, cleaning, exploratory analysis, forecasting, machine learning, and prediction. This version is intended to read more like a presentation deck than a raw technical dump, so the highlights are surfaced first and the operational details follow as structured tables.</p>
-      <div class="note">Estimated memory footprint: {escape(payload.memoryUsage)}. Problem type: {escape(payload.problemType)}. Cleaning actions logged: {len(payload.cleaningLogs)}.</div>
+      <p>The uploaded dataset entered the application as <strong>{escape(payload.fileName)}</strong>. The current export reflects the executed workflow path across ingestion, profiling, exploratory analysis, cleaning, forecasting, machine learning, and prediction. This version is intended to read more like a presentation deck than a raw technical dump, so the highlights are surfaced first and the operational details follow as structured tables.</p>
+      <div class="note">Estimated memory footprint: {escape(payload.memoryUsage)}. Problem type: {escape(payload.problemType)}. Workspace scope: {escape(f'{loaded_row_count:,} preview rows shown in-browser while the backend kept the full dataset cached.' if preview_mode else f'The full {payload.totalRows:,}-row dataset was available directly in the workspace.')}</div>
     </div>
   </div>
 
   <div class="page">
     <div class="section">
       <div class="section-label">Coverage</div>
-      <h2>Upload, Understanding, and Cleaning</h2>
+      <h2>Workflow Coverage Map</h2>
+      {html_table(['Step', 'Tab', 'Status', 'Coverage'], workflow_rows).replace('<table>', '<table class="data">')}
+      <h3>Upload and Understanding</h3>
       <table class="metric-grid">
         <tr>
           <td class="metric-card"><div class="label">Rows Loaded</div><div class="value">{payload.totalRows:,}</div></td>
+          <td class="metric-card"><div class="label">Browser Rows</div><div class="value">{loaded_row_count:,}</div></td>
           <td class="metric-card"><div class="label">Columns Profiled</div><div class="value">{len(payload.columns)}</div></td>
-          <td class="metric-card"><div class="label">Cleaning Done</div><div class="value">{escape('Yes' if payload.cleaningDone else 'No')}</div></td>
-          <td class="metric-card"><div class="label">Logged Actions</div><div class="value">{len(payload.cleaningLogs)}</div></td>
+          <td class="metric-card"><div class="label">Duplicates</div><div class="value">{payload.duplicates:,}</div></td>
         </tr>
       </table>
+      <div class="note">{escape(f'{loaded_row_count:,} preview rows were rendered in the browser while the full {payload.totalRows:,}-row dataset remained cached on the backend.' if preview_mode else f'The full {payload.totalRows:,}-row dataset was loaded directly into the workspace.')}</div>
       {html_table(['Column', 'Type', 'Role', 'Non-null', 'Nulls', 'Unique'], column_rows).replace('<table>', '<table class="data">')}
-      {html_table(['Action', 'Detail', 'Timestamp'], cleaning_rows).replace('<table>', '<table class="data">')}
     </div>
   </div>
 
   <div class="page">
     <div class="section">
       <div class="section-label">Analysis</div>
-      <h2>EDA and Forecasting Overview</h2>
+      <h2>EDA and Cleaning Overview</h2>
       <table class="metric-grid">
         <tr>
           <td class="metric-card"><div class="label">Numeric Columns</div><div class="value">{len(payload.edaStats.numericColumns)}</div></td>
@@ -4187,6 +4213,10 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
         </tr>
       </table>
       <div class="note">{escape(payload.aiInsights or 'No AI insight captured for this session.')}</div>
+      <h3>Cleaning Trail</h3>
+      <p class="muted">Cleaning follows EDA in the current application workflow and prepares the stable dataset used by forecasting, machine learning, and prediction.</p>
+      {html_table(['Action', 'Detail', 'Timestamp'], cleaning_rows).replace('<table>', '<table class="data">')}
+      <h3>Forecasting Overview</h3>
       <h3>Time Series Forecast</h3>
       <p class="muted">{escape(str((ts_result or {}).get('analysis', 'Time-series forecast was not executed in this session.')))}</p>
       {html_table(['Future Period', 'Forecast', 'Lower', 'Upper'], ts_future_rows or [['N/A', 'N/A', 'N/A', 'N/A']]).replace('<table>', '<table class="data">')}
@@ -4262,6 +4292,45 @@ def cache_dataset(request: DatasetCacheRequest, http_request: Request) -> JSONRe
         metadata={
             'row_count': int(len(data_frame)),
             'column_count': int(len(data_frame.columns)),
+        },
+    )
+    return JSONResponse(content=response)
+
+
+@router.get('/dataset-preview')
+def get_dataset_preview(
+    http_request: Request,
+    dataset_id: str = Query(...),
+) -> JSONResponse:
+    dataset_entry = DATASET_CACHE.get(dataset_id)
+    if dataset_entry is None:
+        raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
+
+    frame = load_full_dataset_frame(dataset_id, [])
+    preview_frame = frame.head(PARQUET_PREVIEW_ROW_LIMIT)
+    duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
+
+    response = {
+        'datasetId': dataset_id,
+        'fileName': dataset_entry.get('filename'),
+        'data': safe_serialize(preview_frame.to_dict(orient='records')),
+        'columns': build_column_info_from_frame(frame),
+        'rowCount': int(len(frame)),
+        'loadedRowCount': int(len(preview_frame)),
+        'previewLoaded': len(frame) > len(preview_frame),
+        'duplicates': duplicate_rows,
+    }
+    record_activity(
+        request=http_request,
+        action='load_dataset_preview',
+        status='success',
+        dataset_id=dataset_id,
+        file_name=str(dataset_entry.get('filename') or ''),
+        detail='Loaded a cached dataset preview for workspace restore.',
+        metadata={
+            'row_count': int(len(frame)),
+            'loaded_row_count': int(len(preview_frame)),
+            'preview_loaded': len(frame) > len(preview_frame),
         },
     )
     return JSONResponse(content=response)

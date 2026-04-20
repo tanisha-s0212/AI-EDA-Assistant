@@ -69,6 +69,25 @@ type ActivityResponse = {
   count: number;
 };
 
+type DatasetPreviewResponse = {
+  datasetId: string;
+  fileName: string | null;
+  data: Array<Record<string, string | number | boolean | null>>;
+  columns: Array<{
+    name: string;
+    dtype: string;
+    nonNull: number;
+    nullCount: number;
+    uniqueCount: number;
+    role: string;
+    sample?: string[];
+  }>;
+  rowCount: number;
+  loadedRowCount: number;
+  previewLoaded: boolean;
+  duplicates: number;
+};
+
 const INDIA_TIMEZONE = 'Asia/Kolkata';
 
 function formatActivityTimestamp(value: string | null) {
@@ -80,6 +99,29 @@ function formatActivityTimestamp(value: string | null) {
     timeZone: INDIA_TIMEZONE,
   }).format(parsed);
   return `${formatted} IST`;
+}
+
+function formatIndiaTime(value: Date | string) {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Time unavailable';
+  return new Intl.DateTimeFormat('en-IN', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: INDIA_TIMEZONE,
+  }).format(parsed);
+}
+
+function formatIndiaDate(value: Date | string) {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Date unavailable';
+  return new Intl.DateTimeFormat('en-IN', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: INDIA_TIMEZONE,
+  }).format(parsed);
 }
 
 function getRelativeActivityAge(value: string | null) {
@@ -158,10 +200,11 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 
 function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
   const { activeTab, setActiveTab, rawData, cleaningDone, modelTrained, previewLoaded, loadedRowCount, totalRows } = useAppStore();
+  const hasDatasetContext = Boolean(rawData?.length || totalRows > 0);
 
   const isTabEnabled = (tabId: TabId) => {
     if (tabId === 'upload') return true;
-    if (!rawData) return false;
+    if (!hasDatasetContext) return false;
     if (tabId === 'prediction' && !modelTrained) return false;
     return true;
   };
@@ -254,7 +297,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
             AI-Powered Analysis
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {rawData
+            {hasDatasetContext
               ? previewLoaded
                 ? `${loadedRowCount.toLocaleString()} preview rows of ${totalRows.toLocaleString()} total`
                 : `${totalRows.toLocaleString()} rows loaded`
@@ -284,28 +327,45 @@ export default function HomePage() {
     hasHydrated,
   } = useAppStore();
   const [isRefreshingActivity, setIsRefreshingActivity] = React.useState(false);
+  const [isRestoringWorkspace, setIsRestoringWorkspace] = React.useState(false);
   const [recentActivity, setRecentActivity] = React.useState<ActivityResponse['activities'][number] | null>(null);
+  const [currentTime, setCurrentTime] = React.useState(() => new Date());
+  const lastRestoreDatasetIdRef = React.useRef<string | null>(null);
   const activeTabMeta = tabs.find((t) => t.id === activeTab) ?? tabs[0];
   const availableDatasets = React.useMemo(
     () => datasetOrder.map((key) => datasets[key]).filter(Boolean),
     [datasetOrder, datasets]
   );
-  const hasWorkspace = Boolean(rawData?.length);
+  const activeDataset = React.useMemo(
+    () => (activeDatasetKey ? datasets[activeDatasetKey] ?? null : null),
+    [activeDatasetKey, datasets]
+  );
+  const displayFileName = fileName ?? activeDataset?.fileName ?? null;
+  const displayColumns = columns.length || activeDataset?.columns.length || 0;
+  const displayTotalRows = totalRows || activeDataset?.totalRows || 0;
+  const displayLoadedRowCount = loadedRowCount || activeDataset?.loadedRowCount || 0;
+  const displayPreviewLoaded = previewLoaded || activeDataset?.previewLoaded || false;
+  const activeDatasetId = activeDataset?.datasetId ?? null;
+  const hasWorkspace = Boolean(rawData?.length || activeDatasetId || displayTotalRows);
   const hasDatasetLibrary = availableDatasets.length > 0;
-  const datasetStatus = rawData
-    ? previewLoaded
-      ? `${loadedRowCount.toLocaleString()} preview rows of ${totalRows.toLocaleString()}`
-      : `${totalRows.toLocaleString()} rows ready`
+  const datasetStatus = hasWorkspace
+    ? displayPreviewLoaded
+      ? `${displayLoadedRowCount.toLocaleString()} preview rows of ${displayTotalRows.toLocaleString()}`
+      : `${displayTotalRows.toLocaleString()} rows ready`
     : 'No dataset loaded';
-  const workflowReadiness = !hasWorkspace
+  const workflowReadiness = isRestoringWorkspace
+    ? 'Restoring the cached workspace preview from the backend so the active session can continue cleanly.'
+    : !hasWorkspace
     ? 'Resume your previous workspace or start fresh with a new dataset.'
-    : previewLoaded
+    : displayPreviewLoaded
       ? 'Large dataset connected with preview rendering in the browser and full-fidelity coverage preserved in the backend.'
       : 'Workspace is fully loaded and ready for analysis, forecasting, modeling, and reporting.';
   const sessionSummary = hasWorkspace
-    ? `Continue from ${activeTabMeta.label.toLowerCase()} with ${columns.length.toLocaleString()} profiled columns in scope.`
+    ? `Continue from ${activeTabMeta.label.toLowerCase()} with ${displayColumns.toLocaleString()} profiled columns in scope.`
     : 'No active workspace is loaded in memory yet.';
   const sessionContinuity = getSessionContinuityLabel(recentActivity?.createdAt ?? null);
+  const liveIndiaTime = formatIndiaTime(currentTime);
+  const liveIndiaDate = formatIndiaDate(currentTime);
   const activityLabel = recentActivity
     ? `Last action: ${recentActivity.action.replace(/_/g, ' ')}`
     : sessionContinuity.status;
@@ -314,7 +374,7 @@ export default function HomePage() {
     setIsRefreshingActivity(true);
     try {
       const response = await apiClient.get<ActivityResponse>('/activities', {
-        params: { limit: 1 },
+        params: { limit: 1, dataset_id: activeDatasetId ?? undefined },
       });
       setRecentActivity(response.data.activities[0] ?? null);
     } catch {
@@ -322,12 +382,60 @@ export default function HomePage() {
     } finally {
       setIsRefreshingActivity(false);
     }
-  }, []);
+  }, [activeDatasetId]);
 
   React.useEffect(() => {
     if (!hasHydrated) return;
     void refreshRecentActivity();
   }, [hasHydrated, refreshRecentActivity]);
+
+  React.useEffect(() => {
+    const interval = window.setInterval(() => {
+      setCurrentTime(new Date());
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  React.useEffect(() => {
+    if (!hasHydrated) return;
+    if (rawData?.length) return;
+    if (!activeDataset?.datasetId) return;
+    if (lastRestoreDatasetIdRef.current === activeDataset.datasetId) return;
+
+    lastRestoreDatasetIdRef.current = activeDataset.datasetId;
+    setIsRestoringWorkspace(true);
+
+    void apiClient
+      .get<DatasetPreviewResponse>('/dataset-preview', {
+        params: { dataset_id: activeDataset.datasetId },
+      })
+      .then((response) => {
+        const result = response.data;
+        const currentState = useAppStore.getState();
+        useAppStore.setState({
+          fileName: result.fileName ?? currentState.fileName,
+          datasetId: result.datasetId,
+          rawData: result.data,
+          cleanedData: currentState.cleaningDone ? result.data : null,
+          columns: result.columns.map((column) => ({
+            ...column,
+            role: column.role as 'identifier' | 'numeric' | 'categorical' | 'boolean' | 'datetime' | 'unknown',
+            sample: Array.isArray(column.sample) ? column.sample : [],
+          })),
+          totalRows: result.rowCount,
+          loadedRowCount: result.loadedRowCount ?? result.data.length,
+          previewLoaded: !!result.previewLoaded,
+          duplicates: result.duplicates ?? currentState.duplicates,
+          reportUrl: null,
+        });
+      })
+      .catch(() => {
+        lastRestoreDatasetIdRef.current = null;
+      })
+      .finally(() => {
+        setIsRestoringWorkspace(false);
+      });
+  }, [activeDataset, hasHydrated, rawData]);
 
   const handleResumeWorkspace = React.useCallback(() => {
     if (!hasWorkspace) {
@@ -413,7 +521,7 @@ export default function HomePage() {
                           <div className="mt-4 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
                               {hasWorkspace ? <CheckCircle2 className="mr-2 h-3.5 w-3.5 text-emerald-300" /> : <AlertCircle className="mr-2 h-3.5 w-3.5 text-amber-300" />}
-                              {hasWorkspace ? 'Workspace in progress' : 'Awaiting dataset'}
+                              {isRestoringWorkspace ? 'Restoring workspace' : hasWorkspace ? 'Workspace in progress' : 'Awaiting dataset'}
                             </Badge>
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
                               <ShieldCheck className="mr-2 h-3.5 w-3.5 text-sky-300" />
@@ -461,24 +569,40 @@ export default function HomePage() {
                           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
                             Dataset Summary
                           </p>
-                          <p className="mt-2 text-lg font-semibold tracking-tight text-white">{datasetStatus}</p>
-                          <p className="mt-1 truncate text-sm text-slate-300">
-                            {fileName ? fileName : 'No source selected'}
-                          </p>
+                          <div className="mt-3 flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-xl font-semibold tracking-tight text-white">{datasetStatus}</p>
+                              <p className="mt-1 truncate text-sm text-slate-300">
+                                {displayFileName ? displayFileName : 'No source selected'}
+                              </p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-slate-950/30 px-3 py-2 text-right shadow-inner">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Library</p>
+                              <p className="mt-1 text-sm font-semibold text-white">{availableDatasets.length}</p>
+                              <p className="text-[11px] text-slate-400">dataset{availableDatasets.length === 1 ? '' : 's'}</p>
+                            </div>
+                          </div>
                           <div className="mt-4 flex flex-wrap gap-2">
                             <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
                               <Database className="h-3 w-3" />
-                              {hasWorkspace ? totalRows.toLocaleString() : 0} rows
+                              {hasWorkspace ? displayTotalRows.toLocaleString() : 0} total rows
                             </span>
                             <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                              {columns.length.toLocaleString()} columns
+                              {displayColumns.toLocaleString()} columns
                             </span>
                             <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                              {previewLoaded ? 'Preview + cached' : 'Fully loaded'}
+                              {hasWorkspace ? displayLoadedRowCount.toLocaleString() : 0} browser rows
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
+                              {displayPreviewLoaded ? 'Preview + cached' : 'Fully loaded'}
                             </span>
                           </div>
-                          <p className="mt-3 text-xs text-slate-400">
-                            {previewLoaded ? 'Responsive preview is active while backend processing continues on the complete dataset.' : 'Workspace data is ready for the full guided workflow.'}
+                          <p className="mt-3 text-xs leading-5 text-slate-400">
+                            {isRestoringWorkspace
+                              ? 'The browser preview is being restored from the backend cache so the session can continue without exceeding local storage.'
+                              : displayPreviewLoaded
+                                ? 'Responsive preview is active in the browser while the backend retains the full dataset for cleaning, forecasting, training, and reporting.'
+                                : 'Workspace data is fully available in the browser and ready for the complete guided workflow.'}
                           </p>
                         </div>
 
@@ -486,24 +610,24 @@ export default function HomePage() {
                           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
                             Session Continuity
                           </p>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                            <div className="min-w-0">
+                          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(190px,0.95fr)]">
+                            <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
                               <div className="flex items-center gap-2 text-slate-300">
                                 <Clock3 className="h-3.5 w-3.5 text-sky-300" />
-                                <p className="text-xs font-semibold uppercase tracking-[0.18em]">{sessionContinuity.status}</p>
+                                <p className="text-xs font-semibold uppercase tracking-[0.18em]">Live IST</p>
                               </div>
-                              <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-1">
-                                <p className="text-2xl font-semibold tracking-tight text-white">{sessionContinuity.timeLabel}</p>
-                                <span className="rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
-                                  {sessionContinuity.freshness}
-                                </span>
-                              </div>
-                              <p className="mt-1 text-sm text-slate-300">{sessionContinuity.dateLabel}</p>
-                              <p className="mt-1 text-xs text-slate-400">{sessionContinuity.timezone}</p>
+                              <p className="mt-3 text-3xl font-semibold tracking-tight text-white">{liveIndiaTime}</p>
+                              <p className="mt-2 text-sm text-slate-300">{liveIndiaDate}</p>
+                              <p className="mt-1 text-xs text-slate-400">India Standard Time (IST) | India UTC+5:30</p>
                             </div>
-                            <div className="rounded-2xl border border-white/10 bg-slate-950/30 px-3 py-2 text-right shadow-inner">
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Recorded</p>
-                              <p className="mt-1 text-xs text-slate-200">{sessionContinuity.timestamp}</p>
+                            <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Last Backend Sync</p>
+                              <p className="mt-3 text-lg font-semibold text-white">{recentActivity ? sessionContinuity.timeLabel : 'Not synced yet'}</p>
+                              <p className="mt-1 text-sm text-slate-300">{recentActivity ? sessionContinuity.dateLabel : 'Refresh sync after loading a dataset'}</p>
+                              <div className="mt-3 inline-flex rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
+                                {sessionContinuity.freshness}
+                              </div>
+                              {recentActivity ? <p className="mt-3 text-[11px] leading-5 text-slate-400">{sessionContinuity.timestamp}</p> : null}
                             </div>
                           </div>
                           <div className="mt-4 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3 transition-all duration-300 hover:border-white/20 hover:bg-slate-950/40">
@@ -515,7 +639,7 @@ export default function HomePage() {
                                 {recentActivity?.detail || 'The workspace can continue from the last saved browser state and backend activity trail.'}
                               </p>
                               <p className="mt-1 text-xs text-slate-400">
-                                {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} is the latest backend-linked session.` : 'Load a dataset to establish a persisted working session.'}
+                                {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} is the latest backend-linked session.` : activeDatasetId ? `Dataset ${activeDatasetId} is ready to reconnect to the backend cache.` : 'Load a dataset to establish a persisted working session.'}
                               </p>
                               <p className="mt-1 text-xs text-slate-500">{activityLabel}</p>
                             </div>
@@ -533,7 +657,7 @@ export default function HomePage() {
                   <div className="min-w-0">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Active Dataset</p>
                     <p className="mt-1 truncate text-base font-semibold text-foreground">
-                      {fileName ?? 'No dataset selected'}
+                      {displayFileName ?? 'No dataset selected'}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {hasDatasetLibrary
@@ -552,7 +676,7 @@ export default function HomePage() {
                             <span className="flex min-w-0 flex-col">
                               <span className="truncate font-medium">{dataset.fileName ?? dataset.datasetId ?? dataset.key}</span>
                               <span className="text-xs text-muted-foreground">
-                                {dataset.totalRows.toLocaleString()} rows · {dataset.columns.length.toLocaleString()} cols
+                                {dataset.totalRows.toLocaleString()} rows | {dataset.columns.length.toLocaleString()} cols
                               </span>
                             </span>
                           </SelectItem>

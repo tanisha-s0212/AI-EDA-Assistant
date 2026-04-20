@@ -102,6 +102,7 @@ export default function ReportTab() {
   const store = useAppStore();
   const {
     rawData, cleanedData, fileName, datasetId, columns, totalRows, duplicates, memoryUsage,
+    previewLoaded, loadedRowCount,
     cleaningLogs, cleaningDone, cleanedRowCount, aiInsights,
     targetColumn, problemType, selectedFeatures, selectedModel, modelMetrics, featureImportance,
     uploadedModel, predictionResult, predictionAnalysis, predictionProbabilities, predictionHistory,
@@ -127,7 +128,9 @@ export default function ReportTab() {
       icon: Upload,
       status: rawData ? 'Completed' : 'Pending',
       detail: rawData
-        ? `${fileName ?? 'Dataset'} entered the application with ${(totalRows || rawData.length).toLocaleString()} rows available for downstream work.`
+        ? previewLoaded && (totalRows || rawData.length) > loadedRowCount
+          ? `${fileName ?? 'Dataset'} entered the application with ${(totalRows || rawData.length).toLocaleString()} total rows, while ${loadedRowCount.toLocaleString()} preview rows were loaded in-browser and the full dataset stayed cached on the backend for downstream work.`
+          : `${fileName ?? 'Dataset'} entered the application with ${(totalRows || rawData.length).toLocaleString()} rows available directly in the workspace for downstream work.`
         : 'The report begins only after a dataset has been uploaded into the workflow.',
     },
     {
@@ -202,6 +205,9 @@ export default function ReportTab() {
   const reportNarrative = useMemo(() => {
     const sections = [
       'The PDF report compiles the application journey from ingestion through final prediction so the document mirrors how the user moved across the product.',
+      previewLoaded && (totalRows || rawData?.length || 0) > loadedRowCount
+        ? `Because this dataset was loaded as a responsive preview in the browser, the report will call out that ${loadedRowCount.toLocaleString()} rows were shown interactively while the backend kept the full ${(totalRows || rawData?.length || 0).toLocaleString()}-row dataset available for cleaning, forecasting, and training.`
+        : 'This dataset was fully loaded in the active workspace, so the report can describe the in-app view and backend processing scope as the same dataset slice.',
       cleaningDone
         ? 'Because cleaning was completed, the report can anchor all later steps to the cleaned cached dataset rather than the original raw preview.'
         : 'Cleaning has not been completed, so the report may contain a less stable workflow narrative.',
@@ -223,6 +229,8 @@ export default function ReportTab() {
     sessionId: datasetId ?? null,
     fileName: fileName ?? 'Untitled Dataset',
     totalRows: totalRows || (rawData?.length ?? 0),
+    previewLoaded,
+    loadedRowCount,
     columns: columns.map((column) => ({
       name: column.name,
       dtype: column.dtype,
@@ -264,7 +272,7 @@ export default function ReportTab() {
   }), [
     aiInsights, cleanedData?.length, cleanedRowCount, cleaningDone, cleaningLogs, columns, datasetId, duplicates, edaStats, featureImportance,
     fileName, memoryUsage, mlForecastResult, modelMetrics, predictionAnalysis, predictionHistory, predictionProbabilities, predictionResult,
-    problemType, rawData?.length, selectedFeatures, selectedModel, targetColumn, timeSeriesForecastResult, totalRows, uploadedModel,
+    loadedRowCount, previewLoaded, problemType, rawData?.length, selectedFeatures, selectedModel, targetColumn, timeSeriesForecastResult, totalRows, uploadedModel,
   ]);
 
   const cacheGeneratedReport = useCallback((blob: Blob, nextFileName: string) => {

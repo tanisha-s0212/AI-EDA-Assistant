@@ -54,6 +54,26 @@ If you want the Next.js server itself to proxy API requests in a non-Docker envi
 - Trained models are persisted with `joblib` under `backend/models/`.
 - User workflow activity is persisted in PostgreSQL through `ACTIVITY_DATABASE_URL`.
 
+## Application Workflow
+
+The guided app flow now follows this sequence:
+
+1. `Upload`
+2. `Data Understanding`
+3. `Exploratory Data Analysis`
+4. `Data Cleaning`
+5. `Forecast TS`
+6. `Forecast ML`
+7. `ML Assistant`
+8. `Prediction`
+9. `Report`
+
+Notes about the current workflow behavior:
+
+- Large uploads can load a browser preview while the backend caches the full dataset for cleaning, advanced EDA, forecasting, training, and report generation.
+- The final report is intended to mirror the same tab sequence the user completed in the application rather than acting as a raw backend dump.
+- Forecasting remains optional. The report includes time-series and ML forecast sections only when those paths were executed in the active session.
+
 ## Activity Storage
 
 - Every backend-driven user workflow action is now recorded in PostgreSQL, including dataset parsing/caching, cleaning, advanced EDA, forecasting, model training, predictions, model uploads, and report generation.

@@ -182,6 +182,7 @@ type PersistedAppSlice = Pick<
 >;
 
 const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
+const STORE_PERSIST_VERSION = 2;
 
 function createEmptyDatasetState(): DatasetWorkspaceState {
   return {
@@ -217,6 +218,15 @@ function createEmptyDatasetState(): DatasetWorkspaceState {
     reportUrl: null,
     aiInsights: null,
     aiChatHistory: [],
+  };
+}
+
+function stripTransientDatasetState<T extends DatasetWorkspaceState>(dataset: T): T {
+  return {
+    ...dataset,
+    rawData: null,
+    cleanedData: null,
+    reportUrl: null,
   };
 }
 
@@ -356,19 +366,34 @@ const store = create<AppState>()(
         datasets: Object.fromEntries(
           Object.entries(state.datasets).map(([key, dataset]) => [
             key,
-            {
-              ...dataset,
-              reportUrl: null,
-            },
+            stripTransientDatasetState(dataset),
           ])
         ),
         datasetOrder: state.datasetOrder,
         activeDatasetKey: state.activeDatasetKey,
-        ...buildDatasetStatePatch({
-          ...getDatasetSnapshot(state),
-          reportUrl: null,
-        }),
+        ...buildDatasetStatePatch(stripTransientDatasetState(getDatasetSnapshot(state))),
       }),
+      version: STORE_PERSIST_VERSION,
+      migrate: (persistedState) => {
+        const state = persistedState as PersistedAppSlice | undefined;
+        if (!state) return initialPersistedState;
+
+        return {
+          ...state,
+          datasets: Object.fromEntries(
+            Object.entries(state.datasets ?? {}).map(([key, dataset]) => [
+              key,
+              stripTransientDatasetState(dataset as DatasetWorkspace),
+            ])
+          ),
+          ...buildDatasetStatePatch(
+            stripTransientDatasetState({
+              ...createEmptyDatasetState(),
+              ...state,
+            })
+          ),
+        } satisfies PersistedAppSlice;
+      },
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);
       },
