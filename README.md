@@ -33,9 +33,11 @@ docker compose up --build
 ```
 
 Nginx serves as the public entrypoint on port `8888` by default, proxies `/` to the frontend, and proxies `/api/*` to the backend.
-pgAdmin is available on port `8080` by default with login `admin@example.com` / `admin123`.
+pgAdmin is available on port `5050` by default with login `admin@example.com` / `admin123`.
 Its configuration is persisted in a Docker volume, so saved server definitions survive container recreation.
 On first startup, it also auto-registers the app PostgreSQL server from `infrastructure/pgadmin/servers.json`.
+
+If you want to customize host ports or Compose credentials, copy `.env.example` to `.env` at the repo root and adjust values like `PGADMIN_PORT`, `NGINX_PORT`, or `POSTGRES_PORT` before starting the stack.
 
 When pgAdmin runs from this Compose stack, add the PostgreSQL server with:
 
