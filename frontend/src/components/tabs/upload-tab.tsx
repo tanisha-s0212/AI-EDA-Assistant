@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
 import {
   Upload,
@@ -250,9 +250,10 @@ function buildFreshDatasetState(
 }
 
 export default function UploadTab() {
-  const { setActiveTab, addDataset } = useAppStore();
+  const { setActiveTab, addDataset, activeTab, uploadPickerRequestId } = useAppStore();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handledUploadRequestRef = useRef(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
@@ -443,6 +444,16 @@ export default function UploadTab() {
   const handleBrowseClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'upload') return;
+    if (uploadPickerRequestId === 0 || uploadPickerRequestId === handledUploadRequestRef.current) return;
+
+    handledUploadRequestRef.current = uploadPickerRequestId;
+    window.setTimeout(() => {
+      fileInputRef.current?.click();
+    }, 120);
+  }, [activeTab, uploadPickerRequestId]);
 
   // ── Format Cards Data ────────────────────────────────────────────────────
 
