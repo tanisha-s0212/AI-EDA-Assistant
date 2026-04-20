@@ -38,8 +38,7 @@ import CleaningTab from '@/components/tabs/cleaning-tab';
 import EdaTab from '@/components/tabs/eda-tab';
 import MlTab from '@/components/tabs/ml-tab';
 import PredictionTab from '@/components/tabs/prediction-tab';
-import TimeSeriesForecastTab from '@/components/tabs/time-series-forecast-tab';
-import MlForecastTab from '@/components/tabs/ml-forecast-tab';
+import SalesForecastTab from '@/components/tabs/sales-forecast-tab';
 import ReportTab from '@/components/tabs/report-tab';
 
 const tabs: { id: TabId; label: string; icon: React.ElementType; step: number }[] = [
@@ -47,11 +46,10 @@ const tabs: { id: TabId; label: string; icon: React.ElementType; step: number }[
   { id: 'understanding', label: 'Understanding', icon: Database, step: 2 },
   { id: 'cleaning', label: 'Cleaning', icon: Sparkles, step: 3 },
   { id: 'eda', label: 'EDA', icon: BarChart3, step: 4 },
-  { id: 'forecast_ts', label: 'Forecast TS', icon: LineChart, step: 5 },
-  { id: 'forecast_ml', label: 'Forecast ML', icon: LineChart, step: 6 },
-  { id: 'ml', label: 'ML Assistant', icon: BrainCircuit, step: 7 },
-  { id: 'prediction', label: 'Prediction', icon: Target, step: 8 },
-  { id: 'report', label: 'Report', icon: FileText, step: 9 },
+  { id: 'sales_forecast', label: 'Sales Forecast', icon: LineChart, step: 5 },
+  { id: 'ml', label: 'ML Assistant', icon: BrainCircuit, step: 6 },
+  { id: 'prediction', label: 'Prediction', icon: Target, step: 7 },
+  { id: 'report', label: 'Report', icon: FileText, step: 8 },
 ];
 
 const DESKTOP_SIDEBAR_WIDTH = 'lg:pl-72';
@@ -253,9 +251,8 @@ export default function HomePage() {
       case 'understanding': return <UnderstandingTab />;
       case 'cleaning': return <CleaningTab />;
       case 'eda': return <EdaTab />;
+      case 'sales_forecast': return <SalesForecastTab />;
       case 'ml': return <MlTab />;
-      case 'forecast_ts': return <TimeSeriesForecastTab />;
-      case 'forecast_ml': return <MlForecastTab />;
       case 'prediction': return <PredictionTab />;
       case 'report': return <ReportTab />;
       default: return <UploadTab />;

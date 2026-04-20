@@ -72,6 +72,8 @@ export interface AppState {
   setActiveTab: (tab: TabId) => void;
   mlWorkflowStep: number;
   setMlWorkflowStep: (step: number) => void;
+  hasHydrated: boolean;
+  resetWorkspace: () => void;
 
   // Data
   fileName: string | null;
@@ -127,6 +129,42 @@ export const useAppStore = create<AppState>((set) => ({
   setActiveTab: (tab) => set({ activeTab: tab }),
   mlWorkflowStep: 1,
   setMlWorkflowStep: (step) => set({ mlWorkflowStep: Math.max(1, Math.min(6, step)) }),
+  hasHydrated: true,
+  resetWorkspace: () => set({
+    activeTab: 'upload',
+    mlWorkflowStep: 1,
+    fileName: null,
+    datasetId: null,
+    previewLoaded: false,
+    loadedRowCount: 0,
+    cleanedRowCount: null,
+    rawData: null,
+    cleanedData: null,
+    columns: [],
+    totalRows: 0,
+    duplicates: 0,
+    memoryUsage: '',
+    cleaningLogs: [],
+    cleaningDone: false,
+    targetColumn: null,
+    problemType: 'regression',
+    selectedFeatures: [],
+    selectedModel: null,
+    modelId: null,
+    modelMetrics: null,
+    modelTrained: false,
+    featureImportance: null,
+    uploadedModel: null,
+    predictionResult: null,
+    predictionAnalysis: null,
+    predictionProbabilities: null,
+    predictionHistory: [],
+    salesForecastResult: null,
+    reportGenerated: false,
+    reportUrl: null,
+    aiInsights: null,
+    aiChatHistory: [],
+  }),
 
   // Data
   fileName: null,
@@ -175,4 +213,3 @@ export const useAppStore = create<AppState>((set) => ({
   aiInsights: null,
   aiChatHistory: [],
 }));
-
