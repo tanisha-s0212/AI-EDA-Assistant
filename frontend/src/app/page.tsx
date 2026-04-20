@@ -30,6 +30,8 @@ import {
   Clock3,
   Orbit,
   Radar,
+  Cpu,
+  Activity,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -44,16 +46,16 @@ import TimeSeriesForecastTab from '@/components/tabs/time-series-forecast-tab';
 import MlForecastTab from '@/components/tabs/ml-forecast-tab';
 import ReportTab from '@/components/tabs/report-tab';
 
-const tabs: { id: TabId; label: string; icon: React.ElementType; step: number }[] = [
-  { id: 'upload', label: 'Data Upload', icon: Upload, step: 1 },
-  { id: 'understanding', label: 'Data Understanding', icon: Database, step: 2 },
-  { id: 'eda', label: 'Exploratory Data Analysis', icon: BarChart3, step: 3 },
-  { id: 'cleaning', label: 'Data Cleaning', icon: Sparkles, step: 4 },
-  { id: 'forecast_ts', label: 'Forecast TS', icon: LineChart, step: 5 },
-  { id: 'forecast_ml', label: 'Forecast ML', icon: LineChart, step: 6 },
-  { id: 'ml', label: 'ML Assistant', icon: BrainCircuit, step: 7 },
-  { id: 'prediction', label: 'Prediction', icon: Target, step: 8 },
-  { id: 'report', label: 'Report', icon: FileText, step: 9 },
+const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
+  { id: 'upload', label: 'Data Upload', icon: Upload },
+  { id: 'understanding', label: 'Data Understanding', icon: Database },
+  { id: 'eda', label: 'Exploratory Data Analysis', icon: BarChart3 },
+  { id: 'cleaning', label: 'Data Cleaning', icon: Sparkles },
+  { id: 'forecast_ts', label: 'Forecast TS', icon: LineChart },
+  { id: 'forecast_ml', label: 'Forecast ML', icon: LineChart },
+  { id: 'ml', label: 'ML Assistant', icon: BrainCircuit },
+  { id: 'prediction', label: 'Prediction', icon: Target },
+  { id: 'report', label: 'Report', icon: FileText },
 ];
 
 const DESKTOP_SIDEBAR_WIDTH = 'lg:pl-72';
@@ -185,15 +187,22 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div
       className={cn(
-        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-[22px] border border-white/15 bg-[linear-gradient(145deg,#0f172a_0%,#1d4ed8_46%,#22d3ee_100%)] text-white shadow-[0_22px_55px_-28px_rgba(37,99,235,0.6)]',
+        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(145deg,#08111f_0%,#0f2747_52%,#0b7f8f_100%)] text-white shadow-[0_24px_60px_-28px_rgba(14,116,144,0.62)]',
         compact ? 'h-11 w-11' : 'h-12 w-12'
       )}
     >
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_20%,rgba(255,255,255,0.35),transparent_34%)]" />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_78%_82%,rgba(16,185,129,0.22),transparent_34%)]" />
-      <Orbit className={cn('absolute opacity-35', compact ? 'h-8 w-8' : 'h-9 w-9')} strokeWidth={1.6} />
-      <Radar className={cn('absolute opacity-85', compact ? 'h-4.5 w-4.5' : 'h-5 w-5')} strokeWidth={2} />
-      <Sparkles className={cn('absolute text-cyan-100', compact ? '-right-0.5 -top-0.5 h-3 w-3' : 'right-0 top-0 h-3.5 w-3.5')} />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_18%,rgba(255,255,255,0.2),transparent_32%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),transparent_42%,rgba(8,145,178,0.24)_100%)]" />
+      <div className="absolute inset-[18%] rounded-[18px] border border-white/10 bg-slate-950/30" />
+      <div className="absolute inset-x-[26%] top-[24%] h-px bg-cyan-200/50" />
+      <div className="absolute inset-x-[26%] bottom-[24%] h-px bg-cyan-200/35" />
+      <div className="absolute inset-y-[26%] left-[24%] w-px bg-cyan-200/40" />
+      <div className="absolute inset-y-[26%] right-[24%] w-px bg-cyan-200/25" />
+      <div className={cn('absolute rounded-md border border-cyan-200/25 bg-cyan-300/12', compact ? 'left-[19%] top-[19%] h-2 w-2' : 'left-[18%] top-[18%] h-2.5 w-2.5')} />
+      <div className={cn('absolute rounded-md border border-cyan-200/20 bg-cyan-300/10', compact ? 'bottom-[18%] right-[18%] h-2.5 w-2.5' : 'bottom-[18%] right-[18%] h-3 w-3')} />
+      <Orbit className={cn('absolute text-cyan-100/20', compact ? 'h-8 w-8' : 'h-9 w-9')} strokeWidth={1.5} />
+      <Cpu className={cn('absolute text-white', compact ? 'h-4.5 w-4.5' : 'h-5 w-5')} strokeWidth={2.2} />
+      <Radar className={cn('absolute text-cyan-100/85', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} strokeWidth={1.9} />
     </div>
   );
 }
@@ -270,10 +279,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
                     <Icon className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate">{tab.label}</span>
-                      {enabled ? <span className="rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">{tab.step}</span> : null}
-                    </div>
+                    <span className="truncate">{tab.label}</span>
                   </div>
                   {isActive && enabled && (
                     <ChevronRight className="ml-auto h-4 w-4 text-primary" />
@@ -323,6 +329,7 @@ export default function HomePage() {
     totalRows,
     selectDataset,
     setActiveTab,
+    requestUploadPicker,
     resetWorkspace,
     hasHydrated,
   } = useAppStore();
@@ -369,6 +376,10 @@ export default function HomePage() {
   const activityLabel = recentActivity
     ? `Last action: ${recentActivity.action.replace(/_/g, ' ')}`
     : sessionContinuity.status;
+  const syncStatusLabel = recentActivity ? 'Backend sync active' : 'Waiting for backend sync';
+  const syncSummary = recentActivity
+    ? `${sessionContinuity.timeLabel} | ${sessionContinuity.dateLabel}`
+    : 'Refresh after loading a dataset';
 
   const refreshRecentActivity = React.useCallback(async () => {
     setIsRefreshingActivity(true);
@@ -395,6 +406,26 @@ export default function HomePage() {
     }, 30000);
     return () => window.clearInterval(interval);
   }, []);
+
+  React.useEffect(() => {
+    if (!hasHydrated) return;
+
+    const interval = window.setInterval(() => {
+      void refreshRecentActivity();
+    }, 60000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshRecentActivity();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [hasHydrated, refreshRecentActivity]);
 
   React.useEffect(() => {
     if (!hasHydrated) return;
@@ -451,7 +482,8 @@ export default function HomePage() {
 
   const handleAddDataset = React.useCallback(() => {
     setActiveTab('upload');
-  }, [setActiveTab]);
+    requestUploadPicker();
+  }, [requestUploadPicker, setActiveTab]);
 
   const renderTab = () => {
     switch (activeTab) {
@@ -486,16 +518,16 @@ export default function HomePage() {
         {/* Content */}
         <main className="flex-1 overflow-y-auto overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <div className="mx-auto max-w-7xl px-4 pb-6 pt-3 sm:px-6 sm:pt-4 lg:px-8">
-            <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-4 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-5 lg:-mx-8 lg:px-8">
+            <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-3 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
               <div className="mx-auto max-w-7xl">
-                <div className="group relative overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] p-4 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-5">
+                <div className="group relative overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] p-3.5 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-4">
                   <div className="pointer-events-none absolute inset-0 opacity-80">
-                    <div className="absolute -left-12 top-10 h-32 w-32 rounded-full bg-sky-400/12 blur-3xl transition-transform duration-700 group-hover:scale-125" />
-                    <div className="absolute right-0 top-0 h-40 w-40 rounded-full bg-blue-500/10 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
+                    <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-sky-400/12 blur-3xl transition-transform duration-700 group-hover:scale-125" />
+                    <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-500/10 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
                     <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
                   </div>
-                  <div className="flex flex-col gap-5">
-                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="flex flex-col gap-4">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                       <div className="flex items-start gap-3">
                         <Sheet>
                           <SheetTrigger asChild>
@@ -511,14 +543,14 @@ export default function HomePage() {
                           <div className="flex items-center gap-3">
                             <BrandMark />
                             <div className="min-w-0">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-300">Workspace Session</p>
-                              <p className="text-xl font-semibold tracking-tight text-white">Intelligent Data Assistant</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">Workspace Session</p>
+                              <p className="text-lg font-semibold tracking-tight text-white sm:text-xl">Intelligent Data Assistant</p>
                               <p className="text-sm text-slate-300">
-                                Standardized analytics workspace with live continuity, guided modeling, and report-ready outputs.
+                                Guided analytics workspace with persistent backend continuity.
                               </p>
                             </div>
                           </div>
-                          <div className="mt-4 flex flex-wrap items-center gap-2">
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
                               {hasWorkspace ? <CheckCircle2 className="mr-2 h-3.5 w-3.5 text-emerald-300" /> : <AlertCircle className="mr-2 h-3.5 w-3.5 text-amber-300" />}
                               {isRestoringWorkspace ? 'Restoring workspace' : hasWorkspace ? 'Workspace in progress' : 'Awaiting dataset'}
@@ -531,118 +563,111 @@ export default function HomePage() {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                        <Button size="sm" className="h-10 rounded-full border border-white/10 bg-white text-slate-950 px-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
+                      <div className="flex flex-wrap items-center gap-2 xl:max-w-[56%] xl:justify-end">
+                        <Button size="sm" className="h-9 rounded-full border border-white/10 bg-white px-4 text-slate-950 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
                           <History className="mr-2 h-4 w-4" />
-                          {hasWorkspace ? 'Resume Previous Workspace' : 'Open Saved Workspace'}
+                          {hasWorkspace ? 'Resume Workspace' : 'Open Workspace'}
                         </Button>
-                        <Button size="sm" className="h-10 rounded-full border border-sky-300/20 bg-sky-400/15 px-4 text-white shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-sky-400/22 hover:shadow-lg" onClick={handleAddDataset}>
+                        <Button size="sm" className="h-9 rounded-full border border-sky-300/20 bg-sky-400/15 px-4 text-white shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-sky-400/22 hover:shadow-lg" onClick={handleAddDataset}>
                           <Upload className="mr-2 h-4 w-4" />
                           Add Dataset
                         </Button>
-                        <Button size="sm" variant="outline" className="h-10 rounded-full border-white/20 bg-white/5 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleFreshStart}>
+                        <Button size="sm" variant="outline" className="h-9 rounded-full border-white/20 bg-white/5 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleFreshStart}>
                           <RotateCcw className="mr-2 h-4 w-4" />
                           Fresh Start
                         </Button>
-                        <Button size="sm" variant="ghost" className="h-10 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
+                        <Button size="sm" variant="ghost" className="h-9 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
                           <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshingActivity && 'animate-spin')} />
-                          Refresh Sync
+                          Sync
                         </Button>
                         <ThemeToggle />
                       </div>
                     </div>
 
-                    <div className="grid gap-3 border-t border-white/10 pt-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,1fr)]">
-                      <div className="min-w-0">
+                    <div className="grid gap-3 border-t border-white/10 pt-3 lg:grid-cols-[minmax(0,1.45fr)_repeat(2,minmax(220px,0.72fr))]">
+                      <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-3 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">Current Focus</p>
-                        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-white">
+                        <h1 className="mt-1.5 text-xl font-semibold tracking-tight text-white sm:text-2xl">
                           {activeTabMeta.label}
                         </h1>
-                        <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
+                        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
                           {workflowReadiness}
                         </p>
-                        <p className="mt-3 text-sm text-slate-400">{sessionSummary}</p>
+                        <p className="mt-2 text-sm text-slate-400">{sessionSummary}</p>
                       </div>
 
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-4 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
-                            Dataset Summary
-                          </p>
-                          <div className="mt-3 flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-xl font-semibold tracking-tight text-white">{datasetStatus}</p>
-                              <p className="mt-1 truncate text-sm text-slate-300">
-                                {displayFileName ? displayFileName : 'No source selected'}
-                              </p>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-slate-950/30 px-3 py-2 text-right shadow-inner">
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Library</p>
-                              <p className="mt-1 text-sm font-semibold text-white">{availableDatasets.length}</p>
-                              <p className="text-[11px] text-slate-400">dataset{availableDatasets.length === 1 ? '' : 's'}</p>
-                            </div>
+                      <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-3 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
+                              Dataset Summary
+                            </p>
+                            <p className="mt-1.5 text-lg font-semibold tracking-tight text-white">{datasetStatus}</p>
+                            <p className="mt-1 truncate text-sm text-slate-300">
+                              {displayFileName ? displayFileName : 'No source selected'}
+                            </p>
                           </div>
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                              <Database className="h-3 w-3" />
-                              {hasWorkspace ? displayTotalRows.toLocaleString() : 0} total rows
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                              {displayColumns.toLocaleString()} columns
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                              {hasWorkspace ? displayLoadedRowCount.toLocaleString() : 0} browser rows
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                              {displayPreviewLoaded ? 'Preview + cached' : 'Fully loaded'}
-                            </span>
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/30 px-3 py-2 text-right shadow-inner">
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Library</p>
+                            <p className="mt-1 text-sm font-semibold text-white">{availableDatasets.length}</p>
                           </div>
-                          <p className="mt-3 text-xs leading-5 text-slate-400">
-                            {isRestoringWorkspace
-                              ? 'The browser preview is being restored from the backend cache so the session can continue without exceeding local storage.'
-                              : displayPreviewLoaded
-                                ? 'Responsive preview is active in the browser while the backend retains the full dataset for cleaning, forecasting, training, and reporting.'
-                                : 'Workspace data is fully available in the browser and ready for the complete guided workflow.'}
-                          </p>
                         </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
+                            <Database className="h-3 w-3" />
+                            {hasWorkspace ? displayTotalRows.toLocaleString() : 0} rows
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
+                            {displayColumns.toLocaleString()} columns
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
+                            {displayPreviewLoaded ? 'Preview cached' : 'Fully loaded'}
+                          </span>
+                        </div>
+                      </div>
 
-                        <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-4 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
-                            Session Continuity
-                          </p>
-                          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(190px,0.95fr)]">
-                            <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
-                              <div className="flex items-center gap-2 text-slate-300">
-                                <Clock3 className="h-3.5 w-3.5 text-sky-300" />
-                                <p className="text-xs font-semibold uppercase tracking-[0.18em]">Live IST</p>
-                              </div>
-                              <p className="mt-3 text-3xl font-semibold tracking-tight text-white">{liveIndiaTime}</p>
-                              <p className="mt-2 text-sm text-slate-300">{liveIndiaDate}</p>
-                              <p className="mt-1 text-xs text-slate-400">India Standard Time (IST) | India UTC+5:30</p>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Last Backend Sync</p>
-                              <p className="mt-3 text-lg font-semibold text-white">{recentActivity ? sessionContinuity.timeLabel : 'Not synced yet'}</p>
-                              <p className="mt-1 text-sm text-slate-300">{recentActivity ? sessionContinuity.dateLabel : 'Refresh sync after loading a dataset'}</p>
-                              <div className="mt-3 inline-flex rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
-                                {sessionContinuity.freshness}
-                              </div>
-                              {recentActivity ? <p className="mt-3 text-[11px] leading-5 text-slate-400">{sessionContinuity.timestamp}</p> : null}
-                            </div>
+                      <div className="overflow-hidden rounded-3xl border border-cyan-400/15 bg-[linear-gradient(180deg,rgba(8,47,73,0.34),rgba(15,23,42,0.34))] px-4 py-3 shadow-[0_20px_45px_-32px_rgba(34,211,238,0.45)]">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100/70">Last Backend Sync</p>
+                            <p className="mt-1.5 text-lg font-semibold tracking-tight text-white">{syncStatusLabel}</p>
+                            <p className="mt-1 text-sm text-slate-200/90">{syncSummary}</p>
                           </div>
-                          <div className="mt-4 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3 transition-all duration-300 hover:border-white/20 hover:bg-slate-950/40">
-                            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white">
-                              <History className="h-4 w-4" />
+                          <div className="inline-flex rounded-full border border-emerald-300/20 bg-emerald-400/12 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 shadow-sm">
+                            {sessionContinuity.freshness}
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/30 p-3">
+                            <div className="flex items-center gap-2 text-slate-300">
+                              <Activity className="h-3.5 w-3.5 text-cyan-300" />
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Session Trace</p>
                             </div>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-white">
-                                {recentActivity?.detail || 'The workspace can continue from the last saved browser state and backend activity trail.'}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-400">
-                                {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} is the latest backend-linked session.` : activeDatasetId ? `Dataset ${activeDatasetId} is ready to reconnect to the backend cache.` : 'Load a dataset to establish a persisted working session.'}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500">{activityLabel}</p>
+                            <p className="mt-2 text-sm text-slate-200">
+                              {recentActivity ? sessionContinuity.timestamp : 'No backend sync recorded yet.'}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
+                            <div className="flex items-center gap-2 text-slate-300">
+                              <Clock3 className="h-3.5 w-3.5 text-sky-300" />
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Live IST</p>
                             </div>
+                            <p className="mt-2 text-base font-semibold text-white">{liveIndiaTime}</p>
+                            <p className="mt-1 text-xs text-slate-400">{liveIndiaDate}</p>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3 transition-all duration-300 hover:border-white/20 hover:bg-slate-950/40">
+                          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white">
+                            <History className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-white">
+                              {recentActivity?.detail || 'The workspace can continue from the last saved browser state and backend activity trail.'}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-400">
+                              {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} is the latest backend-linked session.` : activeDatasetId ? `Dataset ${activeDatasetId} is ready to reconnect to the backend cache.` : 'Load a dataset to establish a persisted working session.'}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">{activityLabel}</p>
                           </div>
                         </div>
                       </div>
