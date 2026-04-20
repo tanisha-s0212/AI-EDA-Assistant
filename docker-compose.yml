@@ -10,8 +10,8 @@ services:
     environment:
       PGHOST: host.docker.internal
       PGPORT: 5432
-      PGUSER: ${POSTGRES_USER:-postgres}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGUSER: ${POSTGRES_USER:-agent}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-agent}
       PGDATABASE: postgres
       TARGET_DB: ${POSTGRES_DB:-ai_eda_assistant}
     command:
@@ -40,7 +40,7 @@ services:
     environment:
       ML_PORT: ${ML_PORT:-3004}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://localhost:3000}
-      ACTIVITY_DATABASE_URL: ${ACTIVITY_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/ai_eda_assistant}
+      ACTIVITY_DATABASE_URL: ${ACTIVITY_DATABASE_URL:-postgresql://agent:agent@host.docker.internal:5432/ai_eda_assistant}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     expose:
@@ -101,27 +101,11 @@ services:
     networks:
       - app-network
 
-  pgadmin:
-    image: dpage/pgadmin4:8
-    container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-pgadmin
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin123}
-    ports:
-      - "${PGADMIN_PORT:-5050}:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-      - ./infrastructure/pgadmin/servers.json:/pgadmin4/servers.json:ro
-    networks:
-      - app-network
-
 networks:
   app-network:
     driver: bridge
 
 volumes:
-  pgadmin_data:
   backend_models:
   backend_datasets:
   backend_logs:
