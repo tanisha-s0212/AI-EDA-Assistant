@@ -10,7 +10,7 @@ import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import type { ColumnInfo, DataRow } from '@/lib/store';
 
-type AdvancedEdaResponse = {
+export type AdvancedEdaResponse = {
   row_count: number;
   sampled_row_count: number;
   column_count: number;
@@ -194,10 +194,12 @@ export default function EdaAdvancedModules({
   datasetId,
   data,
   columns,
+  onAnalysisReady,
 }: {
   datasetId: string | null;
   data: DataRow[];
   columns: ColumnInfo[];
+  onAnalysisReady?: (analysis: AdvancedEdaResponse | null) => void;
 }) {
   const [analysis, setAnalysis] = useState<AdvancedEdaResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -211,6 +213,7 @@ export default function EdaAdvancedModules({
       if (!data.length || !columns.length) {
         setAnalysis(null);
         setError(null);
+        onAnalysisReady?.(null);
         return;
       }
 
@@ -226,11 +229,13 @@ export default function EdaAdvancedModules({
         if (!isCancelled) {
           setAnalysis(response.data);
           setRequestMode(datasetId ? 'cached' : 'sampled');
+          onAnalysisReady?.(response.data);
         }
       } catch (requestError) {
         if (!isCancelled) {
           setError(getApiErrorMessage(requestError, 'Advanced EDA could not be generated for this dataset.'));
           setAnalysis(null);
+          onAnalysisReady?.(null);
         }
       } finally {
         if (!isCancelled) {
@@ -244,7 +249,7 @@ export default function EdaAdvancedModules({
     return () => {
       isCancelled = true;
     };
-  }, [columns, data, datasetId]);
+  }, [columns, data, datasetId, onAnalysisReady]);
 
   if (!data.length || !columns.length) {
     return null;

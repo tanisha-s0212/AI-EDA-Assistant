@@ -1028,7 +1028,7 @@ export default function CleaningTab() {
                     <TableHeader>
                       <TableRow className="bg-muted/40 hover:bg-muted/40">
                         <TableHead className="font-semibold text-muted-foreground w-12 text-center">
-                          #
+                          SNo
                         </TableHead>
                         {previewColumns.map((col) => (
                           <TableHead key={col} className="font-semibold whitespace-nowrap">

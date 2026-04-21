@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo } from 'react';
-import { AlertCircle, BarChart3, Database, Sigma, Table as TableIcon, TrendingUp } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { AlertCircle, BarChart3, Database, Download, Loader2, Sigma, Table as TableIcon, TrendingUp } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table as ShadTable,
@@ -14,7 +15,20 @@ import {
 } from '@/components/ui/table';
 import { buildCorrelationHeatmap, computeEdaStats, formatMetric, heatColor } from '@/lib/eda';
 import { useAppStore } from '@/lib/store';
-import EdaAdvancedModules from '@/components/tabs/eda-advanced-modules';
+import EdaAdvancedModules, { type AdvancedEdaResponse } from '@/components/tabs/eda-advanced-modules';
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderRows(rows: string[][]) {
+  return rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
+}
 
 export default function EdaTab() {
   const rawData = useAppStore((s) => s.rawData);
@@ -24,9 +38,12 @@ export default function EdaTab() {
   const loadedRowCount = useAppStore((s) => s.loadedRowCount);
   const previewLoaded = useAppStore((s) => s.previewLoaded);
   const datasetId = useAppStore((s) => s.datasetId);
+  const fileName = useAppStore((s) => s.fileName);
 
   const data = cleanedData ?? rawData ?? [];
   const hasData = !!rawData && columns.length > 0;
+  const [advancedAnalysis, setAdvancedAnalysis] = useState<AdvancedEdaResponse | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const stats = useMemo(() => computeEdaStats(data, columns), [data, columns]);
   const heatmap = useMemo(() => buildCorrelationHeatmap(data, stats.numericColumns), [data, stats.numericColumns]);
@@ -37,6 +54,206 @@ export default function EdaTab() {
     [stats.numericColumns, stats.stats]
   );
   const strongestCorrelation = stats.correlations[0];
+  const heatmapColumns = stats.numericColumns.slice(0, 5);
+
+  const handleDownloadReport = useCallback(() => {
+    if (!hasData) return;
+
+    setIsDownloading(true);
+    try {
+      const schemaRows = columns.map((col) => ([
+        col.name,
+        col.dtype,
+        totalRows.toLocaleString(),
+        col.nonNull.toLocaleString(),
+        col.nullCount.toLocaleString(),
+        col.uniqueCount.toLocaleString(),
+        `${totalRows ? ((col.uniqueCount / totalRows) * 100).toFixed(1) : '0.0'}%`,
+        col.role,
+      ]));
+
+      const statsRows = numericRows.map(({ name, summary }) => ([
+        name,
+        formatMetric(summary.count),
+        formatMetric(summary.mean),
+        formatMetric(summary.std),
+        formatMetric(summary.min),
+        formatMetric(summary.q1),
+        formatMetric(summary.median),
+        formatMetric(summary.q3),
+        formatMetric(summary.max),
+      ]));
+
+      const relationshipItems = stats.correlations.length
+        ? stats.correlations.slice(0, 8).map((item) => `<li><strong>${escapeHtml(item.pair)}</strong><span>${item.correlation >= 0 ? '+' : ''}${item.correlation}</span></li>`).join('')
+        : '<li><strong>Relationships</strong><span>Need at least two numeric columns</span></li>';
+
+      const heatmapHeader = heatmapColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join('');
+      const heatmapBody = heatmapColumns.map((rowLabel) => {
+        const cells = heatmapColumns.map((column) => {
+          const cell = heatmap.find((item) => item.x === rowLabel && item.y === column);
+          return `<td>${(cell?.value ?? 0).toFixed(2)}</td>`;
+        }).join('');
+        return `<tr><th>${escapeHtml(rowLabel)}</th>${cells}</tr>`;
+      }).join('');
+
+      const advancedSections = advancedAnalysis ? `
+        <section>
+          <h2>Advanced EDA Modules</h2>
+          <div class="chip-row">
+            <span class="chip">${advancedAnalysis.row_count.toLocaleString()} rows analyzed</span>
+            <span class="chip">${advancedAnalysis.column_count.toLocaleString()} columns analyzed</span>
+            <span class="chip">${advancedAnalysis.missingness.total_missing.toLocaleString()} missing values</span>
+          </div>
+        </section>
+        <section>
+          <h3>Data Quality & Missingness</h3>
+          ${advancedAnalysis.missingness.message ? `<p>${escapeHtml(advancedAnalysis.missingness.message)}</p>` : ''}
+          ${advancedAnalysis.missingness.chart_base64 ? `<img src="${advancedAnalysis.missingness.chart_base64}" alt="Missingness heatmap" />` : '<p>No missingness chart available.</p>'}
+        </section>
+        <section>
+          <h3>Distributions & Outliers</h3>
+          ${advancedAnalysis.distributions.message ? `<p>${escapeHtml(advancedAnalysis.distributions.message)}</p>` : ''}
+          <div class="image-grid">
+            ${advancedAnalysis.distributions.charts.map((chart) => `
+              <figure>
+                <figcaption>${escapeHtml(chart.column)}</figcaption>
+                ${chart.chart_base64 ? `<img src="${chart.chart_base64}" alt="${escapeHtml(chart.column)} distribution chart" />` : '<p>No chart available.</p>'}
+              </figure>
+            `).join('')}
+          </div>
+        </section>
+        <section>
+          <h3>Categorical Analysis</h3>
+          ${advancedAnalysis.categorical.message ? `<p>${escapeHtml(advancedAnalysis.categorical.message)}</p>` : ''}
+          ${advancedAnalysis.categorical.warnings.length ? `<ul>${advancedAnalysis.categorical.warnings.map((warning) => `<li>${escapeHtml(`${warning.column}: ${warning.message}`)}</li>`).join('')}</ul>` : ''}
+          <div class="image-grid">
+            ${advancedAnalysis.categorical.charts.map((chart) => `
+              <figure>
+                <figcaption>${escapeHtml(chart.column)} (${chart.unique_count.toLocaleString()} unique)</figcaption>
+                ${chart.chart_base64 ? `<img src="${chart.chart_base64}" alt="${escapeHtml(chart.column)} categorical chart" />` : '<p>No chart available.</p>'}
+              </figure>
+            `).join('')}
+          </div>
+        </section>
+        <section>
+          <h3>Key Variable Interactions</h3>
+          ${advancedAnalysis.interactions.message ? `<p>${escapeHtml(advancedAnalysis.interactions.message)}</p>` : ''}
+          <div class="image-grid">
+            ${advancedAnalysis.interactions.plots.map((plot) => `
+              <figure>
+                <figcaption>${escapeHtml(plot.pair)} (Corr ${plot.correlation.toFixed(2)})</figcaption>
+                ${plot.chart_base64 ? `<img src="${plot.chart_base64}" alt="${escapeHtml(plot.pair)} interaction chart" />` : '<p>No chart available.</p>'}
+              </figure>
+            `).join('')}
+          </div>
+        </section>
+        <section>
+          <h3>Automated Insights & Recommendations</h3>
+          ${advancedAnalysis.insights.insights.length ? `<ul>${advancedAnalysis.insights.insights.map((insight) => `<li>${escapeHtml(insight)}</li>`).join('')}</ul>` : '<p>No major statistical anomalies were detected.</p>'}
+        </section>
+      ` : `
+        <section>
+          <h2>Advanced EDA Modules</h2>
+          <p>Advanced EDA charts were not available at download time.</p>
+        </section>
+      `;
+
+      const reportHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDA Report - ${escapeHtml(fileName ?? 'dataset')}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 32px 24px 48px; }
+    h1, h2, h3 { margin: 0 0 12px; }
+    p { line-height: 1.6; }
+    section { background: white; border: 1px solid #e2e8f0; border-radius: 18px; padding: 20px; margin-top: 20px; box-shadow: 0 12px 35px rgba(15, 23, 42, 0.06); }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 20px; }
+    .metric { background: linear-gradient(180deg, #eff6ff, #ffffff); border: 1px solid #bfdbfe; border-radius: 16px; padding: 16px; }
+    .metric-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #475569; }
+    .metric-value { margin-top: 8px; font-size: 24px; font-weight: 700; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .chip { display: inline-flex; padding: 8px 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 999px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 14px; }
+    th, td { border: 1px solid #e2e8f0; padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; }
+    .relationship-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    .relationship-list li { display: flex; justify-content: space-between; gap: 12px; border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px 14px; background: #fff; }
+    .image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 14px; }
+    figure { margin: 0; border: 1px solid #e2e8f0; border-radius: 16px; padding: 12px; background: #fff; }
+    figcaption { margin-bottom: 10px; font-weight: 600; }
+    img { width: 100%; height: auto; border-radius: 12px; border: 1px solid #e2e8f0; background: #fff; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Exploratory Data Analysis Report</h1>
+    <p>Dataset: ${escapeHtml(fileName ?? 'Uploaded dataset')}</p>
+    <p>This report exports the EDA tab summaries, tables, relationship analysis, correlation matrix, and available advanced EDA charts.</p>
+
+    <div class="summary">
+      <div class="metric"><div class="metric-label">Total Rows</div><div class="metric-value">${totalRows.toLocaleString()}</div></div>
+      <div class="metric"><div class="metric-label">Rows In Workspace</div><div class="metric-value">${data.length.toLocaleString()}</div></div>
+      <div class="metric"><div class="metric-label">Columns</div><div class="metric-value">${columns.length.toLocaleString()}</div></div>
+      <div class="metric"><div class="metric-label">Numeric Columns</div><div class="metric-value">${stats.numericColumns.length.toLocaleString()}</div></div>
+    </div>
+
+    <section>
+      <h2>Dataset Schema</h2>
+      <table>
+        <thead>
+          <tr><th>Column</th><th>Type</th><th>Count</th><th>Non-Null</th><th>Missing</th><th>Unique</th><th>Unique %</th><th>Role</th></tr>
+        </thead>
+        <tbody>${renderRows(schemaRows)}</tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Statistical Summary</h2>
+      ${statsRows.length ? `
+        <table>
+          <thead>
+            <tr><th>Column</th><th>Count</th><th>Mean</th><th>Std</th><th>Min</th><th>Q1</th><th>Median</th><th>Q3</th><th>Max</th></tr>
+          </thead>
+          <tbody>${renderRows(statsRows)}</tbody>
+        </table>
+      ` : '<p>No numeric columns available for descriptive statistics.</p>'}
+    </section>
+
+    <section>
+      <h2>Relationships</h2>
+      <ul class="relationship-list">${relationshipItems}</ul>
+    </section>
+
+    <section>
+      <h2>Correlation Heatmap</h2>
+      ${heatmapColumns.length >= 2 ? `
+        <table>
+          <thead><tr><th></th>${heatmapHeader}</tr></thead>
+          <tbody>${heatmapBody}</tbody>
+        </table>
+      ` : '<p>Need at least two numeric columns to render the heatmap matrix.</p>'}
+    </section>
+
+    ${advancedSections}
+  </div>
+</body>
+</html>`;
+
+      const blob = new Blob([reportHtml], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${(fileName ?? 'dataset').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'dataset'}_eda_report.html`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [advancedAnalysis, columns, data.length, fileName, hasData, heatmap, heatmapColumns, numericRows, stats, totalRows]);
 
   if (!hasData) {
     return (
@@ -239,7 +456,23 @@ export default function EdaTab() {
         </Card>
       </div>
 
-      <EdaAdvancedModules datasetId={datasetId} data={data} columns={columns} />
+      <EdaAdvancedModules datasetId={datasetId} data={data} columns={columns} onAnalysisReady={setAdvancedAnalysis} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Download className="h-4 w-4 text-primary" /> Download EDA Report</CardTitle>
+          <CardDescription>Exports the EDA tab into a standalone report with schema, summaries, relationship analysis, correlation matrix, and available advanced charts.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="max-w-3xl text-sm text-muted-foreground">
+            The download includes the current EDA analysis shown in the app. Advanced EDA visual sections are included automatically when they have finished loading.
+          </p>
+          <Button onClick={handleDownloadReport} disabled={isDownloading} className="gap-2 self-start sm:self-auto">
+            {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {isDownloading ? 'Preparing Report...' : 'Download EDA Report'}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

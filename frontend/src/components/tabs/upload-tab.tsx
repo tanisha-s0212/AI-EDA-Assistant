@@ -24,7 +24,8 @@ import { useAppStore, type ColumnInfo, type DataRow, type DatasetWorkspaceDraft 
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+const MAX_FILE_SIZE = 512 * 1024 * 1024; // 512MB
+const MAX_FILE_SIZE_LABEL = '512MB';
 const COLUMN_ANALYSIS_SAMPLE_SIZE = 5000;
 const DUPLICATE_CHECK_LIMIT = 10000;
 const MEMORY_ESTIMATE_SAMPLE_SIZE = 200;
@@ -315,7 +316,7 @@ export default function UploadTab() {
       if (file.size > MAX_FILE_SIZE) {
         toast({
           title: 'File too large',
-          description: `Maximum file size is 200MB. Your file is ${formatBytes(file.size)}.`,
+          description: `Maximum file size is ${MAX_FILE_SIZE_LABEL}. Your file is ${formatBytes(file.size)}.`,
           variant: 'destructive',
         });
         return;
@@ -339,9 +340,7 @@ export default function UploadTab() {
       formData.append('file', file);
 
       try {
-        const { data: result } = await apiClient.post('/parse-dataset', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        const { data: result } = await apiClient.post('/parse-dataset', formData);
 
         if (!result) {
           toast({
@@ -502,17 +501,17 @@ export default function UploadTab() {
       variants={containerVariants}
       initial="hidden"
       animate="visible"
-      className="space-y-8"
+      className="min-w-0 space-y-8"
     >
       {/* ── Hero Section ─────────────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="relative overflow-hidden rounded-2xl border border-border bg-card p-8 md:p-12">
+      <motion.div variants={itemVariants} className="relative min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-6 sm:p-8 md:p-12">
         {/* Background decoration */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-primary/8 blur-3xl" />
           <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-secondary blur-3xl" />
         </div>
 
-        <div className="relative flex flex-col md:flex-row items-center gap-6 md:gap-10">
+        <div className="relative flex min-w-0 flex-col items-center gap-6 md:flex-row md:gap-10">
           {/* Animated Robot Icon */}
           <motion.div
             className="flex-shrink-0"
@@ -541,7 +540,7 @@ export default function UploadTab() {
           </motion.div>
 
           {/* Hero Text */}
-          <div className="text-center md:text-left flex-1">
+          <div className="min-w-0 flex-1 text-center md:text-left">
             <motion.h1
               className="text-3xl md:text-4xl lg:text-5xl font-extrabold tracking-tight"
               initial={{ opacity: 0, x: -20 }}
@@ -551,7 +550,7 @@ export default function UploadTab() {
               <span className="text-primary">Load Your Dataset</span>
             </motion.h1>
             <motion.p
-              className="mt-3 text-base md:text-lg text-muted-foreground max-w-xl"
+              className="mt-3 max-w-full text-base text-muted-foreground md:max-w-xl md:text-lg"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.6, delay: 0.35 }}
@@ -578,7 +577,7 @@ export default function UploadTab() {
                 Parquet
               </Badge>
               <Badge variant="outline" className="text-muted-foreground">
-                Max 200MB
+                Max {MAX_FILE_SIZE_LABEL}
               </Badge>
             </motion.div>
           </div>
@@ -635,7 +634,7 @@ export default function UploadTab() {
                 onDrop={handleDrop}
                 onClick={handleBrowseClick}
                 className={`
-                  relative cursor-pointer rounded-2xl border-2 border-dashed transition-all duration-300 ease-in-out
+                  relative min-w-0 cursor-pointer rounded-2xl border-2 border-dashed transition-all duration-300 ease-in-out
                   ${
                     isDragging
                       ? 'scale-[1.01] border-primary bg-primary/5 shadow-lg shadow-primary/10'
@@ -659,7 +658,7 @@ export default function UploadTab() {
                   )}
                 </AnimatePresence>
 
-                <div className="flex flex-col items-center justify-center py-16 px-6 md:py-20 md:px-12">
+                <div className="flex min-w-0 flex-col items-center justify-center px-4 py-14 sm:px-6 md:px-12 md:py-20">
                   <AnimatePresence mode="wait">
                     {isProcessing ? (
                       <motion.div
@@ -700,7 +699,7 @@ export default function UploadTab() {
                         </motion.div>
 
                         {/* Instructions */}
-                        <div className="text-center max-w-md">
+                        <div className="max-w-md text-center">
                           <h3 className="text-xl font-semibold mb-1">
                             {isDragging ? 'Drop your file here' : 'Drag & drop your file here'}
                           </h3>
@@ -710,7 +709,7 @@ export default function UploadTab() {
                         </div>
 
                         {/* Supported Formats */}
-                        <div className="flex items-center gap-2 mt-2">
+                        <div className="mt-2 flex max-w-full flex-wrap items-center justify-center gap-2 text-center">
                           <FileText className="h-4 w-4 text-muted-foreground" />
                           <span className="text-xs text-muted-foreground">CSV</span>
                           <span className="text-muted-foreground/30">·</span>
@@ -723,7 +722,7 @@ export default function UploadTab() {
 
                         {/* Size limit */}
                         <p className="text-xs text-muted-foreground/60 mt-1">
-                          Maximum file size: 200MB
+                          Maximum file size: {MAX_FILE_SIZE_LABEL}
                         </p>
                       </motion.div>
                     )}
@@ -795,7 +794,7 @@ export default function UploadTab() {
       {/* ── Info Tip ──────────────────────────────────────────────────────── */}
       <motion.div
         variants={itemVariants}
-        className="rounded-xl border border-border/50 bg-muted/30 p-4 flex items-start gap-3"
+        className="flex flex-col gap-3 rounded-xl border border-border/50 bg-muted/30 p-4 sm:flex-row sm:items-start"
       >
         <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
           <Sparkles className="h-4 w-4 text-primary" />

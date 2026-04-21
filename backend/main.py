@@ -62,7 +62,10 @@ DATASET_DIR.mkdir(exist_ok=True)
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 ACTIVITY_DATABASE_URL = os.environ.get('ACTIVITY_DATABASE_URL') or os.environ.get('DATABASE_URL') or 'postgresql://postgres:postgres@localhost:5432/ai_eda_assistant'
+ACTIVITY_DB_REQUIRED = os.environ.get('ACTIVITY_DB_REQUIRED', 'false').strip().lower() == 'true'
+ACTIVITY_DB_CONNECT_TIMEOUT = int(os.environ.get('ACTIVITY_DB_CONNECT_TIMEOUT', '3'))
 TRAINING_N_JOBS = 1
+ACTIVITY_DB_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,7 +111,18 @@ SESSION_STATE: dict[str, dict[str, Any]] = {}
 
 @app.on_event('startup')
 def startup_event() -> None:
-    init_activity_db()
+    global ACTIVITY_DB_AVAILABLE
+    try:
+        init_activity_db()
+        ACTIVITY_DB_AVAILABLE = True
+        logger.info('Activity database is available.')
+    except Exception:
+        ACTIVITY_DB_AVAILABLE = False
+        if ACTIVITY_DB_REQUIRED:
+            raise
+        logger.exception(
+            'Activity database is unavailable. Continuing without persisted activity logging because ACTIVITY_DB_REQUIRED is false.'
+        )
 
 ProblemType = Literal['regression', 'classification']
 TrainingMode = Literal['fast', 'balanced']
@@ -130,6 +144,7 @@ EDA_MAX_CATEGORICAL_CHARTS = 8
 EDA_MAX_CATEGORY_BARS = 10
 EDA_MAX_INTERACTION_COLUMNS = 40
 EDA_MAX_INTERACTION_PAIRS = 3
+MAX_UPLOAD_SIZE_BYTES = 512 * 1024 * 1024
 
 
 def utc_now_iso() -> str:
@@ -137,7 +152,11 @@ def utc_now_iso() -> str:
 
 
 def get_activity_connection() -> psycopg.Connection:
-    connection = psycopg.connect(ACTIVITY_DATABASE_URL, row_factory=dict_row)
+    connection = psycopg.connect(
+        ACTIVITY_DATABASE_URL,
+        row_factory=dict_row,
+        connect_timeout=ACTIVITY_DB_CONNECT_TIMEOUT,
+    )
     connection.autocommit = True
     return connection
 
@@ -205,6 +224,11 @@ def record_activity(
     status_code: int | None = None,
     duration_ms: float | None = None,
 ) -> None:
+    global ACTIVITY_DB_AVAILABLE
+
+    if not ACTIVITY_DB_AVAILABLE:
+        return
+
     try:
         with get_activity_connection() as connection:
             connection.execute(
@@ -252,6 +276,7 @@ def record_activity(
                 ),
             )
     except Exception:
+        ACTIVITY_DB_AVAILABLE = False
         logger.exception('Failed to persist activity action=%s status=%s', action, status)
 
 
@@ -4347,8 +4372,8 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
         raise HTTPException(status_code=400, detail='Only .csv, .tsv, .xlsx, .xls, and .parquet files are supported.')
 
     content = await file.read()
-    if len(content) > 200 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail='File exceeds 200MB limit.')
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail='File exceeds 512MB limit.')
 
     buffer = io.BytesIO(content)
     dataset_id = str(uuid.uuid4())[:8]
@@ -4558,6 +4583,16 @@ def list_activities(
     server_session_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> JSONResponse:
+    if not ACTIVITY_DB_AVAILABLE:
+        return JSONResponse(
+            content={
+                'activities': [],
+                'count': 0,
+                'dbAvailable': False,
+                'message': 'Activity database is unavailable. Start PostgreSQL to enable persisted activity history.',
+            }
+        )
+
     effective_client_session_id = client_session_id or get_client_session_id(request)
     query = '''
         SELECT
@@ -4595,8 +4630,19 @@ def list_activities(
     query += ' ORDER BY id DESC LIMIT %s'
     params.append(limit)
 
-    with get_activity_connection() as connection:
-        rows = connection.execute(query, params).fetchall()
+    try:
+        with get_activity_connection() as connection:
+            rows = connection.execute(query, params).fetchall()
+    except Exception:
+        logger.exception('Failed to query user activities.')
+        return JSONResponse(
+            content={
+                'activities': [],
+                'count': 0,
+                'dbAvailable': False,
+                'message': 'Activity database query failed. Start PostgreSQL to enable persisted activity history.',
+            }
+        )
 
     activities = []
     for row in rows:
@@ -4620,12 +4666,15 @@ def list_activities(
             'metadata': json.loads(metadata_json) if metadata_json else None,
         })
 
-    return JSONResponse(content={'activities': activities, 'count': len(activities)})
+    return JSONResponse(content={'activities': activities, 'count': len(activities), 'dbAvailable': True})
 
 
 @router.get('/health')
 def health() -> dict[str, str]:
-    return {'status': 'healthy'}
+    return {
+        'status': 'healthy',
+        'activityDb': 'available' if ACTIVITY_DB_AVAILABLE else 'unavailable',
+    }
 
 
 @app.get('/')
