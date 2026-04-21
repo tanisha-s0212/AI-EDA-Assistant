@@ -908,6 +908,9 @@ class CleaningJustificationRequest(BaseModel):
     logs: list[CleaningLog]
     totalRows: int
     totalColumns: int
+    fileName: str | None = None
+    loadedRowCount: int | None = None
+    previewLoaded: bool = False
 
 class ParquetCleaningRequest(BaseModel):
     dataset_id: str
@@ -1061,6 +1064,17 @@ class ReportPayload(BaseModel):
     predictionProbabilities: dict[str, float] | None = None
     predictionHistory: list[PredictionHistoryItem] = Field(default_factory=list)
     edaStats: EdaStats = Field(default_factory=EdaStats)
+
+
+class EdaPdfPayload(BaseModel):
+    datasetId: str | None = None
+    fileName: str
+    totalRows: int
+    loadedRowCount: int | None = None
+    previewLoaded: bool = False
+    columns: list[ColumnInfo] = Field(default_factory=list)
+    edaStats: EdaStats = Field(default_factory=EdaStats)
+    advancedAnalysis: dict[str, Any] | None = None
 
 
 REGRESSION_MODELS: dict[str, tuple[str, Any, dict[str, Any]]] = {
@@ -3441,13 +3455,21 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
 
 
 def generate_cleaning_justification(request: CleaningJustificationRequest) -> str:
+    dataset_label = request.fileName or 'uploaded dataset'
+    loaded_rows = request.loadedRowCount or request.totalRows
+    scope_line = (
+        f"The dataset was uploaded as '{dataset_label}'. A preview of {loaded_rows} rows is currently rendered while cleaning decisions are being applied to the full {request.totalRows}-row dataset."
+        if request.previewLoaded and request.totalRows > loaded_rows
+        else f"The dataset was uploaded as '{dataset_label}' with {request.totalRows} rows available for direct cleaning review."
+    )
     summary_lines = [
-        f"The dataset has {request.totalRows} rows and {request.totalColumns} columns.",
+        scope_line,
+        f"It contains {request.totalColumns} columns, so the cleaning workflow focuses on changes that improve reliability without assuming any specific business domain.",
         'The following cleaning steps were applied to improve data quality:',
     ]
     for log in request.logs:
         summary_lines.append(f"- {log.action}: {log.detail}")
-    summary_lines.append('These changes help the downstream analysis and model training use more consistent data.')
+    summary_lines.append('These changes make the uploaded dataset more consistent for EDA, forecasting, machine learning training, and downstream prediction without hard-coding dataset-specific rules.')
     return "\n".join(summary_lines)
 
 
@@ -3932,6 +3954,225 @@ def build_correlation_chart_image(correlations: list[dict[str, Any]]) -> Image |
     plt.close(fig)
     image_buffer.seek(0)
     return Image(image_buffer, width=480, height=220)
+
+
+def build_image_from_base64(data_uri: str | None, *, max_width: float = 480, max_height: float = 260) -> Image | None:
+    if not data_uri:
+        return None
+
+    try:
+        encoded = data_uri.split(',', 1)[1] if ',' in data_uri else data_uri
+        image_bytes = base64.b64decode(encoded)
+        image_buffer = io.BytesIO(image_bytes)
+        image = Image(image_buffer)
+        image.drawWidth = max_width
+        image.drawHeight = max_height
+        return image
+    except Exception:
+        logger.exception('Failed to decode base64 image for EDA PDF report.')
+        return None
+
+
+def build_eda_pdf(payload: EdaPdfPayload) -> bytes:
+    loaded_row_count = payload.loadedRowCount or payload.totalRows
+    preview_mode = payload.previewLoaded and payload.totalRows > loaded_row_count
+    advanced = payload.advancedAnalysis or {}
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), leftMargin=30, rightMargin=30, topMargin=26, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('EDA_Title', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=22, leading=26, textColor=colors.HexColor('#0f172a'), spaceAfter=8)
+    heading_style = ParagraphStyle('EDA_Heading', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=15, leading=18, textColor=colors.HexColor('#0f172a'), spaceAfter=6)
+    body_style = ParagraphStyle('EDA_Body', parent=styles['BodyText'], fontName='Helvetica', fontSize=9.2, leading=13, textColor=colors.HexColor('#334155'))
+    small_style = ParagraphStyle('EDA_Small', parent=body_style, fontSize=8.2, leading=11, textColor=colors.HexColor('#64748b'))
+    label_style = ParagraphStyle('EDA_Label', parent=body_style, fontName='Helvetica-Bold', fontSize=8.2, leading=10, textColor=colors.HexColor('#0f766e'))
+    value_style = ParagraphStyle('EDA_Value', parent=body_style, fontName='Helvetica-Bold', fontSize=13, leading=16, textColor=colors.HexColor('#0f172a'))
+    elements: list[Any] = []
+    page_width = landscape(letter)[0]
+    content_width = page_width - 60
+
+    def paragraph(text: Any, style: ParagraphStyle = body_style) -> Paragraph:
+        return Paragraph(str(text).replace('\n', '<br/>'), style)
+
+    def add_table(rows: list[list[Any]], widths: list[float], header_bg: str = '#0f766e') -> None:
+        normalized = []
+        for row_index, row in enumerate(rows):
+            row_style = label_style if row_index == 0 else body_style
+            normalized.append([paragraph(cell, row_style) for cell in row])
+        table = Table(normalized, colWidths=widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(header_bg)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fbff')]),
+            ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#dbe4f0')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(table)
+
+    def add_stat_cards(cards: list[tuple[str, Any]]) -> None:
+        row = []
+        widths = []
+        for label, value in cards:
+            card = Table([[paragraph(label, label_style)], [paragraph(value, value_style)]], colWidths=[content_width / max(1, len(cards)) - 8])
+            card.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fbff')),
+                ('BOX', (0, 0), (-1, -1), 0.65, colors.HexColor('#d6e3f1')),
+                ('LEFTPADDING', (0, 0), (-1, -1), 10),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            row.append(card)
+            widths.append(content_width / max(1, len(cards)))
+        wrapper = Table([row], colWidths=widths)
+        wrapper.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+        elements.append(wrapper)
+
+    def add_section(title: str, blurb: str) -> None:
+        elements.append(paragraph(title, heading_style))
+        elements.append(paragraph(blurb, body_style))
+        elements.append(Spacer(1, 8))
+
+    def add_chart_section(title: str, description: str, chart_items: list[tuple[str, str | None]], *, subtitle: str | None = None) -> None:
+        add_section(title, description)
+        if subtitle:
+            elements.append(paragraph(subtitle, small_style))
+            elements.append(Spacer(1, 6))
+        rendered_any = False
+        for chart_title, chart_base64 in chart_items[:4]:
+            image = build_image_from_base64(chart_base64)
+            elements.append(paragraph(chart_title, label_style))
+            if image is not None:
+                elements.append(image)
+                rendered_any = True
+            else:
+                elements.append(paragraph('No chart available for this item.', small_style))
+            elements.append(Spacer(1, 8))
+        if not rendered_any and not chart_items:
+            elements.append(paragraph('No chart outputs were available for this section.', small_style))
+
+    def decorate_page(canvas: Any, doc_obj: Any) -> None:
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor('#dbe4f0'))
+        canvas.line(doc.leftMargin, 18, page_width - doc.rightMargin, 18)
+        canvas.setFont('Helvetica', 8)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.drawString(doc.leftMargin, 8, f'EDA PDF | {payload.fileName}')
+        canvas.drawRightString(page_width - doc.rightMargin, 8, f'Page {canvas.getPageNumber()}')
+        canvas.restoreState()
+
+    elements.append(paragraph('Exploratory Data Analysis PDF', title_style))
+    elements.append(paragraph(
+        f'This export captures the EDA tab functionality, working flow, descriptive statistics, relationship analysis, and advanced analytical features for {payload.fileName}.',
+        body_style,
+    ))
+    elements.append(Spacer(1, 10))
+    add_stat_cards([
+        ('Total Rows', f'{payload.totalRows:,}'),
+        ('Rows In Workspace', f'{loaded_row_count:,}'),
+        ('Columns', len(payload.columns)),
+        ('Numeric Fields', len(payload.edaStats.numericColumns)),
+        ('Categorical Fields', len(payload.edaStats.categoricalColumns)),
+    ])
+    elements.append(Spacer(1, 8))
+    elements.append(paragraph(
+        f'EDA working mode: {"Preview-backed browser analysis with cached backend dataset support." if preview_mode else "Direct workspace analysis across the full loaded dataset."}',
+        small_style,
+    ))
+    elements.append(Spacer(1, 12))
+
+    add_section('EDA Tab Functional Coverage', 'This PDF mirrors the EDA tab itself: schema review, numeric profiling, correlation discovery, advanced charts, and automated statistical recommendations.')
+    add_table([
+        ['Feature Area', 'What The EDA Tab Does'],
+        ['Dataset Schema', 'Profiles column type, completeness, uniqueness, and inferred role for each field.'],
+        ['Statistical Summary', 'Computes count, mean, spread, quartiles, and extrema for numeric columns.'],
+        ['Relationships', 'Highlights the strongest positive and negative numeric correlations.'],
+        ['Correlation Heatmap', 'Shows matrix-style correlation strength across the leading numeric fields.'],
+        ['Advanced Modules', 'Extends the base EDA with missingness, distributions, categorical analysis, interactions, and automated insights.'],
+    ], [content_width * 0.24, content_width * 0.72], header_bg='#115e59')
+    elements.append(PageBreak())
+
+    add_section('Dataset Schema', 'The EDA tab begins by establishing the structure and quality envelope of the active dataset.')
+    schema_rows = [['Column', 'Type', 'Non-Null', 'Missing', 'Unique', 'Role']]
+    for column in payload.columns[:24]:
+        schema_rows.append([column.name, column.dtype, column.nonNull, column.nullCount, column.uniqueCount, column.role])
+    add_table(schema_rows, [content_width * 0.28, content_width * 0.12, content_width * 0.12, content_width * 0.12, content_width * 0.12, content_width * 0.14], header_bg='#115e59')
+    if len(payload.columns) > 24:
+        elements.append(Spacer(1, 6))
+        elements.append(paragraph(f'Showing the first 24 columns out of {len(payload.columns)} total profiled columns.', small_style))
+    elements.append(Spacer(1, 10))
+
+    add_section('Statistical Summary', 'Numeric fields are summarized to expose central tendency, spread, and range before cleaning or modeling.')
+    numeric_rows = [['Field', 'Mean', 'Std', 'Min', 'Median', 'Max']]
+    for field_name in payload.edaStats.numericColumns[:12]:
+        stats = payload.edaStats.stats.get(field_name, {})
+        numeric_rows.append([
+            field_name,
+            stats.get('mean', 'N/A'),
+            stats.get('std', 'N/A'),
+            stats.get('min', 'N/A'),
+            stats.get('median', 'N/A'),
+            stats.get('max', 'N/A'),
+        ])
+    add_table(numeric_rows if len(numeric_rows) > 1 else [['Field', 'Mean', 'Std', 'Min', 'Median', 'Max'], ['N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A']], [content_width * 0.34, content_width * 0.11, content_width * 0.11, content_width * 0.11, content_width * 0.11, content_width * 0.11], header_bg='#115e59')
+    elements.append(PageBreak())
+
+    add_section('Relationships and Correlation Working', 'The EDA tab surfaces the strongest numeric relationships so users can quickly assess signal, redundancy, and interaction behavior.')
+    corr_image = build_correlation_chart_image(payload.edaStats.correlations)
+    if corr_image is not None:
+        elements.append(corr_image)
+        elements.append(Spacer(1, 8))
+    correlation_rows = [['Pair', 'Correlation']]
+    for item in payload.edaStats.correlations[:10]:
+        correlation_rows.append([item.get('pair', 'N/A'), item.get('correlation', 'N/A')])
+    add_table(correlation_rows if len(correlation_rows) > 1 else [['Pair', 'Correlation'], ['N/A', 'N/A']], [content_width * 0.78, content_width * 0.18], header_bg='#115e59')
+
+    insights = ((advanced.get('insights') or {}).get('insights') if isinstance(advanced.get('insights'), dict) else None) or []
+    if insights:
+        elements.append(Spacer(1, 10))
+        add_section('Automated Insights', 'The advanced EDA layer translates statistical anomalies into plain-language recommendations.')
+        insight_rows = [['Insight']]
+        for item in insights[:10]:
+            insight_rows.append([item])
+        add_table(insight_rows, [content_width * 0.96], header_bg='#115e59')
+    elements.append(PageBreak())
+
+    missingness = advanced.get('missingness') if isinstance(advanced.get('missingness'), dict) else {}
+    distributions = advanced.get('distributions') if isinstance(advanced.get('distributions'), dict) else {}
+    categorical = advanced.get('categorical') if isinstance(advanced.get('categorical'), dict) else {}
+    interactions = advanced.get('interactions') if isinstance(advanced.get('interactions'), dict) else {}
+
+    add_chart_section(
+        'Advanced EDA: Data Quality and Missingness',
+        'This section documents how the advanced EDA tab checks missing-value concentration and dataset completeness behavior.',
+        [('Missingness Intensity Map', missingness.get('chart_base64'))] if missingness else [],
+        subtitle=str(missingness.get('message') or '') if missingness else None,
+    )
+    add_chart_section(
+        'Advanced EDA: Distributions and Outliers',
+        'These charts show how the EDA tab evaluates numeric spread, skew, and potential outliers.',
+        [(str(item.get('column', 'Distribution')), item.get('chart_base64')) for item in (distributions.get('charts') or []) if isinstance(item, dict)],
+        subtitle=str(distributions.get('message') or '') if distributions else None,
+    )
+    add_chart_section(
+        'Advanced EDA: Categorical Features',
+        'These plots document top-category behavior and warn about high-cardinality features that may affect ML readiness.',
+        [(f"{item.get('column', 'Category')} ({item.get('unique_count', 'N/A')} unique)", item.get('chart_base64')) for item in (categorical.get('charts') or []) if isinstance(item, dict)],
+        subtitle=str(categorical.get('message') or '') if categorical else None,
+    )
+    add_chart_section(
+        'Advanced EDA: Key Variable Interactions',
+        'These interaction views show the strongest numeric pairings explored by the advanced EDA feature set.',
+        [(str(item.get('pair', 'Interaction')), item.get('chart_base64')) for item in (interactions.get('plots') or []) if isinstance(item, dict)],
+        subtitle=str(interactions.get('message') or '') if interactions else None,
+    )
+
+    doc.build(elements, onFirstPage=decorate_page, onLaterPages=decorate_page)
+    return buffer.getvalue()
 
 
 def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
@@ -4873,6 +5114,37 @@ def advanced_eda(request: AdvancedEdaRequest, http_request: Request) -> JSONResp
     except Exception as error:
         logger.exception('Advanced EDA generation failed dataset_id=%s', request.dataset_id)
         raise HTTPException(status_code=400, detail=f'Advanced EDA generation failed: {error}') from error
+
+
+@router.post('/eda/report')
+def generate_eda_report(payload: EdaPdfPayload, http_request: Request) -> Response:
+    try:
+        report_bytes = build_eda_pdf(payload)
+    except Exception as error:
+        logger.exception('EDA PDF generation failed file_name=%s', payload.fileName)
+        raise HTTPException(status_code=400, detail=f'Failed to generate EDA PDF: {error}') from error
+
+    file_stem = ''.join(ch for ch in payload.fileName.rsplit('.', 1)[0] if ch.isalnum() or ch in ('-', '_', ' ')).strip() or 'dataset'
+    record_activity(
+        request=http_request,
+        action='generate_eda_pdf',
+        status='success',
+        dataset_id=payload.datasetId,
+        file_name=payload.fileName,
+        detail='Generated the EDA tab PDF export.',
+        metadata={
+            'total_rows': payload.totalRows,
+            'column_count': len(payload.columns),
+            'numeric_columns': len(payload.edaStats.numericColumns),
+            'categorical_columns': len(payload.edaStats.categoricalColumns),
+            'advanced_analysis_available': bool(payload.advancedAnalysis),
+        },
+    )
+    return Response(
+        content=report_bytes,
+        media_type='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename="{file_stem}_eda_report.pdf"'},
+    )
 
 
 @router.post('/report/generate')
