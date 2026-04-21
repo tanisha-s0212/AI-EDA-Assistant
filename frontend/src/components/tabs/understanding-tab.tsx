@@ -145,7 +145,7 @@ export default function UnderstandingTab() {
             <ShadTable>
               <TableHeader>
                 <TableRow>
-                  <TableHead>#</TableHead>
+                  <TableHead>SNo</TableHead>
                   {columns.map((col) => <TableHead key={col.name}>{col.name}</TableHead>)}
                 </TableRow>
               </TableHeader>

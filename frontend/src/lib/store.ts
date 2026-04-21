@@ -153,12 +153,25 @@ export interface DatasetWorkspace extends DatasetWorkspaceState {
 
 export type DatasetWorkspaceDraft = DatasetWorkspaceState;
 
+export interface AuthenticatedUser {
+  userId: string;
+  username: string;
+  email: string;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt: string;
+}
+
 export interface AppState extends DatasetWorkspaceState {
   activeTab: TabId;
   uploadPickerRequestId: number;
+  currentUser: AuthenticatedUser | null;
+  isAuthenticated: boolean;
   setActiveTab: (tab: TabId) => void;
   requestUploadPicker: () => void;
   resetWorkspace: () => void;
+  setCurrentUser: (user: AuthenticatedUser) => void;
+  logoutUser: () => void;
   hasHydrated: boolean;
   setHasHydrated: (value: boolean) => void;
   mlWorkflowStep: number;
@@ -177,6 +190,8 @@ type PersistedAppSlice = Pick<
   | 'activeTab'
   | 'mlWorkflowStep'
   | 'hasHydrated'
+  | 'currentUser'
+  | 'isAuthenticated'
   | 'datasets'
   | 'datasetOrder'
   | 'activeDatasetKey'
@@ -289,6 +304,8 @@ const initialPersistedState: PersistedAppSlice = {
   activeTab: 'upload',
   mlWorkflowStep: 1,
   hasHydrated: false,
+  currentUser: null,
+  isAuthenticated: false,
   datasets: {},
   datasetOrder: [],
   activeDatasetKey: null,
@@ -302,13 +319,18 @@ const store = create<AppState>()(
       uploadPickerRequestId: 0,
       setActiveTab: (tab) => set({ activeTab: tab }),
       requestUploadPicker: () => set((state) => ({ uploadPickerRequestId: state.uploadPickerRequestId + 1 })),
+      setCurrentUser: (user) => set({ currentUser: user, isAuthenticated: true }),
+      logoutUser: () => set({ currentUser: null, isAuthenticated: false }),
       resetWorkspace: () => {
         const previousReportUrl = get().reportUrl;
+        const { currentUser, isAuthenticated } = get();
         if (previousReportUrl && typeof URL !== 'undefined') {
           URL.revokeObjectURL(previousReportUrl);
         }
         set({
           ...initialPersistedState,
+          currentUser,
+          isAuthenticated,
           hasHydrated: true,
         });
       },
@@ -367,6 +389,8 @@ const store = create<AppState>()(
         activeTab: state.activeTab,
         mlWorkflowStep: state.mlWorkflowStep,
         hasHydrated: state.hasHydrated,
+        currentUser: state.currentUser,
+        isAuthenticated: state.isAuthenticated,
         datasets: Object.fromEntries(
           Object.entries(state.datasets).map(([key, dataset]) => [
             key,
@@ -384,6 +408,8 @@ const store = create<AppState>()(
 
         return {
           ...state,
+          currentUser: state.currentUser ?? null,
+          isAuthenticated: Boolean(state.currentUser ?? state.isAuthenticated),
           datasets: Object.fromEntries(
             Object.entries(state.datasets ?? {}).map(([key, dataset]) => [
               key,

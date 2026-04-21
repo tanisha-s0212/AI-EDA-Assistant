@@ -24,8 +24,8 @@ const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementT
   { id: 'understanding', label: 'Data Understanding', shortLabel: 'Understand', icon: Database, step: 2 },
   { id: 'eda', label: 'Exploratory Data Analysis', shortLabel: 'EDA', icon: BarChart3, step: 3 },
   { id: 'cleaning', label: 'Data Cleaning', shortLabel: 'Clean', icon: Sparkles, step: 4 },
-  { id: 'forecast_ts', label: 'Forecast TS', shortLabel: 'TS', icon: LineChart, step: 5 },
-  { id: 'forecast_ml', label: 'Forecast ML', shortLabel: 'MLF', icon: LineChart, step: 6 },
+  { id: 'forecast_ts', label: 'Time Series Forecast', shortLabel: 'TS Forecast', icon: LineChart, step: 5 },
+  { id: 'forecast_ml', label: 'Machine Learning Forecast', shortLabel: 'ML Forecast', icon: LineChart, step: 6 },
   { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit, step: 7 },
   { id: 'prediction', label: 'Prediction', shortLabel: 'Predict', icon: Target, step: 8 },
   { id: 'report', label: 'Report', shortLabel: 'Report', icon: FileText, step: 9 },
@@ -139,9 +139,9 @@ export default function StepNavigator({
   const nextDisabledReason = isMlTab ? mlNextDisabledReason : null;
   const nextButtonLabel = isMlTab
     ? mlWorkflowStep < 6
-      ? `Next: ${mlSteps[mlWorkflowStep]?.shortLabel ?? 'Next'}`
+      ? `Next: ${mlSteps[mlWorkflowStep]?.label ?? 'Next'}`
       : 'Next: Predict'
-    : nextTab?.label ? `Next: ${nextTab.shortLabel}` : 'Next';
+    : nextTab?.label ? `Next: ${nextTab.label}` : 'Next';
 
   return (
     <div className={cn('mb-5 space-y-3', className)}>

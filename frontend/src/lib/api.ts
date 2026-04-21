@@ -1,6 +1,16 @@
 import axios from 'axios';
 
-const normalizedBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || '/api').replace(/\/$/, '');
+function resolveDefaultApiBaseUrl() {
+  const configuredBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/$/, '');
+  }
+
+  return '/api';
+}
+
+const normalizedBaseUrl = resolveDefaultApiBaseUrl();
 const CLIENT_SESSION_STORAGE_KEY = 'ai-eda-client-session-id';
 
 function createClientSessionId(): string {
@@ -28,6 +38,7 @@ function getClientSessionId(): string | null {
 
 export const apiClient = axios.create({
   baseURL: normalizedBaseUrl,
+  withCredentials: true,
 });
 
 apiClient.interceptors.request.use((config) => {

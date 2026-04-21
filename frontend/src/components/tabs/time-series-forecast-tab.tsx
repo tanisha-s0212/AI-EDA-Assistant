@@ -32,6 +32,47 @@ const TS_CHART_COLORS = {
 
 const transition = { duration: 0.28, ease: 'easeOut' } as const;
 
+function formatChartValue(value: number | null | undefined) {
+  return value == null || Number.isNaN(value) ? 'N/A' : value.toLocaleString();
+}
+
+function ForecastTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: { actual?: number | null; backtest?: number | null; forecast?: number | null; lower?: number | null; upper?: number | null } }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) return null;
+
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  const rows = [
+    { label: 'Actual', value: point.actual },
+    { label: 'Backtest', value: point.backtest },
+    { label: 'Forecast', value: point.forecast },
+    { label: 'Lower 95%', value: point.lower },
+    { label: 'Upper 95%', value: point.upper },
+  ].filter((item) => item.value != null);
+
+  return (
+    <div className="min-w-[180px] rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-[0_18px_45px_rgba(15,23,42,0.14)]">
+      <p className="text-sm font-semibold text-slate-900">{label}</p>
+      <div className="mt-2 space-y-1.5">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-4 text-xs">
+            <span className="text-slate-500">{row.label}</span>
+            <span className="font-semibold text-slate-900">{formatChartValue(row.value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function getPreferredSalesColumn(columns: ColumnInfo[]) {
   const numeric = columns.filter((column) => column.role === 'numeric');
   return numeric.find((column) => /sales|revenue|amount|profit|price|total|qty/i.test(column.name))?.name ?? numeric[0]?.name ?? '';
@@ -425,12 +466,7 @@ export default function TimeSeriesForecastTab() {
                               <XAxis dataKey="period" tickLine={false} axisLine={false} tickMargin={10} tick={{ fill: '#64748b', fontSize: 12 }} />
                               <YAxis tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
                               <RechartsTooltip
-                                contentStyle={{
-                                  borderRadius: '14px',
-                                  border: '1px solid rgba(148, 163, 184, 0.25)',
-                                  backgroundColor: 'rgba(255,255,255,0.96)',
-                                  boxShadow: '0 18px 45px rgba(15, 23, 42, 0.12)',
-                                }}
+                                content={<ForecastTooltip />}
                               />
                               <Legend />
                               <Area type="monotone" dataKey="lowerBand" name="Lower 95%" stackId="confidence" stroke="transparent" fill={TS_CHART_COLORS.bandBase} fillOpacity={0.12} isAnimationActive={false} />

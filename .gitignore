@@ -1,8 +1,16 @@
 node_modules/
 frontend/node_modules/
 frontend/.next/
+frontend/next-env.d.ts
+frontend/run-frontend*.log
 backend/__pycache__/
 backend/models/
+backend/logs/
+backend/datasets/*.csv
+backend/datasets/*.tsv
+backend/datasets/*.xlsx
+backend/datasets/*.xls
+backend/datasets/*.parquet
 backend/*.log
 *.pyc
 .env

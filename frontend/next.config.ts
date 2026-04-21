@@ -8,10 +8,7 @@ const nextConfig: NextConfig = {
   reactStrictMode: false,
   devIndicators: false,
   experimental: {
-    proxyClientMaxBodySize: '250mb',
-  },
-  env: {
-    NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || '/api',
+    proxyClientMaxBodySize: '600mb',
   },
   async rewrites() {
     if (!useBackendRewrite) {

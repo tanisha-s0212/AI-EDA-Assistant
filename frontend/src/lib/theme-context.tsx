@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 type Theme = 'dark' | 'light' | 'system';
 
@@ -32,11 +32,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return stored === 'dark' || stored === 'light' || stored === 'system' ? stored : 'system';
   });
   const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => getSystemTheme());
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = true;
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -55,10 +51,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.classList.toggle('dark', resolvedTheme === 'dark');
   }, [theme, resolvedTheme]);
 
-  const value = useMemo(
-    () => ({ theme, setTheme, resolvedTheme, mounted }),
-    [theme, resolvedTheme],
-  );
+  const value = { theme, setTheme, resolvedTheme, mounted };
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
