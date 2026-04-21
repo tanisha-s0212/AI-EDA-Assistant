@@ -982,7 +982,7 @@ export default function MlTab() {
     targetProblemType,
     selectedFeatures,
     selectedModelName: (selectedModel || recommendedModel?.name || 'Selected model').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-    primaryMetrics,
+    primaryMetrics: Object.fromEntries(Object.entries(primaryMetrics).filter((entry): entry is [string, number] => entry[1] !== null)),
     overfittingStatus,
     cvScores,
     hasFeatureImportance: hasMeaningfulFeatureImportance,
