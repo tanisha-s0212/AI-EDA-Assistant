@@ -72,9 +72,6 @@ function BrandWordmark() {
             Intelligent Data Assistant
           </span>
         </p>
-        <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-800">
-          AI Suite
-        </span>
       </div>
       <p className="mt-1 text-sm text-slate-600">Secure analytics workspace with guided intelligence across the full data workflow.</p>
     </div>
