@@ -38,6 +38,7 @@ function getClientSessionId(): string | null {
 
 export const apiClient = axios.create({
   baseURL: normalizedBaseUrl,
+  withCredentials: true,
 });
 
 apiClient.interceptors.request.use((config) => {

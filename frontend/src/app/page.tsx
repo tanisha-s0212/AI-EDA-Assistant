@@ -1,13 +1,15 @@
 'use client';
 
 import React from 'react';
-import { useAppStore, TabId } from '@/lib/store';
-import { apiClient } from '@/lib/api';
+import { useAppStore, TabId, AuthenticatedUser } from '@/lib/store';
+import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { ThemeToggle } from '@/components/theme-toggle';
+import LoginPage from '@/components/login-page';
 import StepNavigator from '@/components/step-navigator';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { useToast } from '@/hooks/use-toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import {
@@ -32,6 +34,7 @@ import {
   Radar,
   Cpu,
   Activity,
+  LogOut,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -69,6 +72,10 @@ type ActivityResponse = {
     status: string;
   }>;
   count: number;
+};
+
+type AuthResponse = {
+  user: AuthenticatedUser;
 };
 
 type DatasetPreviewResponse = {
@@ -331,8 +338,14 @@ export default function HomePage() {
     setActiveTab,
     requestUploadPicker,
     resetWorkspace,
+    currentUser,
+    isAuthenticated,
+    setCurrentUser,
+    logoutUser,
     hasHydrated,
   } = useAppStore();
+  const { toast } = useToast();
+  const [isResolvingAuth, setIsResolvingAuth] = React.useState(true);
   const [isRefreshingActivity, setIsRefreshingActivity] = React.useState(false);
   const [isRestoringWorkspace, setIsRestoringWorkspace] = React.useState(false);
   const [recentActivity, setRecentActivity] = React.useState<ActivityResponse['activities'][number] | null>(null);
@@ -394,6 +407,33 @@ export default function HomePage() {
       setIsRefreshingActivity(false);
     }
   }, [activeDatasetId]);
+
+  React.useEffect(() => {
+    if (!hasHydrated) return;
+
+    let isMounted = true;
+    setIsResolvingAuth(true);
+
+    void apiClient
+      .get<AuthResponse>('/auth/me')
+      .then((response) => {
+        if (!isMounted) return;
+        setCurrentUser(response.data.user);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        logoutUser();
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsResolvingAuth(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasHydrated, logoutUser, setCurrentUser]);
 
   React.useEffect(() => {
     if (!hasHydrated) return;
@@ -485,6 +525,24 @@ export default function HomePage() {
     requestUploadPicker();
   }, [requestUploadPicker, setActiveTab]);
 
+  const handleAuthSuccess = React.useCallback((user: AuthenticatedUser) => {
+    setCurrentUser(user);
+  }, [setCurrentUser]);
+
+  const handleLogout = React.useCallback(async () => {
+    try {
+      await apiClient.post('/auth/logout');
+    } catch (error) {
+      toast({
+        title: 'Logout warning',
+        description: getApiErrorMessage(error, 'The backend session could not be closed cleanly, but the local session was cleared.'),
+        variant: 'destructive',
+      });
+    } finally {
+      logoutUser();
+    }
+  }, [logoutUser, toast]);
+
   const renderTab = () => {
     switch (activeTab) {
       case 'upload': return <UploadTab />;
@@ -499,6 +557,14 @@ export default function HomePage() {
       default: return <UploadTab />;
     }
   };
+
+  if (!hasHydrated || isResolvingAuth) {
+    return null;
+  }
+
+  if (!isAuthenticated || !currentUser) {
+    return <LoginPage onAuthSuccess={handleAuthSuccess} />;
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -575,6 +641,13 @@ export default function HomePage() {
                         <Button size="sm" variant="outline" className="h-9 rounded-full border-white/20 bg-white/5 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleFreshStart}>
                           <RotateCcw className="mr-2 h-4 w-4" />
                           Fresh Start
+                        </Button>
+                        <Badge variant="outline" className="h-9 rounded-full border-white/20 bg-white/5 px-3 text-white">
+                          {currentUser.username} | {currentUser.email}
+                        </Badge>
+                        <Button size="sm" variant="ghost" className="h-9 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleLogout}>
+                          <LogOut className="mr-2 h-4 w-4" />
+                          Logout
                         </Button>
                         <Button size="sm" variant="ghost" className="h-9 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
                           <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshingActivity && 'animate-spin')} />

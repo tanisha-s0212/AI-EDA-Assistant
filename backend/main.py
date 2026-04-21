@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
 import os
 import re
+import secrets
 import time
 import traceback
 import uuid
@@ -24,7 +26,7 @@ import pandas as pd
 import polars as pl
 import pyarrow.parquet as pq
 import psycopg
-from fastapi import APIRouter, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -63,9 +65,17 @@ LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 ACTIVITY_DATABASE_URL = os.environ.get('ACTIVITY_DATABASE_URL') or os.environ.get('DATABASE_URL') or 'postgresql://postgres:postgres@localhost:5432/ai_eda_assistant'
 ACTIVITY_DB_REQUIRED = os.environ.get('ACTIVITY_DB_REQUIRED', 'false').strip().lower() == 'true'
-ACTIVITY_DB_CONNECT_TIMEOUT = int(os.environ.get('ACTIVITY_DB_CONNECT_TIMEOUT', '3'))
+ACTIVITY_DB_CONNECT_TIMEOUT = int(os.environ.get('ACTIVITY_DB_CONNECT_TIMEOUT', '1'))
 TRAINING_N_JOBS = 1
 ACTIVITY_DB_AVAILABLE = False
+EMAIL_REGEX = re.compile(r'^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$', re.IGNORECASE)
+PASSWORD_HASH_ITERATIONS = 600_000
+SESSION_COOKIE_NAME = 'ai_eda_session'
+SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7
+SESSION_MAX_AGE = SESSION_DURATION_SECONDS
+SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'false').strip().lower() == 'true'
+SESSION_COOKIE_SAMESITE = os.environ.get('SESSION_COOKIE_SAMESITE', 'lax').strip().lower() or 'lax'
+SESSION_COOKIE_DOMAIN = os.environ.get('SESSION_COOKIE_DOMAIN') or None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,6 +173,44 @@ def get_activity_connection() -> psycopg.Connection:
 
 def init_activity_db() -> None:
     with get_activity_connection() as connection:
+        connection.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS app_users (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT NOT NULL
+            )
+            '''
+        )
+        try:
+            connection.execute('ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT')
+        except Exception:
+            logger.exception('Failed to ensure password_hash column on app_users.')
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users (email)')
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_app_users_last_login_at ON app_users (last_login_at DESC)')
+        connection.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS app_user_sessions (
+                id BIGSERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                session_token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                client_ip TEXT,
+                user_agent TEXT
+            )
+            '''
+        )
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_app_user_sessions_user_id ON app_user_sessions (user_id)')
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_app_user_sessions_expires_at ON app_user_sessions (expires_at DESC)')
         connection.execute(
             '''
             CREATE TABLE IF NOT EXISTS user_activities (
@@ -286,6 +334,281 @@ def get_session_id(dataset_id: str | None, session_id: str | None = None) -> str
     if dataset_id:
         return dataset_id
     return f'adhoc-{uuid.uuid4().hex[:8]}'
+
+
+def normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+
+def normalize_username(value: str) -> str:
+    return ' '.join(value.strip().split())
+
+
+def validate_login_payload(username: str, email: str) -> tuple[str, str]:
+    normalized_username = normalize_username(username)
+    normalized_email = normalize_email(email)
+
+    if len(normalized_username) < 3:
+        raise HTTPException(status_code=400, detail='Username must be at least 3 characters long.')
+    if len(normalized_username) > 80:
+        raise HTTPException(status_code=400, detail='Username must be 80 characters or fewer.')
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._'-]{1,79}", normalized_username):
+        raise HTTPException(
+            status_code=400,
+            detail='Username may contain letters, numbers, spaces, periods, apostrophes, underscores, and hyphens.',
+        )
+    if not EMAIL_REGEX.fullmatch(normalized_email):
+        raise HTTPException(status_code=400, detail='Enter a valid email address.')
+
+    return normalized_username, normalized_email
+
+
+def validate_password(password: str) -> str:
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail='Password must be at least 8 characters long.')
+    if len(password) > 128:
+        raise HTTPException(status_code=400, detail='Password must be 128 characters or fewer.')
+    return password
+
+
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived_key = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return f'pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${base64.b64encode(salt).decode("ascii")}${base64.b64encode(derived_key).decode("ascii")}'
+
+
+def verify_password(password: str, encoded_hash: str | None) -> bool:
+    if not encoded_hash:
+        return False
+
+    try:
+        algorithm, iterations_text, salt_b64, hash_b64 = encoded_hash.split('$', 3)
+        if algorithm != 'pbkdf2_sha256':
+            return False
+        iterations = int(iterations_text)
+        salt = base64.b64decode(salt_b64.encode('ascii'))
+        expected_hash = base64.b64decode(hash_b64.encode('ascii'))
+    except Exception:
+        return False
+
+    candidate_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        iterations,
+    )
+    return secrets.compare_digest(candidate_hash, expected_hash)
+
+
+def build_user_payload(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        'userId': row['user_id'],
+        'username': row['username'],
+        'email': row['email'],
+        'createdAt': row['created_at'],
+        'updatedAt': row['updated_at'],
+        'lastLoginAt': row['last_login_at'],
+    }
+
+
+def get_user_by_email(email: str) -> dict[str, Any] | None:
+    with get_activity_connection() as connection:
+        return connection.execute(
+            '''
+            SELECT user_id, username, email, password_hash, created_at, updated_at, last_login_at
+            FROM app_users
+            WHERE email = %s
+            ''',
+            (normalize_email(email),),
+        ).fetchone()
+
+
+def create_authenticated_session(*, user_id: str, request: Request) -> tuple[str, str]:
+    session_token = secrets.token_urlsafe(48)
+    session_id = uuid.uuid4().hex
+    timestamp = utc_now_iso()
+    expires_at = datetime.utcfromtimestamp(time.time() + SESSION_DURATION_SECONDS).isoformat()
+
+    with get_activity_connection() as connection:
+        connection.execute(
+            '''
+            INSERT INTO app_user_sessions (
+                session_id,
+                user_id,
+                session_token_hash,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                client_ip,
+                user_agent
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (
+                session_id,
+                user_id,
+                hash_session_token(session_token),
+                timestamp,
+                timestamp,
+                expires_at,
+                None,
+                request.client.host if request.client is not None else None,
+                request.headers.get('user-agent'),
+            ),
+        )
+
+    return session_id, session_token
+
+
+def set_session_cookie(response: Response, session_token: str) -> None:
+    same_site = SESSION_COOKIE_SAMESITE if SESSION_COOKIE_SAMESITE in {'lax', 'strict', 'none'} else 'lax'
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite=same_site,
+        max_age=SESSION_MAX_AGE,
+        path='/',
+        domain=SESSION_COOKIE_DOMAIN,
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    same_site = SESSION_COOKIE_SAMESITE if SESSION_COOKIE_SAMESITE in {'lax', 'strict', 'none'} else 'lax'
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path='/',
+        httponly=True,
+        samesite=same_site,
+        secure=SESSION_COOKIE_SECURE,
+        domain=SESSION_COOKIE_DOMAIN,
+    )
+
+
+def revoke_session(session_token: str | None) -> None:
+    if not session_token:
+        return
+
+    with get_activity_connection() as connection:
+        connection.execute(
+            '''
+            UPDATE app_user_sessions
+            SET revoked_at = %s, updated_at = %s
+            WHERE session_token_hash = %s AND revoked_at IS NULL
+            ''',
+            (utc_now_iso(), utc_now_iso(), hash_session_token(session_token)),
+        )
+
+
+def get_authenticated_user(request: Request) -> dict[str, Any]:
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_token:
+        raise HTTPException(status_code=401, detail='Authentication required.')
+
+    current_timestamp = utc_now_iso()
+    with get_activity_connection() as connection:
+        row = connection.execute(
+            '''
+            SELECT
+                u.user_id,
+                u.username,
+                u.email,
+                u.created_at,
+                u.updated_at,
+                u.last_login_at,
+                s.session_id,
+                s.expires_at
+            FROM app_user_sessions s
+            INNER JOIN app_users u ON u.user_id = s.user_id
+            WHERE s.session_token_hash = %s
+              AND s.revoked_at IS NULL
+              AND s.expires_at > %s
+            ''',
+            (hash_session_token(session_token), current_timestamp),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=401, detail='Session expired or invalid.')
+
+    return row
+
+
+def create_app_user(*, username: str, email: str, password: str) -> dict[str, str]:
+    normalized_username, normalized_email = validate_login_payload(username, email)
+    validated_password = validate_password(password)
+
+    if get_user_by_email(normalized_email) is not None:
+        raise HTTPException(status_code=409, detail='An account with this email already exists.')
+
+    with get_activity_connection() as connection:
+        timestamp = utc_now_iso()
+        user_id = uuid.uuid4().hex
+        row = connection.execute(
+            '''
+            INSERT INTO app_users (
+                user_id,
+                username,
+                email,
+                password_hash,
+                created_at,
+                updated_at,
+                last_login_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING user_id, username, email, created_at, updated_at, last_login_at
+            ''',
+            (
+                user_id,
+                normalized_username,
+                normalized_email,
+                hash_password(validated_password),
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail='Failed to store user details.')
+
+    return build_user_payload(row)
+
+
+def authenticate_user(*, email: str, password: str) -> dict[str, str]:
+    normalized_email = normalize_email(email)
+    validated_password = validate_password(password)
+    row = get_user_by_email(normalized_email)
+
+    if row is None or not verify_password(validated_password, row.get('password_hash')):
+        raise HTTPException(status_code=401, detail='Invalid email or password.')
+
+    timestamp = utc_now_iso()
+    with get_activity_connection() as connection:
+        updated_row = connection.execute(
+            '''
+            UPDATE app_users
+            SET updated_at = %s, last_login_at = %s
+            WHERE email = %s
+            RETURNING user_id, username, email, created_at, updated_at, last_login_at
+            ''',
+            (timestamp, timestamp, normalized_email),
+        ).fetchone()
+
+    if updated_row is None:
+        raise HTTPException(status_code=500, detail='Failed to load authenticated user.')
+
+    return build_user_payload(updated_row)
 
 
 def ensure_session_state(session_id: str) -> dict[str, Any]:
@@ -519,6 +842,17 @@ class PredictRequest(BaseModel):
 class DatasetCacheRequest(BaseModel):
     file_name: str
     data: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
 
 
 class AdvancedEdaRequest(BaseModel):
@@ -4667,6 +5001,96 @@ def list_activities(
         })
 
     return JSONResponse(content={'activities': activities, 'count': len(activities), 'dbAvailable': True})
+
+
+@router.post('/auth/register')
+def register_user(payload: RegisterRequest, request: Request) -> JSONResponse:
+    try:
+        user = create_app_user(username=payload.username, email=payload.email, password=payload.password)
+        _, session_token = create_authenticated_session(user_id=user['userId'], request=request)
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('User registration failed email=%s', payload.email)
+        raise HTTPException(status_code=500, detail=f'Failed to register user: {error}') from error
+
+    response = JSONResponse(content={'user': user})
+    set_session_cookie(response, session_token)
+    record_activity(
+        request=request,
+        action='user_register',
+        status='success',
+        activity_type='auth',
+        detail=f'User {user["email"]} registered.',
+        metadata={
+            'user_id': user['userId'],
+            'email': user['email'],
+            'username': user['username'],
+        },
+    )
+    return response
+
+
+@router.post('/auth/login')
+def login_user(payload: LoginRequest, request: Request) -> JSONResponse:
+    try:
+        user = authenticate_user(email=payload.email, password=payload.password)
+        _, session_token = create_authenticated_session(user_id=user['userId'], request=request)
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('User login failed email=%s', payload.email)
+        raise HTTPException(status_code=500, detail=f'Failed to login user: {error}') from error
+
+    response = JSONResponse(content={'user': user})
+    set_session_cookie(response, session_token)
+    record_activity(
+        request=request,
+        action='user_login',
+        status='success',
+        activity_type='auth',
+        detail=f'User {user["email"]} signed in.',
+        metadata={
+            'user_id': user['userId'],
+            'email': user['email'],
+            'username': user['username'],
+        },
+    )
+    return response
+
+
+@router.get('/auth/me')
+def auth_me(request: Request) -> JSONResponse:
+    try:
+        user = build_user_payload(get_authenticated_user(request))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Auth me failed.')
+        raise HTTPException(status_code=500, detail=f'Failed to resolve current session: {error}') from error
+
+    return JSONResponse(content={'user': user})
+
+
+@router.post('/auth/logout')
+def logout_user(request: Request) -> JSONResponse:
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_token:
+        try:
+            revoke_session(session_token)
+        except Exception:
+            logger.exception('Failed to revoke user session during logout.')
+
+    response = JSONResponse(content={'success': True})
+    clear_session_cookie(response)
+    record_activity(
+        request=request,
+        action='user_logout',
+        status='success',
+        activity_type='auth',
+        detail='User logged out.',
+    )
+    return response
 
 
 @router.get('/health')
