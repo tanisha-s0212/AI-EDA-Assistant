@@ -29,11 +29,9 @@ import {
   AlertCircle,
   RotateCcw,
   RefreshCw,
-  Clock3,
   Orbit,
   Radar,
   Cpu,
-  Activity,
   LogOut,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -214,6 +212,56 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function BrandWordmark({
+  compact = false,
+  inverted = false,
+}: {
+  compact?: boolean;
+  inverted?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className={cn(
+        'font-semibold uppercase tracking-[0.28em]',
+        compact ? 'text-[10px]' : 'text-[11px]',
+        inverted ? 'text-cyan-100/70' : 'text-sky-700/80'
+      )}>
+        Aroha Intelligent Platform
+      </p>
+      <div className="mt-1 flex min-w-0 items-center gap-2">
+        <h1 className={cn(
+          'truncate font-semibold tracking-tight',
+          compact ? 'text-[15px] sm:text-base' : 'text-lg sm:text-xl',
+          inverted ? 'text-white' : 'text-slate-950'
+        )}>
+          <span className={cn(
+            'bg-clip-text text-transparent',
+            inverted
+              ? 'bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]'
+              : 'bg-[linear-gradient(135deg,#082f49_0%,#0f766e_46%,#0284c7_100%)]'
+          )}>
+            Intelligent Data Assistant
+          </span>
+        </h1>
+        <span className={cn(
+          'rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]',
+          inverted
+            ? 'border-cyan-300/25 bg-white/10 text-cyan-100'
+            : 'border-sky-200 bg-sky-50 text-sky-800'
+        )}>
+          AI Suite
+        </span>
+      </div>
+      <p className={cn(
+        'mt-1 text-xs',
+        inverted ? 'text-slate-300' : 'text-muted-foreground'
+      )}>
+        Connected analytics workspace for understanding, EDA, and modeling.
+      </p>
+    </div>
+  );
+}
+
 function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
   const { activeTab, setActiveTab, rawData, cleaningDone, modelTrained, previewLoaded, loadedRowCount, totalRows } = useAppStore();
   const hasDatasetContext = Boolean(rawData?.length || totalRows > 0);
@@ -231,12 +279,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
       <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
         <div className="flex items-center gap-3">
           <BrandMark compact />
-          <div className="min-w-0">
-            <h1 className="whitespace-nowrap text-[15px] font-bold tracking-tight text-foreground sm:text-base">
-              Intelligent Data Assistant
-            </h1>
-            <p className="text-xs text-muted-foreground">Connected analytics workspace for understanding, EDA, and modeling.</p>
-          </div>
+          <BrandWordmark compact />
         </div>
       </div>
       <Separator className="opacity-50" />
@@ -368,31 +411,9 @@ export default function HomePage() {
   const activeDatasetId = activeDataset?.datasetId ?? null;
   const hasWorkspace = Boolean(rawData?.length || activeDatasetId || displayTotalRows);
   const hasDatasetLibrary = availableDatasets.length > 0;
-  const datasetStatus = hasWorkspace
-    ? displayPreviewLoaded
-      ? `${displayLoadedRowCount.toLocaleString()} preview rows of ${displayTotalRows.toLocaleString()}`
-      : `${displayTotalRows.toLocaleString()} rows ready`
-    : 'No dataset loaded';
-  const workflowReadiness = isRestoringWorkspace
-    ? 'Restoring the cached workspace preview from the backend so the active session can continue cleanly.'
-    : !hasWorkspace
-    ? 'Resume your previous workspace or start fresh with a new dataset.'
-    : displayPreviewLoaded
-      ? 'Large dataset connected with preview rendering in the browser and full-fidelity coverage preserved in the backend.'
-      : 'Workspace is fully loaded and ready for analysis, forecasting, modeling, and reporting.';
-  const sessionSummary = hasWorkspace
-    ? `Continue from ${activeTabMeta.label.toLowerCase()} with ${displayColumns.toLocaleString()} profiled columns in scope.`
-    : 'No active workspace is loaded in memory yet.';
   const sessionContinuity = getSessionContinuityLabel(recentActivity?.createdAt ?? null);
   const liveIndiaTime = formatIndiaTime(currentTime);
   const liveIndiaDate = formatIndiaDate(currentTime);
-  const activityLabel = recentActivity
-    ? `Last action: ${recentActivity.action.replace(/_/g, ' ')}`
-    : sessionContinuity.status;
-  const syncStatusLabel = recentActivity ? 'Backend sync active' : 'Waiting for backend sync';
-  const syncSummary = recentActivity
-    ? `${sessionContinuity.timeLabel} | ${sessionContinuity.dateLabel}`
-    : 'Refresh after loading a dataset';
 
   const refreshRecentActivity = React.useCallback(async () => {
     setIsRefreshingActivity(true);
@@ -608,13 +629,7 @@ export default function HomePage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-3">
                             <BrandMark />
-                            <div className="min-w-0">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">Workspace Session</p>
-                              <p className="text-lg font-semibold tracking-tight text-white sm:text-xl">Intelligent Data Assistant</p>
-                              <p className="text-sm text-slate-300">
-                                Guided analytics workspace with persistent backend continuity.
-                              </p>
-                            </div>
+                            <BrandWordmark inverted />
                           </div>
                           <div className="mt-3 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
@@ -625,11 +640,25 @@ export default function HomePage() {
                               <ShieldCheck className="mr-2 h-3.5 w-3.5 text-sky-300" />
                               PostgreSQL activity tracking connected
                             </Badge>
+                            <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
+                              <RefreshCw className={cn('mr-2 h-3.5 w-3.5 text-cyan-300', isRefreshingActivity && 'animate-spin')} />
+                              {sessionContinuity.freshness}
+                            </Badge>
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 xl:max-w-[56%] xl:justify-end">
+                      <div className="flex flex-col gap-3 xl:max-w-[62%] xl:items-end">
+                        <div className="rounded-[24px] border border-white/12 bg-white/8 px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.58)] backdrop-blur-sm">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-300">Present Running Time</p>
+                          <p className="mt-1 text-xl font-semibold tracking-tight text-white">{liveIndiaTime}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                            <span>{liveIndiaDate}</span>
+                            <span className="text-slate-500">|</span>
+                            <span>{sessionContinuity.timezone}</span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
                         <Button size="sm" className="h-9 rounded-full border border-white/10 bg-white px-4 text-slate-950 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
                           <History className="mr-2 h-4 w-4" />
                           {hasWorkspace ? 'Resume Workspace' : 'Open Workspace'}
@@ -654,94 +683,6 @@ export default function HomePage() {
                           Sync
                         </Button>
                         <ThemeToggle />
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 border-t border-white/10 pt-3 lg:grid-cols-[minmax(0,1.45fr)_repeat(2,minmax(220px,0.72fr))]">
-                      <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-3 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">Current Focus</p>
-                        <h1 className="mt-1.5 text-xl font-semibold tracking-tight text-white sm:text-2xl">
-                          {activeTabMeta.label}
-                        </h1>
-                        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-                          {workflowReadiness}
-                        </p>
-                        <p className="mt-2 text-sm text-slate-400">{sessionSummary}</p>
-                      </div>
-
-                      <div className="rounded-3xl border border-white/10 bg-white/6 px-4 py-3 shadow-sm backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-white/20 hover:bg-white/8 hover:shadow-[0_24px_50px_-30px_rgba(15,23,42,0.6)]">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
-                              Dataset Summary
-                            </p>
-                            <p className="mt-1.5 text-lg font-semibold tracking-tight text-white">{datasetStatus}</p>
-                            <p className="mt-1 truncate text-sm text-slate-300">
-                              {displayFileName ? displayFileName : 'No source selected'}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-white/10 bg-slate-950/30 px-3 py-2 text-right shadow-inner">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Library</p>
-                            <p className="mt-1 text-sm font-semibold text-white">{availableDatasets.length}</p>
-                          </div>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                            <Database className="h-3 w-3" />
-                            {hasWorkspace ? displayTotalRows.toLocaleString() : 0} rows
-                          </span>
-                          <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                            {displayColumns.toLocaleString()} columns
-                          </span>
-                          <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs text-slate-200 transition-colors duration-300 hover:bg-white/16">
-                            {displayPreviewLoaded ? 'Preview cached' : 'Fully loaded'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="overflow-hidden rounded-3xl border border-cyan-400/15 bg-[linear-gradient(180deg,rgba(8,47,73,0.34),rgba(15,23,42,0.34))] px-4 py-3 shadow-[0_20px_45px_-32px_rgba(34,211,238,0.45)]">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100/70">Last Backend Sync</p>
-                            <p className="mt-1.5 text-lg font-semibold tracking-tight text-white">{syncStatusLabel}</p>
-                            <p className="mt-1 text-sm text-slate-200/90">{syncSummary}</p>
-                          </div>
-                          <div className="inline-flex rounded-full border border-emerald-300/20 bg-emerald-400/12 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 shadow-sm">
-                            {sessionContinuity.freshness}
-                          </div>
-                        </div>
-                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                          <div className="rounded-2xl border border-white/10 bg-slate-950/30 p-3">
-                            <div className="flex items-center gap-2 text-slate-300">
-                              <Activity className="h-3.5 w-3.5 text-cyan-300" />
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Session Trace</p>
-                            </div>
-                            <p className="mt-2 text-sm text-slate-200">
-                              {recentActivity ? sessionContinuity.timestamp : 'No backend sync recorded yet.'}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
-                            <div className="flex items-center gap-2 text-slate-300">
-                              <Clock3 className="h-3.5 w-3.5 text-sky-300" />
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Live IST</p>
-                            </div>
-                            <p className="mt-2 text-base font-semibold text-white">{liveIndiaTime}</p>
-                            <p className="mt-1 text-xs text-slate-400">{liveIndiaDate}</p>
-                          </div>
-                        </div>
-                        <div className="mt-3 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/25 p-3 transition-all duration-300 hover:border-white/20 hover:bg-slate-950/40">
-                          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white">
-                            <History className="h-4 w-4" />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-white">
-                              {recentActivity?.detail || 'The workspace can continue from the last saved browser state and backend activity trail.'}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-400">
-                              {recentActivity?.datasetId ? `Dataset ${recentActivity.datasetId} is the latest backend-linked session.` : activeDatasetId ? `Dataset ${activeDatasetId} is ready to reconnect to the backend cache.` : 'Load a dataset to establish a persisted working session.'}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">{activityLabel}</p>
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -796,9 +737,9 @@ export default function HomePage() {
 
         {/* Footer */}
         <footer className="mt-auto border-t border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-4 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-7xl">
-            <div className="flex flex-col gap-2 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-4 text-base font-bold text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] transition-all duration-300 hover:shadow-[0_30px_100px_-40px_rgba(15,23,42,0.78)] lg:flex-row lg:items-center lg:justify-between">
-              <span>Intelligent Data Assistant</span>
+            <div className="mx-auto max-w-7xl">
+              <div className="flex flex-col gap-2 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-4 text-base font-bold text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] transition-all duration-300 hover:shadow-[0_30px_100px_-40px_rgba(15,23,42,0.78)] lg:flex-row lg:items-center lg:justify-between">
+              <span className="bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)] bg-clip-text text-transparent">Intelligent Data Assistant</span>
               <span className="text-sm font-bold text-slate-300">
                 AI-guided dataset understanding, analysis, and predictive modeling.
               </span>

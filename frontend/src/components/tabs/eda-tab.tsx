@@ -16,6 +16,8 @@ import {
 import { buildCorrelationHeatmap, computeEdaStats, formatMetric, heatColor } from '@/lib/eda';
 import { useAppStore } from '@/lib/store';
 import EdaAdvancedModules, { type AdvancedEdaResponse } from '@/components/tabs/eda-advanced-modules';
+import { apiClient, getApiErrorMessage } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
 
 function escapeHtml(value: string) {
   return value
@@ -31,6 +33,7 @@ function renderRows(rows: string[][]) {
 }
 
 export default function EdaTab() {
+  const { toast } = useToast();
   const rawData = useAppStore((s) => s.rawData);
   const cleanedData = useAppStore((s) => s.cleanedData);
   const columns = useAppStore((s) => s.columns);
@@ -44,6 +47,7 @@ export default function EdaTab() {
   const hasData = !!rawData && columns.length > 0;
   const [advancedAnalysis, setAdvancedAnalysis] = useState<AdvancedEdaResponse | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   const stats = useMemo(() => computeEdaStats(data, columns), [data, columns]);
   const heatmap = useMemo(() => buildCorrelationHeatmap(data, stats.numericColumns), [data, stats.numericColumns]);
@@ -55,6 +59,26 @@ export default function EdaTab() {
   );
   const strongestCorrelation = stats.correlations[0];
   const heatmapColumns = stats.numericColumns.slice(0, 5);
+
+  const getBlobErrorMessage = useCallback(async (error: unknown, fallback: string) => {
+    const message = getApiErrorMessage(error, fallback);
+    if (!(error instanceof Error) && typeof error !== 'object') {
+      return message;
+    }
+
+    const maybeBlob = (error as { response?: { data?: unknown } }).response?.data;
+    if (!(maybeBlob instanceof Blob)) {
+      return message;
+    }
+
+    try {
+      const text = await maybeBlob.text();
+      const parsed = JSON.parse(text) as { detail?: string; error?: string };
+      return parsed.detail || parsed.error || message;
+    } catch {
+      return message;
+    }
+  }, []);
 
   const handleDownloadReport = useCallback(() => {
     if (!hasData) return;
@@ -254,6 +278,62 @@ export default function EdaTab() {
       setIsDownloading(false);
     }
   }, [advancedAnalysis, columns, data.length, fileName, hasData, heatmap, heatmapColumns, numericRows, stats, totalRows]);
+
+  const handleDownloadPdf = useCallback(async () => {
+    if (!hasData) return;
+
+    setIsDownloadingPdf(true);
+    try {
+      const response = await apiClient.post('/eda/report', {
+        datasetId: datasetId ?? null,
+        fileName: fileName ?? 'dataset',
+        totalRows,
+        loadedRowCount,
+        previewLoaded,
+        columns: columns.map((column) => ({
+          name: column.name,
+          dtype: column.dtype,
+          nonNull: column.nonNull,
+          nullCount: column.nullCount,
+          uniqueCount: column.uniqueCount,
+          role: column.role,
+        })),
+        edaStats: stats,
+        advancedAnalysis,
+      }, {
+        responseType: 'blob',
+      });
+
+      const blob = response.data as Blob;
+      if (!blob || blob.size === 0) {
+        throw new Error('The EDA PDF service returned an empty file.');
+      }
+
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const baseName = (fileName ?? 'dataset').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9-_ ]+/g, '').trim().replace(/\s+/g, '_');
+      anchor.href = url;
+      anchor.download = `${baseName || 'dataset'}_eda_report.pdf`;
+      anchor.rel = 'noopener';
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      toast({
+        title: 'EDA PDF downloaded',
+        description: 'The EDA tab functionality, working flow, and advanced features were exported as a PDF.',
+      });
+    } catch (error) {
+      toast({
+        title: 'EDA PDF failed',
+        description: await getBlobErrorMessage(error, 'Failed to generate the EDA PDF report.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  }, [advancedAnalysis, columns, datasetId, fileName, getBlobErrorMessage, hasData, loadedRowCount, previewLoaded, stats, toast, totalRows]);
 
   if (!hasData) {
     return (
@@ -461,16 +541,22 @@ export default function EdaTab() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><Download className="h-4 w-4 text-primary" /> Download EDA Report</CardTitle>
-          <CardDescription>Exports the EDA tab into a standalone report with schema, summaries, relationship analysis, correlation matrix, and available advanced charts.</CardDescription>
+          <CardDescription>Keep the current standalone EDA download as-is, or export the same EDA functionality and advanced features as a downloadable PDF.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="max-w-3xl text-sm text-muted-foreground">
-            The download includes the current EDA analysis shown in the app. Advanced EDA visual sections are included automatically when they have finished loading.
+            The current EDA report download remains unchanged. The new PDF option packages the EDA tab working flow, schema, summaries, correlations, advanced charts, and automated insights into a shareable PDF.
           </p>
-          <Button onClick={handleDownloadReport} disabled={isDownloading} className="gap-2 self-start sm:self-auto">
-            {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {isDownloading ? 'Preparing Report...' : 'Download EDA Report'}
-          </Button>
+          <div className="flex flex-col gap-2 self-start sm:flex-row sm:self-auto">
+            <Button onClick={handleDownloadReport} disabled={isDownloading} variant="outline" className="gap-2">
+              {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isDownloading ? 'Preparing Report...' : 'Download EDA Report'}
+            </Button>
+            <Button onClick={() => void handleDownloadPdf()} disabled={isDownloadingPdf} className="gap-2">
+              {isDownloadingPdf ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isDownloadingPdf ? 'Preparing PDF...' : 'Download EDA PDF'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

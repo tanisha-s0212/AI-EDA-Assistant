@@ -303,6 +303,74 @@ function parseModelAnalysis(analysis: string) {
   return { title, bullets, summary };
 }
 
+function buildModelSuggestionExplanation(params: {
+  selectedTarget: string;
+  targetProblemType: ProblemType;
+  confidence: number;
+  selectedFeatures: string[];
+  columns: ColumnInfo[];
+  recommendedModel: ModelDef | null;
+}) {
+  const { selectedTarget, targetProblemType, confidence, selectedFeatures, columns, recommendedModel } = params;
+  const targetColumn = columns.find((column) => column.name === selectedTarget);
+  const numericFeatures = selectedFeatures.filter((feature) => columns.find((column) => column.name === feature)?.role === 'numeric').length;
+  const categoricalFeatures = selectedFeatures.filter((feature) => {
+    const role = columns.find((column) => column.name === feature)?.role;
+    return role === 'categorical' || role === 'boolean';
+  }).length;
+
+  return [
+    `The uploaded dataset is currently being treated as a ${targetProblemType} problem because "${selectedTarget}" looks like a ${targetColumn?.role ?? 'candidate'} target with ${confidence}% detection confidence.`,
+    `${selectedFeatures.length} feature${selectedFeatures.length === 1 ? '' : 's'} are selected for training, including ${numericFeatures} numeric and ${categoricalFeatures} categorical/boolean field${categoricalFeatures === 1 ? '' : 's'}.`,
+    recommendedModel
+      ? `${recommendedModel.name} is suggested first because ${recommendedModel.whyRecommended.toLowerCase()}`
+      : 'A default baseline model is suggested first so the workflow can establish a measurable starting point.',
+  ];
+}
+
+function buildModelResultsExplanation(params: {
+  selectedTarget: string;
+  targetProblemType: ProblemType;
+  selectedFeatures: string[];
+  selectedModelName: string;
+  primaryMetrics: Record<string, number>;
+  overfittingStatus: 'healthy' | 'watch' | 'detected';
+  cvScores: number[];
+  hasFeatureImportance: boolean;
+}) {
+  const {
+    selectedTarget,
+    targetProblemType,
+    selectedFeatures,
+    selectedModelName,
+    primaryMetrics,
+    overfittingStatus,
+    cvScores,
+    hasFeatureImportance,
+  } = params;
+
+  const primaryMetricEntries = Object.entries(primaryMetrics).slice(0, 2);
+  const metricSummary = primaryMetricEntries.length
+    ? primaryMetricEntries.map(([key, value]) => `${key}=${formatMetricValue(value)}`).join(', ')
+    : 'core metrics were returned';
+
+  return [
+    `${selectedModelName} was trained to predict "${selectedTarget}" using ${selectedFeatures.length} selected feature${selectedFeatures.length === 1 ? '' : 's'}, so the reported scores reflect how well that feature set explains the target on this dataset.`,
+    `The main validation readout indicates ${metricSummary}, which is the quickest summary of current ${targetProblemType === 'regression' ? 'prediction accuracy for continuous values' : 'classification quality across the detected classes'}.`,
+    overfittingStatus === 'healthy'
+      ? 'Model health looks stable, which means train, test, and cross-validation behavior are reasonably aligned.'
+      : overfittingStatus === 'watch'
+      ? 'Model health needs monitoring because the gap between train and validation behavior suggests the model may be learning some dataset-specific patterns.'
+      : 'Overfitting has been detected, which means the current model is learning the training slice too specifically and may generalize less reliably to new rows.',
+    cvScores.length > 0
+      ? `Cross-validation was computed across ${cvScores.length} fold${cvScores.length === 1 ? '' : 's'}, so the result quality is supported by repeated validation rather than a single split.`
+      : 'Cross-validation scores were not available for this run, so interpretation should rely more heavily on the main holdout metrics and model-health checks.',
+    hasFeatureImportance
+      ? 'Feature importance is available, so you can inspect which inputs are driving the model most strongly on this uploaded dataset.'
+      : 'Feature importance is limited for this model, so interpretation should focus more on the returned metrics and textual analysis.',
+  ];
+}
+
 // ─── Difficulty Badge ─────────────────────────────────────────────────────────
 
 function StepIndicator({ currentStep, totalSteps = 6 }: { currentStep: number; totalSteps?: number }) {
@@ -560,6 +628,14 @@ export default function MlTab() {
     return models.find(m => m.id === 'random_forest') ?? recommendedCandidates[0] ?? models[0] ?? null;
   }, [models, recommendedCandidates]);
   const otherModels = useMemo(() => models.filter(m => m.id !== recommendedModel?.id), [models, recommendedModel]);
+  const modelSuggestionExplanation = useMemo(() => buildModelSuggestionExplanation({
+    selectedTarget,
+    targetProblemType,
+    confidence,
+    selectedFeatures,
+    columns,
+    recommendedModel,
+  }), [selectedTarget, targetProblemType, confidence, selectedFeatures, columns, recommendedModel]);
 
   const optimizationSummary = trainResults?.optimization;
   const cvWasSkipped = Boolean(optimizationSummary && (optimizationSummary.cv_rows_evaluated ?? 0) === 0);
@@ -901,6 +977,16 @@ export default function MlTab() {
   const primaryMetrics = targetProblemType === 'regression'
     ? { 'R2': trainResults?.metrics?.['R2'] ?? trainResults?.metrics?.['r2'] ?? null, 'RMSE': trainResults?.metrics?.['RMSE'] ?? null, 'MAE': trainResults?.metrics?.['MAE'] ?? null }
     : { 'Accuracy': trainResults?.metrics?.['Accuracy'] ?? null, 'Precision': trainResults?.metrics?.['Precision'] ?? null, 'Recall': trainResults?.metrics?.['Recall'] ?? null, 'F1': trainResults?.metrics?.['F1'] ?? trainResults?.metrics?.['F1 Score'] ?? null };
+  const modelResultsExplanation = useMemo(() => buildModelResultsExplanation({
+    selectedTarget,
+    targetProblemType,
+    selectedFeatures,
+    selectedModelName: (selectedModel || recommendedModel?.name || 'Selected model').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    primaryMetrics,
+    overfittingStatus,
+    cvScores,
+    hasFeatureImportance: hasMeaningfulFeatureImportance,
+  }), [selectedTarget, targetProblemType, selectedFeatures, selectedModel, recommendedModel, primaryMetrics, overfittingStatus, cvScores, hasMeaningfulFeatureImportance]);
 
   const metricIcons: Record<string, React.ElementType> = {
     'R2': TrendingUp, 'RMSE': Activity, 'MAE': BarChart3,
@@ -1234,6 +1320,23 @@ export default function MlTab() {
                   <Star className="h-5 w-5 text-amber-500" />
                   <h3 className="text-lg font-semibold">Best Model Suggestion</h3>
                 </div>
+                <Card className="mb-4 border-primary/15 bg-primary/5">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 text-primary" />
+                      <CardTitle className="text-base">Why This Suggestion Fits This Dataset</CardTitle>
+                    </div>
+                    <CardDescription>Universal explainability based on the detected target, feature mix, and model behavior on structured data.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {modelSuggestionExplanation.map((line) => (
+                      <div key={line} className="flex items-start gap-2 rounded-xl border bg-background/70 p-3">
+                        <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                        <p className="text-sm leading-6 text-muted-foreground">{line}</p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
                 {recommendedModel && (
                   <motion.div variants={scaleVariants}>
                     <Card
@@ -1272,6 +1375,9 @@ export default function MlTab() {
                         </div>
                         <div className="rounded-lg border bg-muted/30 px-3 py-3 text-sm text-muted-foreground">
                           <span className="font-medium text-foreground">Why this model:</span> {recommendedModel.whyRecommended}
+                        </div>
+                        <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-3 text-sm text-muted-foreground">
+                          <span className="font-medium text-foreground">Why it is universal:</span> This recommendation is based on target type, feature composition, and general tabular-data behavior, so it can adapt to any uploaded dataset without relying on domain-specific assumptions.
                         </div>
                       </CardContent>
                     </Card>
@@ -1563,7 +1669,7 @@ export default function MlTab() {
               )}
 
               {/* Results */}
-              {trainResults && (
+                  {trainResults && (
                 <>
                   {/* Success Banner */}
                   <motion.div variants={itemVariants}>
@@ -1584,6 +1690,26 @@ export default function MlTab() {
                             </p>
                           </div>
                         </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+
+                  <motion.div variants={itemVariants}>
+                    <Card className="border-primary/15 bg-primary/5">
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center gap-2">
+                          <Info className="h-4 w-4 text-primary" />
+                          <CardTitle className="text-base">How To Read These Results</CardTitle>
+                        </div>
+                        <CardDescription>Universal interpretation guidance for the trained model and this uploaded dataset.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {modelResultsExplanation.map((line) => (
+                          <div key={line} className="flex items-start gap-2 rounded-xl border bg-background/70 p-3">
+                            <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                            <p className="text-sm leading-6 text-muted-foreground">{line}</p>
+                          </div>
+                        ))}
                       </CardContent>
                     </Card>
                   </motion.div>

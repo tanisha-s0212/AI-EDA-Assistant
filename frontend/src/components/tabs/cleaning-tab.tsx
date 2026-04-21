@@ -289,6 +289,7 @@ function TypewriterDisplay({ text, speed = 4 }: { text: string | null; speed?: n
 // ─────────────────────────────────────────────
 export default function CleaningTab() {
   const datasetId = useAppStore((s) => s.datasetId);
+  const fileName = useAppStore((s) => s.fileName);
   const previewLoaded = useAppStore((s) => s.previewLoaded);
   const loadedRowCount = useAppStore((s) => s.loadedRowCount);
   const cleanedRowCount = useAppStore((s) => s.cleanedRowCount);
@@ -392,6 +393,23 @@ export default function CleaningTab() {
   };
 
   const enabledCount = Object.values(ops).filter(Boolean).length;
+  const uploadContextSummary = useMemo(() => {
+    const datasetLabel = fileName ?? 'uploaded dataset';
+    const loadedRows = loadedRowCount || rawData?.length || 0;
+    const missingCells = columns.reduce((sum, col) => sum + col.nullCount, 0);
+    const activeOps = operationCards.filter((op) => op.enabled).map((op) => op.title);
+
+    return {
+      datasetLabel,
+      loadedRows,
+      missingCells,
+      activeOps,
+      scopeText:
+        previewLoaded && totalRows > loadedRows
+          ? `${datasetLabel} was uploaded with ${totalRows.toLocaleString()} total rows. This page is previewing ${loadedRows.toLocaleString()} rows while the backend cleaning run still targets the full dataset.`
+          : `${datasetLabel} was uploaded with ${totalRows.toLocaleString()} rows and is being cleaned directly from the active workspace.`,
+    };
+  }, [columns, fileName, loadedRowCount, operationCards, previewLoaded, rawData?.length, totalRows]);
 
   // ── Run cleaning
   const handleClean = useCallback(async () => {
@@ -544,6 +562,9 @@ export default function CleaningTab() {
         logs: cleaningLogs,
         totalRows: cleanedRowCount ?? totalRows ?? rawData?.length ?? 0,
         totalColumns: columns.length,
+        fileName,
+        loadedRowCount: loadedRowCount ?? rawData?.length ?? 0,
+        previewLoaded,
       });
 
       const data = response.data;
@@ -551,13 +572,22 @@ export default function CleaningTab() {
       setJustificationKey((k) => k + 1);
     } catch {
       // Fallback to local generation if API fails
-      const fallbackJustification = generateFallbackJustification(cleaningLogs, cleanedRowCount ?? totalRows ?? rawData?.length ?? 0, columns.length);
+      const fallbackJustification = generateFallbackJustification(
+        cleaningLogs,
+        cleanedRowCount ?? totalRows ?? rawData?.length ?? 0,
+        columns.length,
+        {
+          fileName,
+          loadedRowCount: loadedRowCount ?? rawData?.length ?? 0,
+          previewLoaded,
+        }
+      );
       setAiJustification(fallbackJustification);
       setJustificationKey((k) => k + 1);
     } finally {
       setIsGeneratingAI(false);
     }
-  }, [cleaningLogs, rawData, columns, isGeneratingAI, cleanedRowCount, totalRows]);
+  }, [cleaningLogs, rawData, columns, isGeneratingAI, cleanedRowCount, totalRows, fileName, loadedRowCount, previewLoaded]);
 
   // ── Download CSV
   const handleDownload = useCallback(() => {
@@ -648,6 +678,45 @@ export default function CleaningTab() {
             Cleaning runs on the full dataset on the backend. This page shows a preview only.
           </p>
         )}
+      </motion.div>
+
+      <motion.div variants={itemVariants}>
+        <Card className="border-primary/15 bg-primary/5">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15">
+                <ShieldCheck className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">Cleaning Explainability</CardTitle>
+                <CardDescription>Why the selected cleaning actions matter for this uploaded dataset</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-0">
+            <div className="rounded-xl border border-primary/15 bg-background/70 px-4 py-3 text-sm leading-6 text-muted-foreground">
+              {uploadContextSummary.scopeText}
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border bg-background/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Upload Quality Snapshot</p>
+                <p className="mt-2 text-sm text-foreground">{duplicates.toLocaleString()} duplicate rows, {uploadContextSummary.missingCells.toLocaleString()} missing cells, and {columns.length.toLocaleString()} profiled columns are currently in scope.</p>
+              </div>
+              <div className="rounded-xl border bg-background/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Selected Actions</p>
+                <p className="mt-2 text-sm text-foreground">
+                  {uploadContextSummary.activeOps.length > 0
+                    ? `${uploadContextSummary.activeOps.join(', ')} will be applied to stabilize the uploaded dataset before downstream analysis.`
+                    : 'No cleaning actions are currently selected.'}
+                </p>
+              </div>
+              <div className="rounded-xl border bg-background/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Why It Helps</p>
+                <p className="mt-2 text-sm text-foreground">These steps reduce avoidable noise so EDA, forecasting, and ML training reflect the dataset’s real structure instead of upload artifacts.</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </motion.div>
 
       {/* ───── 1. Cleaning Operations Panel ───── */}
@@ -1094,12 +1163,22 @@ export default function CleaningTab() {
 function generateFallbackJustification(
   logs: CleaningLog[],
   totalRows: number,
-  totalColumns: number
+  totalColumns: number,
+  context?: {
+    fileName?: string | null;
+    loadedRowCount?: number;
+    previewLoaded?: boolean;
+  }
 ): string {
   const sections: string[] = [];
+  const datasetLabel = context?.fileName || 'uploaded dataset';
+  const loadedRows = context?.loadedRowCount ?? totalRows;
+  const scopeLine = context?.previewLoaded && totalRows > loadedRows
+    ? `The dataset "${datasetLabel}" was uploaded with ${totalRows} rows, and this page is previewing ${loadedRows} rows while the backend cleaning workflow still applies to the full dataset.\n`
+    : `The dataset "${datasetLabel}" was uploaded with ${totalRows} rows available for direct cleaning review.\n`;
 
   sections.push(
-    `### Why These Cleaning Steps Matter\n\nThis dataset (${totalRows} rows × ${totalColumns} columns) required cleaning to ensure reliable analysis and modeling results.\n`
+    `### Why These Cleaning Steps Matter\n\n${scopeLine}This dataset (${totalRows} rows × ${totalColumns} columns) required cleaning to ensure reliable analysis and modeling results.\n`
   );
 
   for (const log of logs) {
@@ -1126,7 +1205,7 @@ function generateFallbackJustification(
   }
 
   sections.push(
-    `\n> ✅ These steps collectively improve data quality, reduce noise, and prepare the dataset for accurate exploratory analysis and machine learning modeling.`
+    `\n> ✅ These steps collectively improve the uploaded dataset quality, reduce noise introduced during ingestion, and prepare the data for accurate exploratory analysis and machine learning modeling.`
   );
 
   return sections.join('\n');

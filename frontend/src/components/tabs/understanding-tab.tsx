@@ -1,5 +1,6 @@
 'use client';
 
+import { motion } from 'framer-motion';
 import { AlertCircle, Database, Eye, FileText, Sparkles, Table as TableIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -83,65 +84,94 @@ export default function UnderstandingTab() {
           { label: 'Duplicates Found', value: duplicates.toLocaleString(), Icon: Sparkles },
           { label: 'Memory Estimate', value: memoryUsage || 'N/A', Icon: Database },
         ].map(({ label, value, Icon }) => (
-          <Card key={label} className="group overflow-hidden border-border/70 bg-card/75 transition-all duration-300 hover:-translate-y-1.5 hover:border-primary/25 hover:shadow-[0_20px_55px_-30px_rgba(37,99,235,0.28)]">
+          <motion.div
+            key={label}
+            whileHover={{ y: -8, rotateX: 3, rotateY: -3 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 18 }}
+            className="[transform-style:preserve-3d]"
+          >
+          <Card className="group relative overflow-hidden border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(248,250,252,0.94))] transition-all duration-500 hover:border-primary/30 hover:shadow-[0_28px_65px_-32px_rgba(37,99,235,0.38)] dark:bg-[linear-gradient(180deg,rgba(30,41,59,0.7),rgba(15,23,42,0.92))]">
+            <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100">
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/70 via-sky-400/65 to-emerald-400/65" />
+              <div className="absolute -right-10 top-0 h-24 w-24 rounded-full bg-sky-400/15 blur-2xl" />
+              <div className="absolute -left-8 bottom-0 h-20 w-20 rounded-full bg-emerald-400/10 blur-2xl" />
+            </div>
             <CardContent className="relative flex items-center gap-3 pt-6">
-              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/70 via-sky-400/65 to-emerald-400/65 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
-              <div className="rounded-2xl bg-primary/10 p-3 transition-all duration-300 group-hover:scale-105 group-hover:bg-primary/15"><Icon className="h-5 w-5 text-primary" /></div>
+              <div className="rounded-2xl bg-primary/10 p-3 transition-all duration-500 group-hover:scale-110 group-hover:bg-primary/15 group-hover:shadow-[0_14px_30px_-18px_rgba(37,99,235,0.55)]"><Icon className="h-5 w-5 text-primary transition-transform duration-500 group-hover:rotate-6" /></div>
               <div className="min-w-0">
-                <p className="text-sm text-muted-foreground">{label}</p>
-                <p className="truncate text-lg font-semibold">{value}</p>
+                <p className="text-sm text-muted-foreground transition-colors duration-300 group-hover:text-foreground/70">{label}</p>
+                <p className="truncate text-lg font-semibold transition-transform duration-500 group-hover:translate-x-0.5">{value}</p>
               </div>
             </CardContent>
           </Card>
+          </motion.div>
         ))}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
-        <Card className="group border-border/70 bg-card/80 transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-card hover:shadow-[0_18px_50px_-24px_rgba(37,99,235,0.35)]">
+        <Card className="group relative overflow-hidden border-border/70 bg-card/80 transition-all duration-500 hover:-translate-y-1.5 hover:border-primary/35 hover:bg-card hover:shadow-[0_24px_60px_-28px_rgba(37,99,235,0.35)]">
+          <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100">
+            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary via-sky-400 to-emerald-400" />
+            <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-primary/10 blur-2xl" />
+          </div>
           <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
             <CardTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> AI Explainability</CardTitle>
             <CardDescription>What the uploaded dataset is telling us about quality and readiness.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             {qualitySignals.map((signal) => (
-              <p key={signal} className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+              <div key={signal} className="rounded-xl px-3 py-2 transition-all duration-300 hover:bg-primary/5 hover:pl-4 hover:text-foreground/90">
+                <p className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+              </div>
             ))}
           </CardContent>
         </Card>
 
-        <Card className="group border-border/70 bg-card/80 transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-card hover:shadow-[0_18px_50px_-24px_rgba(37,99,235,0.35)]">
+        <Card className="group relative overflow-hidden border-border/70 bg-card/80 transition-all duration-500 hover:-translate-y-1.5 hover:border-primary/35 hover:bg-card hover:shadow-[0_24px_60px_-28px_rgba(37,99,235,0.35)]">
+          <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100">
+            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary via-sky-400 to-emerald-400" />
+            <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-sky-400/10 blur-2xl" />
+          </div>
           <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
             <CardTitle className="flex items-center gap-2"><Database className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> Dataset Structure</CardTitle>
             <CardDescription>How the uploaded dataset is organized for analysis.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             {structureSignals.map((signal) => (
-              <p key={signal} className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+              <div key={signal} className="rounded-xl px-3 py-2 transition-all duration-300 hover:bg-primary/5 hover:pl-4 hover:text-foreground/90">
+                <p className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+              </div>
             ))}
           </CardContent>
         </Card>
 
-        <Card className="group border-border/70 bg-card/80 transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-card hover:shadow-[0_18px_50px_-24px_rgba(37,99,235,0.35)]">
+        <Card className="group relative overflow-hidden border-border/70 bg-card/80 transition-all duration-500 hover:-translate-y-1.5 hover:border-primary/35 hover:bg-card hover:shadow-[0_24px_60px_-28px_rgba(37,99,235,0.35)]">
+          <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100">
+            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary via-sky-400 to-emerald-400" />
+            <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-emerald-400/10 blur-2xl" />
+          </div>
           <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
             <CardTitle className="flex items-center gap-2"><TableIcon className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> Modeling Readiness</CardTitle>
             <CardDescription>Key explainability cues that can affect downstream ML behavior.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             {modelingSignals.map((signal) => (
-              <p key={signal} className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+              <div key={signal} className="rounded-xl px-3 py-2 transition-all duration-300 hover:bg-primary/5 hover:pl-4 hover:text-foreground/90">
+                <p className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
+              </div>
             ))}
           </CardContent>
         </Card>
       </div>
 
 
-      <Card className="overflow-hidden border-border/70 bg-card/80 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.22)]">
+      <Card className="group overflow-hidden border-border/70 bg-card/80 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.22)] transition-all duration-500 hover:border-primary/30 hover:shadow-[0_28px_65px_-34px_rgba(37,99,235,0.3)]">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Eye className="h-4 w-4 text-primary" /> Data Preview</CardTitle>
+          <CardTitle className="flex items-center gap-2"><Eye className="h-4 w-4 text-primary transition-transform duration-500 group-hover:scale-110 group-hover:rotate-3" /> Data Preview</CardTitle>
           <CardDescription>First {Math.min(10, data.length)} rows from the current dataset view.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="max-h-[420px] overflow-auto rounded-2xl border border-border/70 bg-background/70 shadow-inner">
+          <div className="max-h-[420px] overflow-auto rounded-2xl border border-border/70 bg-background/70 shadow-inner transition-all duration-500 group-hover:border-primary/20">
             <ShadTable>
               <TableHeader>
                 <TableRow>
@@ -151,9 +181,9 @@ export default function UnderstandingTab() {
               </TableHeader>
               <TableBody>
                 {previewRows.map((row, rowIdx) => (
-                  <TableRow key={rowIdx}>
-                    <TableCell>{rowIdx + 1}</TableCell>
-                    {columns.map((col) => <TableCell key={`${rowIdx}-${col.name}`}>{row[col.name] == null ? '-' : String(row[col.name])}</TableCell>)}
+                  <TableRow key={rowIdx} className="transition-all duration-300 hover:bg-primary/5 hover:shadow-[inset_3px_0_0_rgba(37,99,235,0.8)]">
+                    <TableCell className="font-medium text-muted-foreground transition-colors duration-300 group-hover:text-foreground/80">{rowIdx + 1}</TableCell>
+                    {columns.map((col) => <TableCell key={`${rowIdx}-${col.name}`} className="transition-colors duration-300 hover:text-foreground">{row[col.name] == null ? '-' : String(row[col.name])}</TableCell>)}
                   </TableRow>
                 ))}
               </TableBody>

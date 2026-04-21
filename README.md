@@ -87,3 +87,4 @@ Notes about the current workflow behavior:
   - `limit`
 - In Docker, the backend uses `postgresql://postgres:postgres@postgres:5432/ai_eda_assistant` by default.
 - For local development, set `ACTIVITY_DATABASE_URL`, for example: `postgresql://postgres:postgres@localhost:5432/ai_eda_assistant`.
+- If PostgreSQL is optional in your local workflow, you can reduce backend wait time with `ACTIVITY_DB_CONNECT_TIMEOUT=1` in `.env` to fail fast when the database is offline.
