@@ -117,6 +117,13 @@ interface ComparisonResult {
   analysis: string;
   cvScores: number[];
   trainingTime: number;
+  samplePredictions?: { actual: string | number; predicted: string | number }[];
+  overfittingDetected?: boolean;
+  overfittingStatus?: 'healthy' | 'watch' | 'detected';
+  overfittingExplanation?: string;
+  generalizationGap?: number;
+  cvGap?: number | null;
+  optimization?: TrainResponse['optimization'];
 }
 
 // ─── Model Definitions ────────────────────────────────────────────────────────
@@ -323,9 +330,39 @@ function buildModelSuggestionExplanation(params: {
     `The uploaded dataset is currently being treated as a ${targetProblemType} problem because "${selectedTarget}" looks like a ${targetColumn?.role ?? 'candidate'} target with ${confidence}% detection confidence.`,
     `${selectedFeatures.length} feature${selectedFeatures.length === 1 ? '' : 's'} are selected for training, including ${numericFeatures} numeric and ${categoricalFeatures} categorical/boolean field${categoricalFeatures === 1 ? '' : 's'}.`,
     recommendedModel
-      ? `${recommendedModel.name} is suggested first because ${recommendedModel.whyRecommended.toLowerCase()}`
+      ? `${recommendedModel.name} is recommended as the starting model because ${recommendedModel.whyRecommended.toLowerCase()}`
       : 'A default baseline model is suggested first so the workflow can establish a measurable starting point.',
   ];
+}
+
+function getRecommendedStarterModel(
+  models: ModelDef[],
+  problemType: ProblemType,
+  selectedFeatures: string[],
+  columns: ColumnInfo[],
+) {
+  const selectedFeatureColumns = selectedFeatures
+    .map((feature) => columns.find((column) => column.name === feature))
+    .filter((column): column is ColumnInfo => Boolean(column));
+  const featureCount = selectedFeatureColumns.length;
+  const numericCount = selectedFeatureColumns.filter((column) => column.role === 'numeric').length;
+  const categoricalCount = selectedFeatureColumns.filter((column) => column.role === 'categorical' || column.role === 'boolean').length;
+
+  const preferredOrder =
+    problemType === 'regression'
+      ? featureCount >= 6 || (numericCount >= 4 && numericCount >= categoricalCount)
+        ? ['gradient_boosting', 'random_forest', 'ridge_regression']
+        : ['random_forest', 'gradient_boosting', 'ridge_regression']
+      : featureCount >= 6 || numericCount >= 4
+        ? ['gradient_boosting', 'random_forest', 'logistic_regression']
+        : ['random_forest', 'gradient_boosting', 'logistic_regression'];
+
+  for (const modelId of preferredOrder) {
+    const match = models.find((model) => model.id === modelId);
+    if (match) return match;
+  }
+
+  return models.find((model) => model.recommended) ?? models[0] ?? null;
 }
 
 function buildModelResultsExplanation(params: {
@@ -625,8 +662,8 @@ export default function MlTab() {
 
   const recommendedCandidates = useMemo(() => models.filter(m => m.recommended), [models]);
   const recommendedModel = useMemo(() => {
-    return models.find(m => m.id === 'random_forest') ?? recommendedCandidates[0] ?? models[0] ?? null;
-  }, [models, recommendedCandidates]);
+    return getRecommendedStarterModel(models, targetProblemType, selectedFeatures, columns);
+  }, [columns, models, selectedFeatures, targetProblemType]);
   const otherModels = useMemo(() => models.filter(m => m.id !== recommendedModel?.id), [models, recommendedModel]);
   const modelSuggestionExplanation = useMemo(() => buildModelSuggestionExplanation({
     selectedTarget,
@@ -772,6 +809,53 @@ export default function MlTab() {
 
   // ─── Compare models (Step 5) ─────────────────────────────────────────────
 
+  const activateComparedModel = useCallback((result: ComparisonResult) => {
+    setBestModel(result.modelId);
+    setSelectedModel(result.modelId);
+    setTrainResults({
+      model_id: result.modelUuid || '',
+      metrics: result.metrics,
+      feature_importance: result.featureImportance,
+      analysis: result.analysis || '',
+      sample_predictions: result.samplePredictions || [],
+      cv_scores: result.cvScores || [],
+      overfitting_detected: result.overfittingDetected || false,
+      overfitting_status: result.overfittingStatus || 'healthy',
+      overfitting_explanation: result.overfittingExplanation || '',
+      generalization_gap: typeof result.generalizationGap === 'number' ? result.generalizationGap : undefined,
+      cv_gap: typeof result.cvGap === 'number' ? result.cvGap : result.cvGap ?? null,
+      training_time: result.trainingTime || 0,
+      optimization: result.optimization,
+    });
+    setModelAnalysis(result.analysis || '');
+    setCvScores(result.cvScores || []);
+    setOverfittingDetected(result.overfittingDetected || false);
+    setOverfittingStatus(result.overfittingStatus || 'healthy');
+    setOverfittingExplanation(result.overfittingExplanation || '');
+    setGeneralizationGap(typeof result.generalizationGap === 'number' ? result.generalizationGap : null);
+    setCvGap(typeof result.cvGap === 'number' ? result.cvGap : result.cvGap ?? null);
+
+    useAppStore.setState({
+      targetColumn: selectedTarget,
+      problemType: targetProblemType,
+      selectedFeatures,
+      selectedModel: result.modelId,
+      modelId: result.modelUuid || null,
+      modelMetrics: result.metrics,
+      modelTrained: true,
+      featureImportance: result.featureImportance,
+      uploadedModel: {
+        name: result.modelId,
+        type: result.modelId,
+        target: selectedTarget,
+        problem: targetProblemType,
+        trainedAt: new Date().toISOString(),
+        metrics: result.metrics,
+        features: selectedFeatures,
+      },
+    });
+  }, [selectedFeatures, selectedTarget, targetProblemType]);
+
   const handleCompare = useCallback(async () => {
     const modelsToCompare = recommendedCandidates.map(m => m.id);
     if (modelsToCompare.length === 0) return;
@@ -798,6 +882,13 @@ export default function MlTab() {
             analysis: result.analysis || '',
             cvScores: result.cv_scores || [],
             trainingTime: result.training_time || 0,
+            samplePredictions: result.sample_predictions || [],
+            overfittingDetected: result.overfitting_detected || false,
+            overfittingStatus: result.overfitting_status || 'healthy',
+            overfittingExplanation: result.overfitting_explanation || '',
+            generalizationGap: typeof result.generalization_gap === 'number' ? result.generalization_gap : undefined,
+            cvGap: typeof result.cv_gap === 'number' ? result.cv_gap : result.cv_gap ?? null,
+            optimization: result.optimization,
           });
         }
       } catch {
@@ -817,32 +908,13 @@ export default function MlTab() {
           best = r;
         }
       }
-      setBestModel(best.modelId);
-
-      // Auto-select best model and update store
-      setSelectedModel(best.modelId);
-      useAppStore.setState({
-        selectedModel: best.modelId,
-        modelId: best.modelUuid || null,
-        modelMetrics: best.metrics,
-        modelTrained: true,
-        featureImportance: best.featureImportance,
-        uploadedModel:{
-          name: best.modelId,
-          type: best.modelId,
-          target: selectedTarget,
-          problem: targetProblemType,
-          trainedAt: new Date().toISOString(),
-          metrics: best.metrics,
-          features: selectedFeatures,
-        },
-      });
+      activateComparedModel(best);
 
       toast({ title: 'Comparison Complete', description: `${best.modelName} is the best performing model.` });
     }
 
     setTimeout(() => setIsComparing(false), 500);
-  }, [recommendedCandidates, trainModel, targetProblemType, selectedTarget, selectedFeatures, toast]);
+  }, [activateComparedModel, recommendedCandidates, trainModel, targetProblemType, toast]);
 
   // ─── Navigation ───────────────────────────────────────────────────────────
 
@@ -1371,13 +1443,13 @@ export default function MlTab() {
                       <CardContent className="space-y-3">
                         <p className="text-sm text-muted-foreground">{recommendedModel.description}</p>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <Badge className="bg-primary text-primary-foreground text-[10px]">Best Choice</Badge>
+                          <Badge className="bg-primary text-primary-foreground text-[10px]">Recommended First</Badge>
                         </div>
                         <div className="rounded-lg border bg-muted/30 px-3 py-3 text-sm text-muted-foreground">
                           <span className="font-medium text-foreground">Why this model:</span> {recommendedModel.whyRecommended}
                         </div>
                         <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-3 text-sm text-muted-foreground">
-                          <span className="font-medium text-foreground">Why it is universal:</span> This recommendation is based on target type, feature composition, and general tabular-data behavior, so it can adapt to any uploaded dataset without relying on domain-specific assumptions.
+                          <span className="font-medium text-foreground">Why it is suggested:</span> This recommendation is based on target type, feature composition, and expected tabular-data behavior. Final selection should still be validated in the comparison step.
                         </div>
                       </CardContent>
                     </Card>
@@ -2111,7 +2183,7 @@ export default function MlTab() {
                         <CardTitle className="text-lg">Comparison Results</CardTitle>
                       </div>
                       <CardDescription>
-                        {bestModel && <span className="font-medium text-primary">🏆 {bestModel.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} performs best</span>}
+                        {bestModel && <span className="font-medium text-primary">{bestModel.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} is the current best performer in this comparison</span>}
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -2175,8 +2247,11 @@ export default function MlTab() {
                         <div className="mt-4 flex justify-center">
                           <Button
                             onClick={() => {
-                              setSelectedModel(bestModel);
-                              toast({ title: 'Model Selected', description: `${bestModel.replace(/_/g, ' ')} is now the active model.` });
+                              const winningResult = comparisonResults.find((result) => result.modelId === bestModel);
+                              if (winningResult) {
+                                activateComparedModel(winningResult);
+                                toast({ title: 'Model Selected', description: `${winningResult.modelName} is now the active model.` });
+                              }
                             }}
                             className="bg-primary text-primary-foreground hover:bg-primary/90"
                           >
@@ -2372,6 +2447,8 @@ export default function MlTab() {
     </div>
   );
 }
+
+
 
 
 

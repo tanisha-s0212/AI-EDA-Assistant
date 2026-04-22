@@ -61,8 +61,13 @@ MODEL_DIR = BASE_DIR / 'models'
 MODEL_DIR.mkdir(exist_ok=True)
 DATASET_DIR = BASE_DIR / 'datasets'
 DATASET_DIR.mkdir(exist_ok=True)
+RUNTIME_TEMP_DIR = BASE_DIR / 'tmp'
+RUNTIME_TEMP_DIR.mkdir(exist_ok=True)
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
+os.environ.setdefault('TMP', str(RUNTIME_TEMP_DIR))
+os.environ.setdefault('TEMP', str(RUNTIME_TEMP_DIR))
+os.environ.setdefault('TMPDIR', str(RUNTIME_TEMP_DIR))
 ACTIVITY_DATABASE_URL = os.environ.get('ACTIVITY_DATABASE_URL') or os.environ.get('DATABASE_URL') or 'postgresql://postgres:postgres@localhost:5432/ai_eda_assistant'
 ACTIVITY_DB_REQUIRED = os.environ.get('ACTIVITY_DB_REQUIRED', 'false').strip().lower() == 'true'
 ACTIVITY_DB_CONNECT_TIMEOUT = int(os.environ.get('ACTIVITY_DB_CONNECT_TIMEOUT', '1'))
@@ -76,6 +81,7 @@ SESSION_MAX_AGE = SESSION_DURATION_SECONDS
 SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'false').strip().lower() == 'true'
 SESSION_COOKIE_SAMESITE = os.environ.get('SESSION_COOKIE_SAMESITE', 'lax').strip().lower() or 'lax'
 SESSION_COOKIE_DOMAIN = os.environ.get('SESSION_COOKIE_DOMAIN') or None
+ENABLE_PLOTLY_STATIC_EXPORT = os.environ.get('ENABLE_PLOTLY_STATIC_EXPORT', 'false').strip().lower() == 'true'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -149,6 +155,7 @@ PARQUET_PREVIEW_ROW_LIMIT = 20_000
 EDA_ADVANCED_SAMPLE_LIMIT = 5_000
 EDA_MAX_MISSINGNESS_COLUMNS = 30
 EDA_MISSINGNESS_BUCKETS = 60
+UPLOAD_READ_CHUNK_SIZE = 4 * 1024 * 1024
 EDA_MAX_NUMERIC_CHARTS = 8
 EDA_MAX_CATEGORICAL_CHARTS = 8
 EDA_MAX_CATEGORY_BARS = 10
@@ -636,6 +643,29 @@ def write_dataset_file(dataset_id: str, content: bytes, suffix: str = '.parquet'
     return target
 
 
+async def write_uploaded_file(upload_file: UploadFile, dataset_id: str, suffix: str) -> tuple[Path, int]:
+    target = dataset_file_path(dataset_id, suffix)
+    total_bytes = 0
+
+    with target.open('wb') as handle:
+        while True:
+            chunk = await upload_file.read(UPLOAD_READ_CHUNK_SIZE)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_UPLOAD_SIZE_BYTES:
+                handle.close()
+                try:
+                    target.unlink(missing_ok=True)
+                except Exception:
+                    logger.exception('Failed to remove oversized uploaded dataset file %s', target)
+                raise HTTPException(status_code=400, detail='File exceeds 512MB limit.')
+            handle.write(chunk)
+
+    await upload_file.seek(0)
+    return target, total_bytes
+
+
 def write_cached_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
     target = dataset_file_path(dataset_id, '.joblib')
     joblib.dump(frame, target)
@@ -694,6 +724,38 @@ def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None =
         raise HTTPException(status_code=400, detail=f'Failed to load cached Excel dataset: {error}') from error
 
 
+def load_cached_preview(dataset_entry: dict[str, Any], limit: int = PARQUET_PREVIEW_ROW_LIMIT) -> tuple[pd.DataFrame | pl.DataFrame, bool]:
+    if dataset_entry.get('parquet_path'):
+        return read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True), True
+    if dataset_entry.get('csv_path'):
+        return read_cached_csv(dataset_entry, n_rows=limit), False
+    if dataset_entry.get('excel_path'):
+        return read_cached_excel(dataset_entry, n_rows=limit), False
+    if dataset_entry.get('frame_path'):
+        return read_cached_frame(dataset_entry, n_rows=limit), False
+    raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
+
+
+def load_cached_analysis_sample(dataset_entry: dict[str, Any], limit: int = EDA_ADVANCED_SAMPLE_LIMIT) -> tuple[pd.DataFrame, int]:
+    total_rows = int(dataset_entry.get('row_count') or 0)
+
+    if dataset_entry.get('parquet_path'):
+        frame = read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True)
+        return normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False)), total_rows
+
+    if dataset_entry.get('csv_path'):
+        return normalize_dataframe(read_cached_csv(dataset_entry, n_rows=limit)), total_rows
+
+    if dataset_entry.get('excel_path'):
+        return normalize_dataframe(read_cached_excel(dataset_entry, n_rows=limit)), total_rows
+
+    if dataset_entry.get('frame_path'):
+        frame = read_cached_frame(dataset_entry)
+        return sample_frame_for_eda(frame, limit), int(len(frame))
+
+    raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
+
+
 def count_csv_rows(buffer: io.BytesIO, sep: str = ',') -> int:
     buffer.seek(0)
     row_count = 0
@@ -704,6 +766,16 @@ def count_csv_rows(buffer: io.BytesIO, sep: str = ',') -> int:
         raise HTTPException(status_code=400, detail=f'Failed to determine CSV row count: {error}') from error
     finally:
         buffer.seek(0)
+    return row_count
+
+
+def count_csv_rows_from_path(path: Path, sep: str = ',') -> int:
+    row_count = 0
+    try:
+        for chunk in pd.read_csv(path, sep=sep, low_memory=True, chunksize=100_000):
+            row_count += len(chunk)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f'Failed to determine CSV row count: {error}') from error
     return row_count
 
 
@@ -735,6 +807,31 @@ def count_excel_rows(buffer: io.BytesIO, filename: str) -> int:
         return max(0, row_count)
 
     buffer.seek(0)
+    return 0
+
+
+def count_excel_rows_from_path(path: Path) -> int:
+    suffix = path.suffix.lower()
+
+    if suffix == '.xlsx':
+        try:
+            import openpyxl
+        except ImportError as error:
+            raise HTTPException(status_code=500, detail='openpyxl is required to count rows in .xlsx files.') from error
+
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        return max(0, workbook.active.max_row - 1)
+
+    if suffix == '.xls':
+        try:
+            import xlrd
+        except ImportError as error:
+            raise HTTPException(status_code=500, detail='xlrd is required to count rows in .xls files.') from error
+
+        workbook = xlrd.open_workbook(path)
+        sheet = workbook.sheet_by_index(0)
+        return max(0, sheet.nrows - 1)
+
     return 0
 
 
@@ -1305,6 +1402,8 @@ def is_identifier_like_numeric(series: pd.Series, column_name: str) -> bool:
 
 
 def figure_to_base64(figure: go.Figure, *, width: int = 1400, height: int = 700) -> str | None:
+    if not ENABLE_PLOTLY_STATIC_EXPORT:
+        return None
     try:
         figure.update_layout(
             template='plotly_white',
@@ -1879,15 +1978,27 @@ def build_automated_insights(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
-    frame = load_full_dataset_frame(request.dataset_id, request.data)
-    if frame.empty or frame.shape[1] == 0:
-        raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
+    if request.dataset_id:
+        dataset_entry = DATASET_CACHE.get(request.dataset_id)
+        if dataset_entry is None:
+            raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
+        analysis_frame, total_rows = load_cached_analysis_sample(dataset_entry)
+        if analysis_frame.empty or analysis_frame.shape[1] == 0:
+            raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
+        row_count = total_rows if total_rows > 0 else int(len(analysis_frame))
+        column_count = int(dataset_entry.get('column_count') or len(analysis_frame.columns))
+    else:
+        frame = load_full_dataset_frame(request.dataset_id, request.data)
+        if frame.empty or frame.shape[1] == 0:
+            raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
+        analysis_frame = sample_frame_for_eda(frame)
+        row_count = int(len(frame))
+        column_count = int(len(frame.columns))
 
-    analysis_frame = sample_frame_for_eda(frame)
     return {
-        'row_count': int(len(frame)),
+        'row_count': row_count,
         'sampled_row_count': int(len(analysis_frame)),
-        'column_count': int(len(frame.columns)),
+        'column_count': column_count,
         'missingness': build_missingness_payload(analysis_frame),
         'distributions': build_distribution_payload(analysis_frame),
         'categorical': build_categorical_payload(analysis_frame),
@@ -3309,12 +3420,14 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 })
 
         updated_dataset_path = write_cached_frame(request.dataset_id, frame)
+        duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
         updated_entry = {
             'frame_path': str(updated_dataset_path),
             'filename': dataset_entry['filename'],
             'row_count': int(len(frame)),
             'column_count': int(len(frame.columns)),
             'columns': list(frame.columns),
+            'duplicate_count': duplicate_rows,
         }
         if dataset_entry.get('csv_path'):
             updated_entry['csv_path'] = dataset_entry['csv_path']
@@ -3325,7 +3438,6 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         DATASET_CACHE[request.dataset_id] = updated_entry
         memory_size = updated_dataset_path.stat().st_size
         preview_frame = frame.head(PARQUET_PREVIEW_ROW_LIMIT)
-        duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
         return {
             'datasetId': request.dataset_id,
             'data': safe_serialize(preview_frame.to_dict(orient='records')),
@@ -3429,17 +3541,18 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
     parquet_buffer = io.BytesIO()
     frame.write_parquet(parquet_buffer)
     updated_dataset_path = write_dataset_file(request.dataset_id, parquet_buffer.getvalue())
+    duplicate_rows = int(max(0, frame.height - frame.unique().height))
     DATASET_CACHE[request.dataset_id] = {
         'parquet_path': str(updated_dataset_path),
         'filename': dataset_entry['filename'],
         'row_count': int(frame.height),
         'column_count': int(len(frame.columns)),
         'columns': list(frame.columns),
+        'duplicate_count': duplicate_rows,
     }
     memory_size = updated_dataset_path.stat().st_size
 
     preview_frame = frame.head(PARQUET_PREVIEW_ROW_LIMIT)
-    duplicate_rows = int(max(0, frame.height - frame.unique().height))
     return {
         'datasetId': request.dataset_id,
         'data': safe_serialize(preview_frame.to_dicts()),
@@ -4906,18 +5019,27 @@ def get_dataset_preview(
     if dataset_entry is None:
         raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
 
-    frame = load_full_dataset_frame(dataset_id, [])
-    preview_frame = frame.head(PARQUET_PREVIEW_ROW_LIMIT)
-    duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
+    preview_frame, is_polars_preview = load_cached_preview(dataset_entry, PARQUET_PREVIEW_ROW_LIMIT)
+    row_count = int(dataset_entry.get('row_count') or (preview_frame.height if is_polars_preview else len(preview_frame)))
+    loaded_row_count = int(preview_frame.height if is_polars_preview else len(preview_frame))
+    preview_loaded = row_count > loaded_row_count
+    duplicate_rows = int(dataset_entry.get('duplicate_count') or 0)
+
+    if is_polars_preview:
+        preview_rows = safe_serialize(preview_frame.to_dicts())
+        preview_columns = build_column_info_from_polars_frame(preview_frame)
+    else:
+        preview_rows = safe_serialize(preview_frame.to_dict(orient='records'))
+        preview_columns = build_column_info_from_frame(preview_frame)
 
     response = {
         'datasetId': dataset_id,
         'fileName': dataset_entry.get('filename'),
-        'data': safe_serialize(preview_frame.to_dict(orient='records')),
-        'columns': build_column_info_from_frame(frame),
-        'rowCount': int(len(frame)),
-        'loadedRowCount': int(len(preview_frame)),
-        'previewLoaded': len(frame) > len(preview_frame),
+        'data': preview_rows,
+        'columns': preview_columns,
+        'rowCount': row_count,
+        'loadedRowCount': loaded_row_count,
+        'previewLoaded': preview_loaded,
         'duplicates': duplicate_rows,
     }
     record_activity(
@@ -4928,9 +5050,9 @@ def get_dataset_preview(
         file_name=str(dataset_entry.get('filename') or ''),
         detail='Loaded a cached dataset preview for workspace restore.',
         metadata={
-            'row_count': int(len(frame)),
-            'loaded_row_count': int(len(preview_frame)),
-            'preview_loaded': len(frame) > len(preview_frame),
+            'row_count': row_count,
+            'loaded_row_count': loaded_row_count,
+            'preview_loaded': preview_loaded,
         },
     )
     return JSONResponse(content=response)
@@ -4946,48 +5068,46 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
     if not lower_file_name.endswith(supported_exts):
         raise HTTPException(status_code=400, detail='Only .csv, .tsv, .xlsx, .xls, and .parquet files are supported.')
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail='File exceeds 512MB limit.')
-
-    buffer = io.BytesIO(content)
     dataset_id = str(uuid.uuid4())[:8]
-    cached_path = write_dataset_file(dataset_id, content, suffix=Path(file_name).suffix.lower())
+    file_suffix = Path(file_name).suffix.lower()
+    cached_path, _ = await write_uploaded_file(file, dataset_id, suffix=file_suffix)
     dataset_entry: dict[str, Any] = {
         'filename': file_name,
         'row_count': 0,
         'column_count': 0,
         'columns': [],
+        'duplicate_count': 0,
     }
 
     try:
         if lower_file_name.endswith('.parquet'):
-            parquet_file = pq.ParquetFile(buffer)
+            parquet_file = pq.ParquetFile(cached_path)
             total_rows = int(parquet_file.metadata.num_rows)
             column_count = len(parquet_file.schema.names)
-            buffer.seek(0)
-            frame = pl.read_parquet(buffer, n_rows=PARQUET_PREVIEW_ROW_LIMIT, low_memory=True)
+            frame = pl.read_parquet(cached_path, n_rows=PARQUET_PREVIEW_ROW_LIMIT, low_memory=True)
             dataset_entry.update({'parquet_path': str(cached_path)})
             rows = frame.to_dicts()
             column_info = build_column_info_from_polars_frame(frame)
+            preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         elif lower_file_name.endswith('.csv') or lower_file_name.endswith('.tsv'):
             sep = '\t' if lower_file_name.endswith('.tsv') else ','
-            frame = pd.read_csv(buffer, sep=sep, nrows=PARQUET_PREVIEW_ROW_LIMIT, low_memory=True)
-            total_rows = count_csv_rows(io.BytesIO(content), sep=sep)
+            frame = pd.read_csv(cached_path, sep=sep, nrows=PARQUET_PREVIEW_ROW_LIMIT, low_memory=True)
+            total_rows = count_csv_rows_from_path(cached_path, sep=sep)
             column_count = len(frame.columns)
             dataset_entry.update({'csv_path': str(cached_path)})
             rows = frame.where(pd.notna(frame), None).to_dict(orient='records')
             column_info = build_column_info_from_frame(frame)
+            preview_duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
         else:
             # Excel workbook
             try:
-                preview_frame = pd.read_excel(buffer, nrows=PARQUET_PREVIEW_ROW_LIMIT)
+                preview_frame = pd.read_excel(cached_path, nrows=PARQUET_PREVIEW_ROW_LIMIT)
             except Exception as excel_error:
                 raise HTTPException(status_code=400, detail=f'Failed to parse Excel file: {excel_error}') from excel_error
 
             total_rows = len(preview_frame)
             try:
-                total_rows = count_excel_rows(io.BytesIO(content), file_name)
+                total_rows = count_excel_rows_from_path(cached_path)
             except HTTPException:
                 total_rows = len(preview_frame)
 
@@ -4996,11 +5116,13 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             dataset_entry.update({'excel_path': str(cached_path)})
             rows = frame.where(pd.notna(frame), None).to_dict(orient='records')
             column_info = build_column_info_from_frame(frame)
+            preview_duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
 
         dataset_entry.update({
             'row_count': int(total_rows),
             'column_count': int(column_count),
             'columns': list(frame.columns),
+            'duplicate_count': int(preview_duplicate_rows),
         })
         DATASET_CACHE[dataset_id] = dataset_entry
 

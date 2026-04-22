@@ -431,9 +431,6 @@ export default function ReportTab() {
               >
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="flex gap-4">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-xl border bg-card shadow-sm">
-                      <span className="text-sm font-semibold text-muted-foreground">{step.step}</span>
-                    </div>
                     <div className={`flex h-11 w-11 items-center justify-center rounded-xl border ${step.status === 'Completed' ? 'border-primary/20 bg-primary/10 text-primary' : step.status === 'Skipped' ? 'border-border bg-secondary text-secondary-foreground' : 'border-border bg-muted/30 text-muted-foreground'}`}>
                       <Icon className="h-5 w-5" />
                     </div>
@@ -445,7 +442,7 @@ export default function ReportTab() {
                       <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.detail}</p>
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2 pl-[62px] lg:pl-0">
+                  <div className="flex shrink-0 items-center gap-2 pl-[60px] lg:pl-0">
                     <Button variant="ghost" size="sm" className="rounded-xl px-4" onClick={() => setActiveTab(STEP_TAB_MAP[step.step as keyof typeof STEP_TAB_MAP])}>
                       Open Step
                     </Button>

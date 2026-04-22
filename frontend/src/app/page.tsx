@@ -33,6 +33,8 @@ import {
   Radar,
   Cpu,
   LogOut,
+  UserRound,
+  Mail,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -222,16 +224,16 @@ function BrandWordmark({
   return (
     <div className="min-w-0">
       <p className={cn(
-        'font-semibold uppercase tracking-[0.28em]',
-        compact ? 'text-[10px]' : 'text-[11px]',
+        'font-semibold uppercase tracking-[0.34em]',
+        compact ? 'text-[10px]' : 'text-xs',
         inverted ? 'text-cyan-100/70' : 'text-sky-700/80'
       )}>
         Aroha Intelligent Platform
       </p>
-      <div className="mt-1 flex min-w-0 items-center gap-2">
+      <div className="mt-1.5 flex min-w-0 items-center gap-2">
         <h1 className={cn(
-          'truncate font-semibold tracking-tight',
-          compact ? 'text-[15px] sm:text-base' : 'text-lg sm:text-xl',
+          'truncate font-black tracking-[-0.03em]',
+          compact ? 'text-lg sm:text-[1.2rem]' : 'text-[1.9rem] sm:text-[2.25rem]',
           inverted ? 'text-white' : 'text-slate-950'
         )}>
           <span className={cn(
@@ -244,17 +246,19 @@ function BrandWordmark({
           </span>
         </h1>
       </div>
-      <p className={cn(
-        'mt-1 text-xs',
-        inverted ? 'text-slate-300' : 'text-muted-foreground'
-      )}>
-        Connected analytics workspace for understanding, EDA, and modeling.
-      </p>
     </div>
   );
 }
 
-function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
+function SidebarContent({
+  onNavigate,
+  currentUser,
+  onLogout,
+}: {
+  onNavigate?: (id: TabId) => void;
+  currentUser?: AuthenticatedUser | null;
+  onLogout?: () => void;
+}) {
   const { activeTab, setActiveTab, rawData, cleaningDone, modelTrained, previewLoaded, loadedRowCount, totalRows } = useAppStore();
   const hasDatasetContext = Boolean(rawData?.length || totalRows > 0);
 
@@ -340,17 +344,44 @@ function SidebarContent({ onNavigate }: { onNavigate?: (id: TabId) => void }) {
 
       {/* Footer */}
       <div className="border-t p-4 sm:p-5">
-        <div className="rounded-2xl border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(248,250,252,0.94))] p-3 shadow-[0_18px_50px_-32px_rgba(15,23,42,0.25)] dark:bg-[linear-gradient(180deg,rgba(30,41,59,0.72),rgba(15,23,42,0.95))]">
-          <p className="text-xs font-semibold text-secondary-foreground">
-            AI-Powered Analysis
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {hasDatasetContext
-              ? previewLoaded
-                ? `${loadedRowCount.toLocaleString()} preview rows of ${totalRows.toLocaleString()} total`
-                : `${totalRows.toLocaleString()} rows loaded`
-              : 'Upload data to start'}
-          </p>
+        <div className="rounded-[26px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.78),rgba(248,250,252,0.96))] p-4 shadow-[0_18px_50px_-32px_rgba(15,23,42,0.25)] dark:bg-[linear-gradient(180deg,rgba(30,41,59,0.8),rgba(15,23,42,0.96))]">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0f172a_0%,#0f766e_100%)] text-white shadow-[0_16px_40px_-26px_rgba(15,23,42,0.55)]">
+              <UserRound className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Signed In Profile
+              </p>
+              <p className="mt-1 truncate text-sm font-semibold text-foreground">
+                {currentUser?.username ?? 'Workspace User'}
+              </p>
+              <p className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                <Mail className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{currentUser?.email ?? 'No email available'}</span>
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 rounded-2xl border border-border/70 bg-background/80 px-3 py-2.5">
+            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Workspace Status
+            </p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              {hasDatasetContext
+                ? previewLoaded
+                  ? `${loadedRowCount.toLocaleString()} preview rows available from ${totalRows.toLocaleString()} total rows.`
+                  : `${totalRows.toLocaleString()} rows are available in the active workspace.`
+                : 'No dataset is active yet. Upload one to begin analysis.'}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 w-full justify-center rounded-2xl border-border/70 bg-background/80 font-semibold"
+            onClick={onLogout}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            Logout
+          </Button>
         </div>
       </div>
     </div>
@@ -534,9 +565,8 @@ export default function HomePage() {
   }, [resetWorkspace]);
 
   const handleAddDataset = React.useCallback(() => {
-    setActiveTab('upload');
-    requestUploadPicker();
-  }, [requestUploadPicker, setActiveTab]);
+    requestUploadPicker(activeTab);
+  }, [activeTab, requestUploadPicker]);
 
   const handleAuthSuccess = React.useCallback((user: AuthenticatedUser) => {
     setCurrentUser(user);
@@ -589,7 +619,7 @@ export default function HomePage() {
       </div>
       {/* Desktop Sidebar */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-border/70 bg-sidebar/82 shadow-[0_24px_80px_-28px_rgba(15,23,42,0.18)] backdrop-blur-2xl lg:flex">
-        <SidebarContent />
+        <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} />
       </aside>
 
       {/* Main Content */}
@@ -599,7 +629,7 @@ export default function HomePage() {
           <div className="mx-auto max-w-7xl px-4 pb-6 pt-3 sm:px-6 sm:pt-4 lg:px-8">
             <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-3 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
               <div className="mx-auto max-w-7xl">
-                <div className="group relative overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] p-3.5 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-4">
+                <div className="group relative overflow-hidden rounded-[30px] border border-slate-800/80 bg-[linear-gradient(135deg,#08111f_0%,#13233b_48%,#1d3148_100%)] p-4 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-5">
                   <div className="pointer-events-none absolute inset-0 opacity-80">
                     <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-sky-400/12 blur-3xl transition-transform duration-700 group-hover:scale-125" />
                     <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-500/10 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
@@ -615,7 +645,7 @@ export default function HomePage() {
                             </Button>
                           </SheetTrigger>
                           <SheetContent side="left" className="w-72 p-0">
-                            <SidebarContent />
+                            <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} />
                           </SheetContent>
                         </Sheet>
                         <div className="min-w-0">
@@ -623,7 +653,7 @@ export default function HomePage() {
                             <BrandMark />
                             <BrandWordmark inverted />
                           </div>
-                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <div className="mt-4 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
                               {hasWorkspace ? <CheckCircle2 className="mr-2 h-3.5 w-3.5 text-emerald-300" /> : <AlertCircle className="mr-2 h-3.5 w-3.5 text-amber-300" />}
                               {isRestoringWorkspace ? 'Restoring workspace' : hasWorkspace ? 'Workspace in progress' : 'Awaiting dataset'}
@@ -663,13 +693,6 @@ export default function HomePage() {
                           <RotateCcw className="mr-2 h-4 w-4" />
                           Fresh Start
                         </Button>
-                        <Badge variant="outline" className="h-9 rounded-full border-white/20 bg-white/5 px-3 text-white">
-                          {currentUser.username} | {currentUser.email}
-                        </Badge>
-                        <Button size="sm" variant="ghost" className="h-9 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleLogout}>
-                          <LogOut className="mr-2 h-4 w-4" />
-                          Logout
-                        </Button>
                         <Button size="sm" variant="ghost" className="h-9 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
                           <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshingActivity && 'animate-spin')} />
                           Sync
@@ -683,6 +706,11 @@ export default function HomePage() {
               </div>
             </div>
             <div className="relative">
+              {activeTab !== 'upload' && (
+                <div className="hidden">
+                  <UploadTab />
+                </div>
+              )}
               <div className="glass-panel rounded-[30px] border border-border/70 px-3 py-4 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.32)] sm:px-5 sm:py-5">
                 <div className="mb-5 flex flex-col gap-3 rounded-[24px] border border-border/70 bg-background/70 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.2)] backdrop-blur-sm lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">
