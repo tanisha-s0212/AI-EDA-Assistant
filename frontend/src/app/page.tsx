@@ -243,14 +243,6 @@ function BrandWordmark({
             Intelligent Data Assistant
           </span>
         </h1>
-        <span className={cn(
-          'rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]',
-          inverted
-            ? 'border-cyan-300/25 bg-white/10 text-cyan-100'
-            : 'border-sky-200 bg-sky-50 text-sky-800'
-        )}>
-          AI Suite
-        </span>
       </div>
       <p className={cn(
         'mt-1 text-xs',
