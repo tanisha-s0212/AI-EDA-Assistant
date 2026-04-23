@@ -32,6 +32,11 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card';
+import {
   Table as ShadTable,
   TableBody,
   TableCell,
@@ -74,6 +79,7 @@ interface CleaningOperation {
   icon: React.ElementType;
   enabled: boolean;
   effectText: string;
+  hoverDetails: string[];
 }
 
 // ─────────────────────────────────────────────
@@ -353,6 +359,15 @@ export default function CleaningTab() {
           duplicates > 0
             ? `Will remove ${duplicates} duplicate row${duplicates !== 1 ? 's' : ''}`
             : 'No duplicates detected',
+        hoverDetails: duplicates > 0
+          ? [
+              `${duplicates.toLocaleString()} repeated row${duplicates !== 1 ? 's are' : ' is'} currently present in the uploaded dataset.`,
+              'Removing exact duplicates helps keep counts, averages, and model learning from being biased by repeated records.',
+            ]
+          : [
+              'No repeated full-row records were found in the current dataset sample.',
+              'Leaving this enabled is still safe when a new dataset is uploaded into the same workspace.',
+            ],
       },
       {
         id: 'handleMissing',
@@ -364,6 +379,15 @@ export default function CleaningTab() {
           columnsWithMissing.length > 0
             ? `Will fill values in ${columnsWithMissing.length} column${columnsWithMissing.length !== 1 ? 's' : ''}`
             : 'No missing values detected',
+        hoverDetails: columnsWithMissing.length > 0
+          ? [
+              `${columnsWithMissing.length.toLocaleString()} column${columnsWithMissing.length !== 1 ? 's have' : ' has'} missing values in scope.`,
+              'Numeric fields use a median-style fill, while categorical fields use the most frequent observed value.',
+            ]
+          : [
+              'No null or empty values were detected in the active cleaning scope.',
+              'This option can remain enabled without changing already complete columns.',
+            ],
       },
       {
         id: 'convertDates',
@@ -375,6 +399,15 @@ export default function CleaningTab() {
           dateColumnsDetected.length > 0
             ? `${dateColumnsDetected.length} date column${dateColumnsDetected.length !== 1 ? 's' : ''} detected`
             : 'No date columns detected',
+        hoverDetails: dateColumnsDetected.length > 0
+          ? [
+              `${dateColumnsDetected.length.toLocaleString()} column${dateColumnsDetected.length !== 1 ? 's appear' : ' appears'} to contain calendar or timestamp values.`,
+              'Converting them improves sorting, time-based grouping, forecasting, and downstream feature engineering.',
+            ]
+          : [
+              'No strong date-like patterns were detected from the profiled values.',
+              'If later uploads contain time fields, this option helps standardize them automatically.',
+            ],
       },
       {
         id: 'standardizeNames',
@@ -383,6 +416,15 @@ export default function CleaningTab() {
         icon: Type,
         enabled: ops.standardizeNames,
         effectText: needsStandardizing ? 'Column name changes available' : 'Names already standardized',
+        hoverDetails: needsStandardizing
+          ? [
+              'Some column names still contain spaces, casing differences, or special characters.',
+              'Standardizing to snake_case reduces errors in analysis code, filters, and model feature mapping.',
+            ]
+          : [
+              'The current column names already follow a consistent machine-friendly format.',
+              'Keeping this enabled preserves naming consistency for future uploads in the workspace.',
+            ],
       },
     ],
     [ops, duplicates, columnsWithMissing, dateColumnsDetected, needsStandardizing]
@@ -733,11 +775,13 @@ export default function CleaningTab() {
 
           return (
             <motion.div key={op.id} variants={itemVariants}>
+              <HoverCard openDelay={160} closeDelay={120}>
+              <HoverCardTrigger asChild>
               <Card
                 className={`relative overflow-hidden transition-all duration-300 ${
                   op.enabled
-                    ? 'border-primary/30 shadow-sm shadow-primary/10'
-                    : 'border-border/50 opacity-70'
+                    ? 'border-primary/30 shadow-sm shadow-primary/10 hover:-translate-y-1 hover:shadow-[0_20px_50px_-30px_rgba(37,99,235,0.35)]'
+                    : 'border-border/50 opacity-70 hover:border-border hover:opacity-100'
                 }`}
               >
                 {/* Active indicator bar */}
@@ -801,6 +845,18 @@ export default function CleaningTab() {
                   </div>
                 </CardContent>
               </Card>
+              </HoverCardTrigger>
+              <HoverCardContent align="start" className="w-[320px] rounded-2xl border-border/70 bg-popover/98 p-4 shadow-[0_24px_60px_-32px_rgba(15,23,42,0.35)]">
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-foreground">{op.title}</p>
+                  {op.hoverDetails.map((detail) => (
+                    <p key={detail} className="text-xs leading-6 text-muted-foreground">
+                      {detail}
+                    </p>
+                  ))}
+                </div>
+              </HoverCardContent>
+              </HoverCard>
             </motion.div>
           );
         })}

@@ -165,10 +165,11 @@ export interface AuthenticatedUser {
 export interface AppState extends DatasetWorkspaceState {
   activeTab: TabId;
   uploadPickerRequestId: number;
+  uploadPickerSourceTab: TabId | null;
   currentUser: AuthenticatedUser | null;
   isAuthenticated: boolean;
   setActiveTab: (tab: TabId) => void;
-  requestUploadPicker: () => void;
+  requestUploadPicker: (sourceTab?: TabId) => void;
   resetWorkspace: () => void;
   setCurrentUser: (user: AuthenticatedUser) => void;
   logoutUser: () => void;
@@ -317,8 +318,13 @@ const store = create<AppState>()(
     (set, get) => ({
       ...initialPersistedState,
       uploadPickerRequestId: 0,
+      uploadPickerSourceTab: null,
       setActiveTab: (tab) => set({ activeTab: tab }),
-      requestUploadPicker: () => set((state) => ({ uploadPickerRequestId: state.uploadPickerRequestId + 1 })),
+      requestUploadPicker: (sourceTab) =>
+        set((state) => ({
+          uploadPickerRequestId: state.uploadPickerRequestId + 1,
+          uploadPickerSourceTab: sourceTab ?? state.activeTab,
+        })),
       setCurrentUser: (user) => set({ currentUser: user, isAuthenticated: true }),
       logoutUser: () => set({ currentUser: null, isAuthenticated: false }),
       resetWorkspace: () => {
@@ -329,6 +335,8 @@ const store = create<AppState>()(
         }
         set({
           ...initialPersistedState,
+          uploadPickerRequestId: 0,
+          uploadPickerSourceTab: null,
           currentUser,
           isAuthenticated,
           hasHydrated: true,

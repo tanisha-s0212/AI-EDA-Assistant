@@ -251,7 +251,7 @@ function buildFreshDatasetState(
 }
 
 export default function UploadTab() {
-  const { setActiveTab, addDataset, activeTab, uploadPickerRequestId } = useAppStore();
+  const { setActiveTab, addDataset, activeTab, uploadPickerRequestId, uploadPickerSourceTab } = useAppStore();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledUploadRequestRef = useRef(0);
@@ -303,10 +303,12 @@ export default function UploadTab() {
           description: `${totalRows.toLocaleString()} rows x ${columns.length} columns from ${fileName}`,
         });
 
-        setTimeout(() => setActiveTab('understanding'), 800);
+        if ((uploadPickerSourceTab ?? activeTab) === 'upload') {
+          setTimeout(() => setActiveTab('understanding'), 800);
+        }
       }, 0);
     },
-    [addDataset, setActiveTab, toast],
+    [activeTab, addDataset, setActiveTab, toast, uploadPickerSourceTab],
   );
 
   // ── File Processing ──────────────────────────────────────────────────────
@@ -445,14 +447,13 @@ export default function UploadTab() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'upload') return;
     if (uploadPickerRequestId === 0 || uploadPickerRequestId === handledUploadRequestRef.current) return;
 
     handledUploadRequestRef.current = uploadPickerRequestId;
     window.setTimeout(() => {
       fileInputRef.current?.click();
     }, 120);
-  }, [activeTab, uploadPickerRequestId]);
+  }, [uploadPickerRequestId]);
 
   // ── Format Cards Data ────────────────────────────────────────────────────
 

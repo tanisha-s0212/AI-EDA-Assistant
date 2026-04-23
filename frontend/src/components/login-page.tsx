@@ -65,15 +65,14 @@ function BrandMark() {
 function BrandWordmark() {
   return (
     <div className="min-w-0">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Aroha Intelligent Platform</p>
-      <div className="mt-1 flex min-w-0 items-center gap-2">
-        <p className="truncate text-lg font-semibold tracking-tight sm:text-xl">
+      <p className="text-xs font-semibold uppercase tracking-[0.34em] text-slate-500">Aroha Intelligent Platform</p>
+      <div className="mt-1.5 flex min-w-0 items-center gap-2">
+        <p className="truncate text-[1.9rem] font-black tracking-[-0.03em] sm:text-[2.25rem]">
           <span className="bg-[linear-gradient(135deg,#082f49_0%,#0f766e_46%,#0284c7_100%)] bg-clip-text text-transparent">
             Intelligent Data Assistant
           </span>
         </p>
       </div>
-      <p className="mt-1 text-sm text-slate-600">Secure analytics workspace with guided intelligence across the full data workflow.</p>
     </div>
   );
 }
@@ -189,7 +188,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               Secure workspace access
             </Badge>
             <h1 className="mt-6 text-4xl font-semibold tracking-tight text-slate-950 sm:text-5xl">
-              Authenticate before entering the Intelligent Data Assistant
+              Secure Access to Your Analytics Workspace
             </h1>
             <p className="mt-4 max-w-xl text-base leading-7 text-slate-600 sm:text-lg">
               Accounts are stored in PostgreSQL with hashed passwords and protected server-side sessions. Once signed in,
@@ -221,12 +220,11 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 <BrandMark />
                 <div className="min-w-0">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Workspace Authentication</p>
-                  <p className="mt-1 text-base font-semibold tracking-tight text-slate-950">
+                  <p className="mt-1 text-[1.4rem] font-black tracking-[-0.03em] text-slate-950 sm:text-[1.55rem]">
                     <span className="bg-[linear-gradient(135deg,#082f49_0%,#0f766e_46%,#0284c7_100%)] bg-clip-text text-transparent">
                       Intelligent Data Assistant
                     </span>
                   </p>
-                  <p className="text-sm text-slate-600">Secure sign-in for the analytics environment</p>
                 </div>
               </div>
               <div className="flex items-center gap-2 rounded-2xl bg-slate-100/80 p-1">
@@ -409,7 +407,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {isSubmitting
                     ? mode === 'register' ? 'Creating account...' : 'Signing in...'
-                    : mode === 'register' ? 'Create account' : 'Continue to workspace'}
+                    : mode === 'register' ? 'Create account' : 'Access Workspace'}
                   {!isSubmitting && <ArrowRight className="ml-2 h-4 w-4" />}
                 </Button>
 
@@ -428,6 +426,14 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               </form>
             </CardContent>
           </Card>
+        </div>
+      </div>
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-5 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-7xl">
+          <p className="text-center text-[11px] font-medium tracking-[0.08em] text-slate-500">
+            © 2026 Aroha Technologies. Secure Enterprise Platform.
+          </p>
         </div>
       </div>
     </div>

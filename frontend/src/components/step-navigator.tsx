@@ -19,16 +19,16 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 
-const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementType; step: number }[] = [
-  { id: 'upload', label: 'Data Upload', shortLabel: 'Upload', icon: Upload, step: 1 },
-  { id: 'understanding', label: 'Data Understanding', shortLabel: 'Understand', icon: Database, step: 2 },
-  { id: 'eda', label: 'Exploratory Data Analysis', shortLabel: 'EDA', icon: BarChart3, step: 3 },
-  { id: 'cleaning', label: 'Data Cleaning', shortLabel: 'Clean', icon: Sparkles, step: 4 },
-  { id: 'forecast_ts', label: 'Time Series Forecast', shortLabel: 'TS Forecast', icon: LineChart, step: 5 },
-  { id: 'forecast_ml', label: 'Machine Learning Forecast', shortLabel: 'ML Forecast', icon: LineChart, step: 6 },
-  { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit, step: 7 },
-  { id: 'prediction', label: 'Prediction', shortLabel: 'Predict', icon: Target, step: 8 },
-  { id: 'report', label: 'Report', shortLabel: 'Report', icon: FileText, step: 9 },
+const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementType }[] = [
+  { id: 'upload', label: 'Data Upload', shortLabel: 'Upload', icon: Upload },
+  { id: 'understanding', label: 'Data Understanding', shortLabel: 'Understand', icon: Database },
+  { id: 'eda', label: 'Exploratory Data Analysis', shortLabel: 'EDA', icon: BarChart3 },
+  { id: 'cleaning', label: 'Data Cleaning', shortLabel: 'Clean', icon: Sparkles },
+  { id: 'forecast_ts', label: 'Time Series Forecast', shortLabel: 'TS Forecast', icon: LineChart },
+  { id: 'forecast_ml', label: 'Machine Learning Forecast', shortLabel: 'ML Forecast', icon: LineChart },
+  { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit },
+  { id: 'prediction', label: 'Prediction', shortLabel: 'Predict', icon: Target },
+  { id: 'report', label: 'Report', shortLabel: 'Report', icon: FileText },
 ];
 
 const mlSteps = [
@@ -187,14 +187,6 @@ export default function StepNavigator({
                   <span className="hidden sm:inline">{tab.label}</span>
                   <span className="sm:hidden">{tab.shortLabel}</span>
                   {isPast && enabled && <CheckCircle2 className="h-3 w-3 text-primary" />}
-                  <span
-                    className={cn(
-                      'text-[10px] font-mono',
-                      isActive ? 'text-white/80' : 'text-muted-foreground/60',
-                    )}
-                  >
-                    {tab.step}
-                  </span>
                 </button>
               );
             })}
