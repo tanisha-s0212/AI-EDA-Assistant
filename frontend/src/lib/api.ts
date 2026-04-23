@@ -53,7 +53,7 @@ apiClient.interceptors.request.use((config) => {
 export function getApiErrorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError(error)) {
     if (error.response?.status === 413) {
-      return 'The upload was rejected by the server because the request body exceeded the configured size limit. Increase the reverse-proxy upload limit or try a smaller file.';
+      return 'The upload was rejected by the server because the full multipart request exceeded the proxy size limit. Increase the reverse-proxy headroom above the app limit or try a smaller file, preferably Parquet for large datasets.';
     }
 
     const responseData = error.response?.data;
