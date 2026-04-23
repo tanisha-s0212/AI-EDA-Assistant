@@ -701,6 +701,18 @@ def read_cached_parquet(dataset_entry: dict[str, Any], **kwargs: Any) -> pl.Data
         raise HTTPException(status_code=400, detail=f'Failed to load cached parquet dataset: {error}') from error
 
 
+def read_cached_csv_preview(dataset_entry: dict[str, Any], n_rows: int | None = None) -> pl.DataFrame:
+    csv_path = dataset_entry.get('csv_path')
+    if not csv_path:
+        raise HTTPException(status_code=400, detail='Cached CSV dataset path is missing. Please upload the file again.')
+
+    try:
+        separator = '\t' if str(csv_path).lower().endswith('.tsv') else ','
+        return pl.read_csv(csv_path, separator=separator, n_rows=n_rows, infer_schema_length=1000, ignore_errors=True)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f'Failed to load cached CSV preview: {error}') from error
+
+
 def read_cached_csv(dataset_entry: dict[str, Any], columns: list[str] | None = None, n_rows: int | None = None) -> pd.DataFrame:
     csv_path = dataset_entry.get('csv_path')
     if not csv_path:
@@ -728,7 +740,7 @@ def load_cached_preview(dataset_entry: dict[str, Any], limit: int = PARQUET_PREV
     if dataset_entry.get('parquet_path'):
         return read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True), True
     if dataset_entry.get('csv_path'):
-        return read_cached_csv(dataset_entry, n_rows=limit), False
+        return read_cached_csv_preview(dataset_entry, n_rows=limit), True
     if dataset_entry.get('excel_path'):
         return read_cached_excel(dataset_entry, n_rows=limit), False
     if dataset_entry.get('frame_path'):
@@ -5091,13 +5103,13 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         elif lower_file_name.endswith('.csv') or lower_file_name.endswith('.tsv'):
             sep = '\t' if lower_file_name.endswith('.tsv') else ','
-            frame = pd.read_csv(cached_path, sep=sep, nrows=PARQUET_PREVIEW_ROW_LIMIT, low_memory=True)
+            frame = pl.read_csv(cached_path, separator=sep, n_rows=PARQUET_PREVIEW_ROW_LIMIT, infer_schema_length=1000, ignore_errors=True)
             total_rows = count_csv_rows_from_path(cached_path, sep=sep)
-            column_count = len(frame.columns)
+            column_count = frame.width
             dataset_entry.update({'csv_path': str(cached_path)})
-            rows = frame.where(pd.notna(frame), None).to_dict(orient='records')
-            column_info = build_column_info_from_frame(frame)
-            preview_duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
+            rows = frame.to_dicts()
+            column_info = build_column_info_from_polars_frame(frame)
+            preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         else:
             # Excel workbook
             try:
