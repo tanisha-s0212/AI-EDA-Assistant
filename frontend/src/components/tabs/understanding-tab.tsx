@@ -1,9 +1,13 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { AlertCircle, Database, Eye, FileText, Sparkles, Table as TableIcon } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { AlertCircle, Database, Eye, FileText, Info, Sparkles, Table as TableIcon } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card';
 import {
   Table as ShadTable,
   TableBody,
@@ -37,9 +41,22 @@ export default function UnderstandingTab() {
     ? Math.round((columns.reduce((sum, col) => sum + col.nonNull, 0) / (totalRows * columns.length)) * 1000) / 10
     : 0;
   const qualitySignals = [
-    `${completeness}% overall completeness across ${columns.length} columns`,
-    duplicates > 0 ? `${duplicates.toLocaleString()} duplicate rows may need review` : 'No duplicate rows detected in the uploaded dataset',
-    missingColumns.length > 0 ? `${missingColumns.length} columns contain missing values` : 'No columns with missing values detected',
+    {
+      label: `${completeness}% overall completeness across ${columns.length} columns`,
+      details: `The current dataset keeps ${completeness}% of all cells populated, which is a quick indicator of how much imputation or review may be needed before deeper analysis.`,
+    },
+    {
+      label: duplicates > 0 ? `${duplicates.toLocaleString()} duplicate rows may need review` : 'No duplicate rows detected in the uploaded dataset',
+      details: duplicates > 0
+        ? `Duplicate records can bias counts, trend summaries, and training outcomes. Reviewing ${duplicates.toLocaleString()} repeated rows helps keep the dataset representative.`
+        : 'No repeated full-row records were detected in the active dataset view, so record-level duplication risk is currently low.',
+    },
+    {
+      label: missingColumns.length > 0 ? `${missingColumns.length} columns contain missing values` : 'No columns with missing values detected',
+      details: missingColumns.length > 0
+        ? `Missingness is present across ${missingColumns.length} column${missingColumns.length === 1 ? '' : 's'}, which can affect segmentation, aggregates, and model readiness if left untreated.`
+        : 'Column completeness looks strong in the current profile, so downstream cleaning can stay focused on structure and consistency.',
+    },
   ];
   const structureSignals = [
     `${numericColumns.length} numeric column${numericColumns.length === 1 ? '' : 's'} for measures and trends`,
@@ -120,9 +137,20 @@ export default function UnderstandingTab() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             {qualitySignals.map((signal) => (
-              <div key={signal} className="rounded-xl px-3 py-2 transition-all duration-300 hover:bg-primary/5 hover:pl-4 hover:text-foreground/90">
-                <p className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
-              </div>
+              <HoverCard key={signal.label} openDelay={120} closeDelay={100}>
+                <HoverCardTrigger asChild>
+                  <div className="flex cursor-default items-center justify-between rounded-xl px-3 py-2 transition-all duration-300 hover:bg-primary/5 hover:pl-4 hover:text-foreground/90">
+                    <p className="pr-3 transition-colors duration-300 group-hover:text-foreground/85">{signal.label}</p>
+                    <Info className="h-4 w-4 shrink-0 text-primary/70" />
+                  </div>
+                </HoverCardTrigger>
+                <HoverCardContent align="start" className="w-[320px] rounded-2xl border-border/70 bg-popover/98 p-4 shadow-[0_24px_60px_-32px_rgba(15,23,42,0.35)]">
+                  <div className="space-y-2">
+                    <p className="text-sm font-semibold text-foreground">Explainability insight</p>
+                    <p className="text-xs leading-6 text-muted-foreground">{signal.details}</p>
+                  </div>
+                </HoverCardContent>
+              </HoverCard>
             ))}
           </CardContent>
         </Card>
