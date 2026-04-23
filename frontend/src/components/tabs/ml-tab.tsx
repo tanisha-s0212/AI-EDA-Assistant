@@ -1076,23 +1076,12 @@ export default function MlTab() {
       })
       .filter((point): point is { index: number; actual: number; predicted: number } => point !== null);
 
-    if (numericPoints.length === 0) return [];
-
-    const values = numericPoints.flatMap((point) => [point.actual, point.predicted]);
-    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-    const standardDeviation = Math.sqrt(variance);
-
-    return numericPoints.map((point) => ({
-      ...point,
-      actualStandardized: standardDeviation === 0 ? 0 : (point.actual - mean) / standardDeviation,
-      predictedStandardized: standardDeviation === 0 ? 0 : (point.predicted - mean) / standardDeviation,
-    }));
+    return numericPoints;
   }, [trainResults]);
 
   const actualVsPredictedDomain = useMemo(() => {
     if (actualVsPredictedData.length === 0) return [-1, 1] as [number, number];
-    const values = actualVsPredictedData.flatMap((point) => [point.actualStandardized, point.predictedStandardized]);
+    const values = actualVsPredictedData.flatMap((point) => [point.actual, point.predicted]);
     const min = Math.min(...values);
     const max = Math.max(...values);
     if (min === max) return [min - 1, max + 1] as [number, number];
@@ -2024,21 +2013,21 @@ export default function MlTab() {
                                 <CartesianGrid strokeDasharray="3 3" stroke={ML_CHART_COLORS.grid} />
                                 <XAxis
                                   type="number"
-                                  dataKey="actualStandardized"
-                                  name="Standardized Actual Value"
+                                  dataKey="actual"
+                                  name="Actual Value"
                                   domain={actualVsPredictedDomain}
                                   tick={{ fontSize: 11 }}
                                   tickFormatter={formatPredictionChartValue}
-                                  label={{ value: 'Standardized Actual Value', position: 'insideBottom', offset: -5, style: { fontSize: 12 } }}
+                                  label={{ value: 'Actual Value', position: 'insideBottom', offset: -5, style: { fontSize: 12 } }}
                                 />
                                 <YAxis
                                   type="number"
-                                  dataKey="predictedStandardized"
-                                  name="Standardized Predicted Value"
+                                  dataKey="predicted"
+                                  name="Predicted Value"
                                   domain={actualVsPredictedDomain}
                                   tick={{ fontSize: 11 }}
                                   tickFormatter={formatPredictionChartValue}
-                                  label={{ value: 'Standardized Predicted Value', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fontSize: 12 } }}
+                                  label={{ value: 'Predicted Value', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fontSize: 12 } }}
                                 />
                                 <RechartsTooltip
                                   formatter={(value: number, name: string) => [formatPredictionChartValue(value), name]}

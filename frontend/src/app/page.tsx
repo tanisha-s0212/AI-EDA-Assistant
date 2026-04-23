@@ -222,30 +222,21 @@ function BrandWordmark({
   inverted?: boolean;
 }) {
   return (
-    <div className="min-w-0">
-      <p className={cn(
-        'font-semibold uppercase tracking-[0.34em]',
-        compact ? 'text-[10px]' : 'text-xs',
-        inverted ? 'text-cyan-100/70' : 'text-sky-700/80'
+    <div className={cn('min-w-0', compact && 'max-w-[180px]')}>
+      <h1 className={cn(
+        'font-black tracking-[-0.03em]',
+        compact ? 'text-[1.05rem] leading-[1.18] sm:text-[1.15rem]' : 'text-[1.95rem] leading-tight sm:text-[2.35rem]',
+        inverted ? 'text-white' : 'text-slate-950'
       )}>
-        Aroha Intelligent Platform
-      </p>
-      <div className="mt-1.5 flex min-w-0 items-center gap-2">
-        <h1 className={cn(
-          'truncate font-black tracking-[-0.03em]',
-          compact ? 'text-lg sm:text-[1.2rem]' : 'text-[1.9rem] sm:text-[2.25rem]',
-          inverted ? 'text-white' : 'text-slate-950'
+        <span className={cn(
+          'bg-clip-text text-transparent',
+          inverted
+            ? 'bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]'
+            : 'bg-[linear-gradient(135deg,#082f49_0%,#0f766e_46%,#0284c7_100%)]'
         )}>
-          <span className={cn(
-            'bg-clip-text text-transparent',
-            inverted
-              ? 'bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]'
-              : 'bg-[linear-gradient(135deg,#082f49_0%,#0f766e_46%,#0284c7_100%)]'
-          )}>
-            Intelligent Data Assistant
-          </span>
-        </h1>
-      </div>
+          Intelligent Data Assistant
+        </span>
+      </h1>
     </div>
   );
 }
@@ -259,7 +250,7 @@ function SidebarContent({
   currentUser?: AuthenticatedUser | null;
   onLogout?: () => void;
 }) {
-  const { activeTab, setActiveTab, rawData, cleaningDone, modelTrained, previewLoaded, loadedRowCount, totalRows } = useAppStore();
+  const { activeTab, setActiveTab, rawData, modelTrained, totalRows } = useAppStore();
   const hasDatasetContext = Boolean(rawData?.length || totalRows > 0);
 
   const isTabEnabled = (tabId: TabId) => {
@@ -273,7 +264,7 @@ function SidebarContent({
     <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
-        <div className="flex items-center gap-3">
+        <div className="flex items-start gap-3">
           <BrandMark compact />
           <BrandWordmark compact />
         </div>
@@ -361,18 +352,6 @@ function SidebarContent({
                 <span className="truncate">{currentUser?.email ?? 'No email available'}</span>
               </p>
             </div>
-          </div>
-          <div className="mt-4 rounded-2xl border border-border/70 bg-background/80 px-3 py-2.5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Workspace Status
-            </p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              {hasDatasetContext
-                ? previewLoaded
-                  ? `${loadedRowCount.toLocaleString()} preview rows available from ${totalRows.toLocaleString()} total rows.`
-                  : `${totalRows.toLocaleString()} rows are available in the active workspace.`
-                : 'No dataset is active yet. Upload one to begin analysis.'}
-            </p>
           </div>
           <Button
             variant="outline"
@@ -633,6 +612,8 @@ export default function HomePage() {
                   <div className="pointer-events-none absolute inset-0 opacity-80">
                     <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-sky-400/12 blur-3xl transition-transform duration-700 group-hover:scale-125" />
                     <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-500/10 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
+                    <div className="absolute inset-y-0 right-[24%] w-px bg-white/8" />
+                    <div className="absolute inset-x-0 top-16 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
                     <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
                   </div>
                   <div className="flex flex-col gap-4">
@@ -649,10 +630,21 @@ export default function HomePage() {
                           </SheetContent>
                         </Sheet>
                         <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-white/12 bg-white/8 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-200">
+                              Workspace Console
+                            </span>
+                            <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.22em] text-cyan-100">
+                              {activeTabMeta.label}
+                            </span>
+                          </div>
                           <div className="flex items-center gap-3">
                             <BrandMark />
                             <BrandWordmark inverted />
                           </div>
+                          <p className="mt-3 max-w-2xl text-sm text-slate-300">
+                            A focused analytics workspace for guided dataset intake, profiling, cleaning, and forecasting.
+                          </p>
                           <div className="mt-4 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
                               {hasWorkspace ? <CheckCircle2 className="mr-2 h-3.5 w-3.5 text-emerald-300" /> : <AlertCircle className="mr-2 h-3.5 w-3.5 text-amber-300" />}
@@ -671,13 +663,20 @@ export default function HomePage() {
                       </div>
 
                       <div className="flex flex-col gap-3 xl:max-w-[62%] xl:items-end">
-                        <div className="rounded-[24px] border border-white/12 bg-white/8 px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.58)] backdrop-blur-sm">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-300">Present Running Time</p>
-                          <p className="mt-1 text-xl font-semibold tracking-tight text-white">{liveIndiaTime}</p>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                        <div className="rounded-[24px] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.09),rgba(255,255,255,0.04))] px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.58)] backdrop-blur-sm">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-300">Workspace Time</p>
+                              <p className="mt-1 text-xl font-semibold tracking-tight text-white">{liveIndiaTime}</p>
+                            </div>
+                            <Badge variant="outline" className="rounded-full border-white/12 bg-white/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                              IST
+                            </Badge>
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-300">
                             <span>{liveIndiaDate}</span>
                             <span className="text-slate-500">|</span>
-                            <span>{sessionContinuity.timezone}</span>
+                            <span>{sessionContinuity.status}</span>
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 xl:justify-end">
