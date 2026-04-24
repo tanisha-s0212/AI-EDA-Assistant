@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
 import { useAppStore, TabId, AuthenticatedUser } from '@/lib/store';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -98,6 +99,7 @@ type DatasetPreviewResponse = {
 };
 
 const INDIA_TIMEZONE = 'Asia/Kolkata';
+const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
 
 function formatActivityTimestamp(value: string | null) {
   const parsed = value ? new Date(value) : new Date();
@@ -222,10 +224,10 @@ function BrandWordmark({
   inverted?: boolean;
 }) {
   return (
-    <div className={cn('min-w-0', compact && 'max-w-[180px]')}>
+    <div className={cn('min-w-0', compact && 'max-w-[168px]')}>
       <h1 className={cn(
         'font-black tracking-[-0.03em]',
-        compact ? 'text-[1.05rem] leading-[1.18] sm:text-[1.15rem]' : 'text-[1.95rem] leading-tight sm:text-[2.35rem]',
+        compact ? 'text-[1rem] leading-[1.16] sm:text-[1.08rem]' : 'text-[1.95rem] leading-tight sm:text-[2.35rem]',
         inverted ? 'text-white' : 'text-slate-950'
       )}>
         <span className={cn(
@@ -237,6 +239,22 @@ function BrandWordmark({
           Intelligent Data Assistant
         </span>
       </h1>
+    </div>
+  );
+}
+
+function CompanyLogo({ compact = false }: { compact?: boolean }) {
+  const size = compact ? 46 : 50;
+  const imageSize = compact ? 32 : 34;
+
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-[20px] border border-border/70 bg-white shadow-[0_18px_45px_-28px_rgba(15,23,42,0.24)]',
+        compact ? 'h-[46px] w-[46px]' : 'h-[50px] w-[50px]'
+      )}
+    >
+      <Image src="/logo.svg" alt="Aroha Technologies logo" width={imageSize} height={imageSize} priority={false} sizes={`${size}px`} />
     </div>
   );
 }
@@ -264,8 +282,10 @@ function SidebarContent({
     <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
-        <div className="flex items-start gap-3">
-          <BrandMark compact />
+        <div className="flex items-center gap-2.5">
+          <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="transition-transform duration-200 hover:scale-[1.03]">
+            <CompanyLogo compact />
+          </a>
           <BrandWordmark compact />
         </div>
       </div>
@@ -630,11 +650,12 @@ export default function HomePage() {
                           </SheetContent>
                         </Sheet>
                         <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-full border border-white/12 bg-white/8 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-200">
-                              Workspace Console
+                          <div className="mb-3 flex flex-wrap items-center gap-3">
+                            <span className="text-[11px] font-semibold uppercase tracking-[0.32em] text-cyan-100/90">
+                              Aroha Intelligent System
                             </span>
-                            <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.22em] text-cyan-100">
+                            <span className="hidden h-1 w-1 rounded-full bg-slate-400/70 sm:inline-block" />
+                            <span className="text-xs font-medium text-slate-300">
                               {activeTabMeta.label}
                             </span>
                           </div>
@@ -642,8 +663,8 @@ export default function HomePage() {
                             <BrandMark />
                             <BrandWordmark inverted />
                           </div>
-                          <p className="mt-3 max-w-2xl text-sm text-slate-300">
-                            A focused analytics workspace for guided dataset intake, profiling, cleaning, and forecasting.
+                          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                            Enterprise-ready analytics workspace for dataset intake, understanding, data preparation, and forecasting workflows.
                           </p>
                           <div className="mt-4 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">

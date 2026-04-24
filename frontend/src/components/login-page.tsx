@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Image from 'next/image';
 import { AnimatePresence, motion } from 'framer-motion';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import type { AuthenticatedUser } from '@/lib/store';
@@ -58,6 +59,23 @@ function BrandMark() {
       <Orbit className="absolute h-9 w-9 text-cyan-100/20" strokeWidth={1.5} />
       <Cpu className="absolute h-5 w-5 text-white" strokeWidth={2.2} />
       <Radar className="absolute h-4 w-4 text-cyan-100/85" strokeWidth={1.9} />
+    </div>
+  );
+}
+
+function CompanyLogo({ size = 56 }: { size?: number }) {
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center rounded-[22px] border border-white/75 bg-white shadow-[0_22px_56px_-30px_rgba(15,23,42,0.3)]"
+      style={{ width: size, height: size }}
+    >
+      <Image
+        src="/logo.svg"
+        alt="Aroha Technologies logo"
+        width={Math.round(size * 0.74)}
+        height={Math.round(size * 0.74)}
+        priority
+      />
     </div>
   );
 }
@@ -179,8 +197,8 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       <div className="relative mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
         <div className="grid w-full gap-8 lg:grid-cols-[minmax(0,1.1fr)_520px] lg:items-center">
           <section className="max-w-2xl">
-            <div className="mb-6 flex items-center gap-4">
-              <BrandMark />
+            <div className="mb-6 flex items-center gap-3">
+              <CompanyLogo />
               <BrandWordmark />
             </div>
             <Badge className="rounded-full border-sky-200 bg-white/80 px-3 py-1 text-sky-900 shadow-sm">
@@ -431,6 +449,11 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-5 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl">
+          <div className="pointer-events-auto mb-1 flex flex-col items-center gap-1 text-center text-[11px] font-medium tracking-[0.04em] text-slate-500">
+            <p>
+              Bangalore | <a className="text-sky-700 hover:text-sky-900" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a> | <a className="text-sky-700 hover:text-sky-900" href="tel:+919886228615">+91 9886228615</a>
+            </p>
+          </div>
           <p className="text-center text-[11px] font-medium tracking-[0.08em] text-slate-500">
             © 2026 Aroha Technologies. Secure Enterprise Platform.
           </p>

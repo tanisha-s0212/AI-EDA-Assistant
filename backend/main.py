@@ -152,7 +152,6 @@ VERY_LARGE_TRAIN_SAMPLE_LIMIT = 15_000
 IMPORTANCE_SAMPLE_LIMIT = 800
 VERY_LARGE_IMPORTANCE_SAMPLE_LIMIT = 300
 PARQUET_PREVIEW_ROW_LIMIT = 20_000
-EDA_ADVANCED_SAMPLE_LIMIT = 5_000
 EDA_MAX_MISSINGNESS_COLUMNS = 30
 EDA_MISSINGNESS_BUCKETS = 60
 UPLOAD_READ_CHUNK_SIZE = 4 * 1024 * 1024
@@ -748,22 +747,22 @@ def load_cached_preview(dataset_entry: dict[str, Any], limit: int = PARQUET_PREV
     raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
 
 
-def load_cached_analysis_sample(dataset_entry: dict[str, Any], limit: int = EDA_ADVANCED_SAMPLE_LIMIT) -> tuple[pd.DataFrame, int]:
+def load_cached_analysis_frame(dataset_entry: dict[str, Any]) -> tuple[pd.DataFrame, int]:
     total_rows = int(dataset_entry.get('row_count') or 0)
 
     if dataset_entry.get('parquet_path'):
-        frame = read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True)
+        frame = read_cached_parquet(dataset_entry, low_memory=True)
         return normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False)), total_rows
 
     if dataset_entry.get('csv_path'):
-        return normalize_dataframe(read_cached_csv(dataset_entry, n_rows=limit)), total_rows
+        return normalize_dataframe(read_cached_csv(dataset_entry)), total_rows
 
     if dataset_entry.get('excel_path'):
-        return normalize_dataframe(read_cached_excel(dataset_entry, n_rows=limit)), total_rows
+        return normalize_dataframe(read_cached_excel(dataset_entry)), total_rows
 
     if dataset_entry.get('frame_path'):
         frame = read_cached_frame(dataset_entry)
-        return sample_frame_for_eda(frame, limit), int(len(frame))
+        return normalize_dataframe(frame), int(len(frame))
 
     raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
 
@@ -1370,13 +1369,6 @@ def load_full_dataset_frame(dataset_id: str | None, data: list[dict[str, Any]]) 
     if frame.empty or frame.shape[1] == 0:
         raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
     return frame
-
-
-def sample_frame_for_eda(frame: pd.DataFrame, limit: int = EDA_ADVANCED_SAMPLE_LIMIT) -> pd.DataFrame:
-    if len(frame) <= limit:
-        return frame.copy()
-    indices = np.linspace(0, len(frame) - 1, num=limit, dtype=int)
-    return frame.iloc[indices].reset_index(drop=True).copy()
 
 
 def safe_numeric_series(series: pd.Series) -> pd.Series:
@@ -1994,7 +1986,7 @@ def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
         dataset_entry = DATASET_CACHE.get(request.dataset_id)
         if dataset_entry is None:
             raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
-        analysis_frame, total_rows = load_cached_analysis_sample(dataset_entry)
+        analysis_frame, total_rows = load_cached_analysis_frame(dataset_entry)
         if analysis_frame.empty or analysis_frame.shape[1] == 0:
             raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
         row_count = total_rows if total_rows > 0 else int(len(analysis_frame))
@@ -2003,7 +1995,7 @@ def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
         frame = load_full_dataset_frame(request.dataset_id, request.data)
         if frame.empty or frame.shape[1] == 0:
             raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
-        analysis_frame = sample_frame_for_eda(frame)
+        analysis_frame = frame
         row_count = int(len(frame))
         column_count = int(len(frame.columns))
 
