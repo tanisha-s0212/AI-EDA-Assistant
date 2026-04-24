@@ -22,9 +22,6 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
-  Orbit,
-  Cpu,
-  Radar,
 } from 'lucide-react';
 
 type LoginPageProps = {
@@ -44,36 +41,38 @@ const initialForm = {
   confirmPassword: '',
 };
 
-function BrandMark() {
+const AROHA_LOGO_URL = 'https://aroha.co.in/wp-content/uploads/2024/08/aroha_logo.png';
+
+function CompanyLogo({
+  width = 112,
+  height = 40,
+}: {
+  width?: number;
+  height?: number;
+}) {
   return (
-    <div className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(145deg,#08111f_0%,#0f2747_52%,#0b7f8f_100%)] text-white shadow-[0_24px_60px_-28px_rgba(14,116,144,0.62)]">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_18%,rgba(255,255,255,0.2),transparent_32%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),transparent_42%,rgba(8,145,178,0.24)_100%)]" />
-      <div className="absolute inset-[18%] rounded-[18px] border border-white/10 bg-slate-950/30" />
-      <div className="absolute inset-x-[26%] top-[24%] h-px bg-cyan-200/50" />
-      <div className="absolute inset-x-[26%] bottom-[24%] h-px bg-cyan-200/35" />
-      <div className="absolute inset-y-[26%] left-[24%] w-px bg-cyan-200/40" />
-      <div className="absolute inset-y-[26%] right-[24%] w-px bg-cyan-200/25" />
-      <div className="absolute left-[18%] top-[18%] h-2.5 w-2.5 rounded-md border border-cyan-200/25 bg-cyan-300/12" />
-      <div className="absolute bottom-[18%] right-[18%] h-3 w-3 rounded-md border border-cyan-200/20 bg-cyan-300/10" />
-      <Orbit className="absolute h-9 w-9 text-cyan-100/20" strokeWidth={1.5} />
-      <Cpu className="absolute h-5 w-5 text-white" strokeWidth={2.2} />
-      <Radar className="absolute h-4 w-4 text-cyan-100/85" strokeWidth={1.9} />
-    </div>
+    <img
+      src={AROHA_LOGO_URL}
+      alt="Aroha Technologies logo"
+      width={width}
+      height={height}
+      className="h-auto w-auto shrink-0 object-contain"
+    />
   );
 }
 
-function CompanyLogo({ size = 56 }: { size?: number }) {
+function ApplicationLogo({ size = 58 }: { size?: number }) {
   return (
     <div
-      className="flex shrink-0 items-center justify-center rounded-[22px] border border-white/75 bg-white shadow-[0_22px_56px_-30px_rgba(15,23,42,0.3)]"
+      className="flex shrink-0 items-center justify-center overflow-hidden rounded-[22px] border border-white/60 bg-[linear-gradient(145deg,#08111f_0%,#0f2747_52%,#0b7f8f_100%)] shadow-[0_24px_60px_-28px_rgba(14,116,144,0.45)]"
       style={{ width: size, height: size }}
     >
       <Image
-        src="/logo.svg"
-        alt="Aroha Technologies logo"
-        width={Math.round(size * 0.74)}
-        height={Math.round(size * 0.74)}
+        src="/app-logo.svg"
+        alt="Intelligent Data Assistant logo"
+        width={Math.round(size * 0.78)}
+        height={Math.round(size * 0.78)}
+        className="h-auto w-auto object-contain"
         priority
       />
     </div>
@@ -186,7 +185,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
   }, [showSuccess]);
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[linear-gradient(160deg,#eff6ff_0%,#f8fafc_42%,#ecfeff_100%)]">
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[linear-gradient(160deg,#eff6ff_0%,#f8fafc_42%,#ecfeff_100%)]">
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute left-[-4rem] top-16 h-64 w-64 rounded-full bg-sky-400/15 blur-3xl" />
         <div className="absolute right-[-5rem] top-12 h-80 w-80 rounded-full bg-cyan-300/20 blur-3xl" />
@@ -194,11 +193,11 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(15,118,110,0.08),transparent_32%)]" />
       </div>
 
-      <div className="relative mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
+      <div className="relative mx-auto flex w-full max-w-7xl flex-1 items-center px-4 py-8 sm:px-6 lg:px-8">
         <div className="grid w-full gap-8 lg:grid-cols-[minmax(0,1.1fr)_520px] lg:items-center">
           <section className="max-w-2xl">
             <div className="mb-6 flex items-center gap-3">
-              <CompanyLogo />
+              <CompanyLogo width={112} height={40} />
               <BrandWordmark />
             </div>
             <Badge className="rounded-full border-sky-200 bg-white/80 px-3 py-1 text-sky-900 shadow-sm">
@@ -235,7 +234,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
           <Card className="overflow-hidden rounded-[32px] border-white/80 bg-white/88 py-0 shadow-[0_30px_100px_-36px_rgba(15,23,42,0.28)] backdrop-blur-2xl">
             <CardHeader className="border-b border-slate-200/70 bg-[linear-gradient(135deg,rgba(14,116,144,0.07),rgba(14,165,233,0.02))] px-8 py-8">
               <div className="mb-4 flex items-center gap-4">
-                <BrandMark />
+                <ApplicationLogo />
                 <div className="min-w-0">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Workspace Authentication</p>
                   <p className="mt-1 text-[1.4rem] font-black tracking-[-0.03em] text-slate-950 sm:text-[1.55rem]">
@@ -447,18 +446,35 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-5 sm:px-6 lg:px-8">
+      <footer className="relative z-10 px-4 pb-5 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl">
-          <div className="pointer-events-auto mb-1 flex flex-col items-center gap-1 text-center text-[11px] font-medium tracking-[0.04em] text-slate-500">
-            <p>
-              Bangalore | <a className="text-sky-700 hover:text-sky-900" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a> | <a className="text-sky-700 hover:text-sky-900" href="tel:+919886228615">+91 9886228615</a>
-            </p>
+          <div className="flex flex-col gap-4 rounded-[28px] border border-white/70 bg-white/75 px-5 py-4 shadow-[0_24px_70px_-42px_rgba(14,116,144,0.3)] backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col items-center gap-3 text-center lg:flex-row lg:text-left">
+              <CompanyLogo width={90} height={32} />
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Company HR Contact</p>
+                <p className="mt-1 text-sm font-medium text-slate-600">Bangalore office support for access, onboarding, and account help.</p>
+              </div>
+            </div>
+            <div className="flex flex-col items-center gap-1 text-center text-sm font-medium text-slate-600 lg:items-end lg:text-right">
+              <p>
+                <span className="text-slate-500">Location:</span> Bangalore
+              </p>
+              <p>
+                <span className="text-slate-500">Email:</span>{' '}
+                <a className="text-sky-700 hover:text-sky-900" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a>
+              </p>
+              <p>
+                <span className="text-slate-500">Phone:</span>{' '}
+                <a className="text-sky-700 hover:text-sky-900" href="tel:+919886228615">+91 9886228615</a>
+              </p>
+            </div>
           </div>
-          <p className="text-center text-[11px] font-medium tracking-[0.08em] text-slate-500">
+          <p className="mt-3 text-center text-[11px] font-medium tracking-[0.08em] text-slate-500">
             © 2026 Aroha Technologies. Secure Enterprise Platform.
           </p>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }
