@@ -3,7 +3,13 @@ ARG NODE_IMAGE=node:24-alpine
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --include=dev || npm install --include=dev
+RUN npm config set registry http://registry.npmjs.org/ \
+ && npm config set strict-ssl false \
+ && npm config set fetch-retries 5 \
+ && npm config set fetch-retry-mintimeout 10000 \
+ && npm config set fetch-retry-maxtimeout 120000 \
+ && npm ci --no-audit --no-fund --include=dev \
+ || npm install --no-audit --no-fund --include=dev
 RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
