@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:24-alpine
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
