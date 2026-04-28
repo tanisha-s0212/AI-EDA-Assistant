@@ -63,7 +63,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NODE_IMAGE: node:22-alpine
+        NODE_IMAGE: node:20-alpine
         NEXT_PUBLIC_API_BASE_URL: /api
     container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-frontend
     restart: unless-stopped
