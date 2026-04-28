@@ -9,7 +9,8 @@ RUN npm config set registry http://registry.npmjs.org/ \
  && npm config set fetch-retry-mintimeout 10000 \
  && npm config set fetch-retry-maxtimeout 120000 \
  && npm ci --no-audit --no-fund --include=dev \
- || npm install --no-audit --no-fund --include=dev
+ || (rm -f package-lock.json \
+     && npm install --no-audit --no-fund --include=dev)
 RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
