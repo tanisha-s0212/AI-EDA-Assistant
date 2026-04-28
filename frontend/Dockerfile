@@ -1,16 +1,12 @@
+# syntax=docker/dockerfile:1.7
+
 ARG NODE_IMAGE=node:24-alpine
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm config set registry http://registry.npmjs.org/ \
- && npm config set strict-ssl false \
- && npm config set fetch-retries 5 \
- && npm config set fetch-retry-mintimeout 10000 \
- && npm config set fetch-retry-maxtimeout 120000 \
- && npm ci --no-audit --no-fund --include=dev \
- || (rm -f package-lock.json \
-     && npm install --no-audit --no-fund --include=dev)
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund --include=dev --prefer-offline
 RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
