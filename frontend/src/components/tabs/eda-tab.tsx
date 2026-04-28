@@ -42,6 +42,8 @@ export default function EdaTab() {
   const previewLoaded = useAppStore((s) => s.previewLoaded);
   const datasetId = useAppStore((s) => s.datasetId);
   const fileName = useAppStore((s) => s.fileName);
+  const selectedSheets = useAppStore((s) => s.selectedSheets);
+  const sheetMergeMode = useAppStore((s) => s.sheetMergeMode);
 
   const data = cleanedData ?? rawData ?? [];
   const hasData = !!rawData && columns.length > 0;
@@ -358,6 +360,11 @@ export default function EdaTab() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Exploratory Data Analysis</h2>
           <p className="mt-1 text-muted-foreground">Schema, descriptive statistics, relationship signals, and visual correlation summaries for the active dataset.</p>
+          {selectedSheets.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Workbook scope: {sheetMergeMode === 'stack' ? 'Stacked sheets' : 'Single sheet'} | {selectedSheets.join(', ')}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Badge variant="secondary" className="gap-1"><Database className="h-3.5 w-3.5" /> {totalRows.toLocaleString()} total rows</Badge>

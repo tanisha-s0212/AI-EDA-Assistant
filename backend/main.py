@@ -152,7 +152,6 @@ VERY_LARGE_TRAIN_SAMPLE_LIMIT = 15_000
 IMPORTANCE_SAMPLE_LIMIT = 800
 VERY_LARGE_IMPORTANCE_SAMPLE_LIMIT = 300
 PARQUET_PREVIEW_ROW_LIMIT = 20_000
-EDA_ADVANCED_SAMPLE_LIMIT = 5_000
 EDA_MAX_MISSINGNESS_COLUMNS = 30
 EDA_MISSINGNESS_BUCKETS = 60
 UPLOAD_READ_CHUNK_SIZE = 4 * 1024 * 1024
@@ -731,7 +730,48 @@ def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None =
 
     engine = 'openpyxl' if excel_path.lower().endswith('.xlsx') else 'xlrd'
     try:
-        return pd.read_excel(excel_path, engine=engine, usecols=columns, nrows=n_rows)
+        selected_sheets = [str(sheet) for sheet in (dataset_entry.get('selected_sheets') or []) if str(sheet).strip()]
+        merge_mode = str(dataset_entry.get('merge_mode') or 'single').lower()
+        if merge_mode not in {'single', 'stack'}:
+            merge_mode = 'single'
+
+        if not selected_sheets:
+            active_sheet = str(dataset_entry.get('active_sheet') or '').strip()
+            selected_sheets = [active_sheet] if active_sheet else []
+
+        if not selected_sheets:
+            return pd.read_excel(excel_path, engine=engine, usecols=columns, nrows=n_rows)
+
+        if merge_mode == 'single' or len(selected_sheets) == 1:
+            return pd.read_excel(excel_path, engine=engine, sheet_name=selected_sheets[0], usecols=columns, nrows=n_rows)
+
+        frames: list[pd.DataFrame] = []
+        base_columns: list[str] | None = None
+        for sheet_name in selected_sheets:
+            sheet_frame = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=n_rows)
+            current_columns = [str(col) for col in sheet_frame.columns]
+            if base_columns is None:
+                base_columns = current_columns
+            elif current_columns != base_columns:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'Cannot stack sheets with different schemas. Sheet "{sheet_name}" does not match the first selected sheet columns.',
+                )
+
+            if columns is not None:
+                missing_columns = [column for column in columns if column not in sheet_frame.columns]
+                if missing_columns:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f'Sheet "{sheet_name}" is missing selected columns: {missing_columns}',
+                    )
+                sheet_frame = sheet_frame.loc[:, columns]
+
+            frames.append(sheet_frame)
+
+        if not frames:
+            return pd.DataFrame(columns=columns or [])
+        return pd.concat(frames, ignore_index=True)
     except Exception as error:
         raise HTTPException(status_code=400, detail=f'Failed to load cached Excel dataset: {error}') from error
 
@@ -748,22 +788,22 @@ def load_cached_preview(dataset_entry: dict[str, Any], limit: int = PARQUET_PREV
     raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
 
 
-def load_cached_analysis_sample(dataset_entry: dict[str, Any], limit: int = EDA_ADVANCED_SAMPLE_LIMIT) -> tuple[pd.DataFrame, int]:
+def load_cached_analysis_frame(dataset_entry: dict[str, Any]) -> tuple[pd.DataFrame, int]:
     total_rows = int(dataset_entry.get('row_count') or 0)
 
     if dataset_entry.get('parquet_path'):
-        frame = read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True)
+        frame = read_cached_parquet(dataset_entry, low_memory=True)
         return normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False)), total_rows
 
     if dataset_entry.get('csv_path'):
-        return normalize_dataframe(read_cached_csv(dataset_entry, n_rows=limit)), total_rows
+        return normalize_dataframe(read_cached_csv(dataset_entry)), total_rows
 
     if dataset_entry.get('excel_path'):
-        return normalize_dataframe(read_cached_excel(dataset_entry, n_rows=limit)), total_rows
+        return normalize_dataframe(read_cached_excel(dataset_entry)), total_rows
 
     if dataset_entry.get('frame_path'):
         frame = read_cached_frame(dataset_entry)
-        return sample_frame_for_eda(frame, limit), int(len(frame))
+        return normalize_dataframe(frame), int(len(frame))
 
     raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
 
@@ -845,6 +885,127 @@ def count_excel_rows_from_path(path: Path) -> int:
         return max(0, sheet.nrows - 1)
 
     return 0
+
+
+def get_excel_sheet_names(path: Path) -> list[str]:
+    suffix = path.suffix.lower()
+    if suffix == '.xlsx':
+        try:
+            import openpyxl
+        except ImportError as error:
+            raise HTTPException(status_code=500, detail='openpyxl is required to read .xlsx sheet names.') from error
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        return [str(name) for name in workbook.sheetnames]
+
+    if suffix == '.xls':
+        try:
+            import xlrd
+        except ImportError as error:
+            raise HTTPException(status_code=500, detail='xlrd is required to read .xls sheet names.') from error
+        workbook = xlrd.open_workbook(path)
+        return [str(sheet.name) for sheet in workbook.sheets()]
+
+    return []
+
+
+def count_excel_rows_for_sheet(path: Path, sheet_name: str) -> int:
+    suffix = path.suffix.lower()
+    if suffix == '.xlsx':
+        try:
+            import openpyxl
+        except ImportError as error:
+            raise HTTPException(status_code=500, detail='openpyxl is required to count .xlsx sheet rows.') from error
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        if sheet_name not in workbook.sheetnames:
+            raise HTTPException(status_code=400, detail=f'Sheet "{sheet_name}" was not found in this workbook.')
+        worksheet = workbook[sheet_name]
+        return max(0, int(worksheet.max_row) - 1)
+
+    if suffix == '.xls':
+        try:
+            import xlrd
+        except ImportError as error:
+            raise HTTPException(status_code=500, detail='xlrd is required to count .xls sheet rows.') from error
+        workbook = xlrd.open_workbook(path)
+        try:
+            sheet = workbook.sheet_by_name(sheet_name)
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f'Sheet "{sheet_name}" was not found in this workbook.') from error
+        return max(0, int(sheet.nrows) - 1)
+
+    return 0
+
+
+def resolve_selected_excel_sheets(selected_sheets: list[str], available_sheets: list[str]) -> list[str]:
+    normalized_available = {sheet.strip().casefold(): sheet for sheet in available_sheets}
+    if not selected_sheets:
+        if not available_sheets:
+            raise HTTPException(status_code=400, detail='No worksheets are available in this workbook.')
+        return [available_sheets[0]]
+
+    resolved: list[str] = []
+    for raw_name in selected_sheets:
+        candidate = str(raw_name).strip()
+        if not candidate:
+            continue
+        matched = normalized_available.get(candidate.casefold())
+        if matched is None:
+            raise HTTPException(status_code=400, detail=f'Sheet "{candidate}" was not found in this workbook.')
+        if matched not in resolved:
+            resolved.append(matched)
+
+    if not resolved:
+        raise HTTPException(status_code=400, detail='Select at least one worksheet to continue.')
+    return resolved
+
+
+def build_excel_selection_payload(
+    *,
+    excel_path: Path,
+    selected_sheets: list[str],
+    merge_mode: Literal['single', 'stack'],
+) -> dict[str, Any]:
+    engine = 'openpyxl' if excel_path.suffix.lower() == '.xlsx' else 'xlrd'
+    resolved_merge_mode: Literal['single', 'stack'] = merge_mode if merge_mode in {'single', 'stack'} else 'single'
+
+    if resolved_merge_mode == 'single':
+        sheet_name = selected_sheets[0]
+        preview_frame = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=PARQUET_PREVIEW_ROW_LIMIT)
+        total_rows = count_excel_rows_for_sheet(excel_path, sheet_name)
+    else:
+        preview_frames: list[pd.DataFrame] = []
+        base_columns: list[str] | None = None
+        total_rows = 0
+        for sheet_name in selected_sheets:
+            preview_sheet = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=PARQUET_PREVIEW_ROW_LIMIT)
+            current_columns = [str(col) for col in preview_sheet.columns]
+            if base_columns is None:
+                base_columns = current_columns
+            elif current_columns != base_columns:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'Cannot stack sheets with different schemas. Sheet "{sheet_name}" does not match the first selected sheet columns.',
+                )
+            preview_frames.append(preview_sheet)
+            total_rows += count_excel_rows_for_sheet(excel_path, sheet_name)
+
+        preview_frame = pd.concat(preview_frames, ignore_index=True) if preview_frames else pd.DataFrame()
+
+    loaded_row_count = len(preview_frame)
+    preview_loaded = int(total_rows) > loaded_row_count
+    column_info = build_column_info_from_frame(preview_frame)
+    preview_rows = preview_frame.where(pd.notna(preview_frame), None).to_dict(orient='records')
+    duplicate_rows = int(max(0, len(preview_frame) - len(preview_frame.drop_duplicates())))
+
+    return {
+        'frame': preview_frame,
+        'rows': safe_serialize(preview_rows),
+        'column_info': column_info,
+        'total_rows': int(total_rows),
+        'loaded_row_count': int(loaded_row_count),
+        'preview_loaded': bool(preview_loaded),
+        'duplicate_rows': duplicate_rows,
+    }
 
 
 def resolve_requested_columns(requested_columns: list[str], available_columns: list[str]) -> dict[str, str]:
@@ -951,6 +1112,12 @@ class PredictRequest(BaseModel):
 class DatasetCacheRequest(BaseModel):
     file_name: str
     data: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DatasetSheetSelectionRequest(BaseModel):
+    dataset_id: str
+    selected_sheets: list[str] = Field(default_factory=list)
+    merge_mode: Literal['single', 'stack'] = 'single'
 
 
 class LoginRequest(BaseModel):
@@ -1370,13 +1537,6 @@ def load_full_dataset_frame(dataset_id: str | None, data: list[dict[str, Any]]) 
     if frame.empty or frame.shape[1] == 0:
         raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
     return frame
-
-
-def sample_frame_for_eda(frame: pd.DataFrame, limit: int = EDA_ADVANCED_SAMPLE_LIMIT) -> pd.DataFrame:
-    if len(frame) <= limit:
-        return frame.copy()
-    indices = np.linspace(0, len(frame) - 1, num=limit, dtype=int)
-    return frame.iloc[indices].reset_index(drop=True).copy()
 
 
 def safe_numeric_series(series: pd.Series) -> pd.Series:
@@ -1994,7 +2154,7 @@ def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
         dataset_entry = DATASET_CACHE.get(request.dataset_id)
         if dataset_entry is None:
             raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
-        analysis_frame, total_rows = load_cached_analysis_sample(dataset_entry)
+        analysis_frame, total_rows = load_cached_analysis_frame(dataset_entry)
         if analysis_frame.empty or analysis_frame.shape[1] == 0:
             raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
         row_count = total_rows if total_rows > 0 else int(len(analysis_frame))
@@ -2003,7 +2163,7 @@ def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
         frame = load_full_dataset_frame(request.dataset_id, request.data)
         if frame.empty or frame.shape[1] == 0:
             raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
-        analysis_frame = sample_frame_for_eda(frame)
+        analysis_frame = frame
         row_count = int(len(frame))
         column_count = int(len(frame.columns))
 
@@ -5053,6 +5213,12 @@ def get_dataset_preview(
         'loadedRowCount': loaded_row_count,
         'previewLoaded': preview_loaded,
         'duplicates': duplicate_rows,
+        'sheetSelection': {
+            'availableSheets': dataset_entry.get('workbook_sheets') or [],
+            'selectedSheets': dataset_entry.get('selected_sheets') or [],
+            'mergeMode': dataset_entry.get('merge_mode') or 'single',
+            'requiresSelection': bool(len(dataset_entry.get('workbook_sheets') or []) > 1),
+        } if dataset_entry.get('excel_path') else None,
     }
     record_activity(
         request=http_request,
@@ -5111,29 +5277,46 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             column_info = build_column_info_from_polars_frame(frame)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         else:
-            # Excel workbook
-            try:
-                preview_frame = pd.read_excel(cached_path, nrows=PARQUET_PREVIEW_ROW_LIMIT)
-            except Exception as excel_error:
-                raise HTTPException(status_code=400, detail=f'Failed to parse Excel file: {excel_error}') from excel_error
+            available_sheets = get_excel_sheet_names(cached_path)
+            selected_sheets = resolve_selected_excel_sheets([], available_sheets)
+            selection_payload = build_excel_selection_payload(
+                excel_path=cached_path,
+                selected_sheets=selected_sheets,
+                merge_mode='single',
+            )
 
-            total_rows = len(preview_frame)
-            try:
-                total_rows = count_excel_rows_from_path(cached_path)
-            except HTTPException:
-                total_rows = len(preview_frame)
-
-            frame = preview_frame
+            frame = selection_payload['frame']
+            total_rows = int(selection_payload['total_rows'])
             column_count = len(frame.columns)
-            dataset_entry.update({'excel_path': str(cached_path)})
-            rows = frame.where(pd.notna(frame), None).to_dict(orient='records')
-            column_info = build_column_info_from_frame(frame)
-            preview_duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
+            rows = selection_payload['rows']
+            column_info = selection_payload['column_info']
+            preview_duplicate_rows = int(selection_payload['duplicate_rows'])
+            sheet_summaries: list[dict[str, Any]] = []
+            for sheet_name in available_sheets:
+                try:
+                    sheet_preview = pd.read_excel(cached_path, sheet_name=sheet_name, nrows=min(50, PARQUET_PREVIEW_ROW_LIMIT))
+                    sheet_columns = [str(column) for column in sheet_preview.columns]
+                except Exception:
+                    sheet_columns = []
+                sheet_summaries.append({
+                    'name': sheet_name,
+                    'rowCount': int(count_excel_rows_for_sheet(cached_path, sheet_name)),
+                    'columnCount': int(len(sheet_columns)),
+                    'columns': sheet_columns,
+                })
+
+            dataset_entry.update({
+                'excel_path': str(cached_path),
+                'workbook_sheets': sheet_summaries,
+                'selected_sheets': selected_sheets,
+                'active_sheet': selected_sheets[0],
+                'merge_mode': 'single',
+            })
 
         dataset_entry.update({
             'row_count': int(total_rows),
             'column_count': int(column_count),
-            'columns': list(frame.columns),
+            'columns': [str(column) for column in frame.columns],
             'duplicate_count': int(preview_duplicate_rows),
         })
         DATASET_CACHE[dataset_id] = dataset_entry
@@ -5149,6 +5332,12 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'columnCount': int(column_count),
             'previewLoaded': preview_loaded,
             'previewLimit': PARQUET_PREVIEW_ROW_LIMIT,
+            'sheetSelection': {
+                'availableSheets': dataset_entry.get('workbook_sheets') or [],
+                'selectedSheets': dataset_entry.get('selected_sheets') or [],
+                'mergeMode': dataset_entry.get('merge_mode'),
+                'requiresSelection': bool(len(dataset_entry.get('workbook_sheets') or []) > 1),
+            } if lower_file_name.endswith('.xlsx') or lower_file_name.endswith('.xls') else None,
         }
         record_activity(
             request=http_request,
@@ -5181,6 +5370,89 @@ async def parse_dataset(http_request: Request, file: UploadFile = File(...)) -> 
 @router.post('/parse-parquet')
 async def parse_parquet(http_request: Request, file: UploadFile = File(...)) -> JSONResponse:
     return await parse_dataset_file(http_request, file)
+
+
+@router.post('/parse-dataset-sheet-selection')
+def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_request: Request) -> JSONResponse:
+    dataset_entry = DATASET_CACHE.get(request.dataset_id)
+    if dataset_entry is None:
+        raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
+    if not dataset_entry.get('excel_path'):
+        raise HTTPException(status_code=400, detail='Sheet selection is only available for Excel workbooks.')
+
+    excel_path = Path(str(dataset_entry['excel_path']))
+    available_sheet_rows = dataset_entry.get('workbook_sheets') or []
+    available_sheets = [str(item.get('name')) for item in available_sheet_rows if item.get('name')]
+    if not available_sheets:
+        available_sheets = get_excel_sheet_names(excel_path)
+        dataset_entry['workbook_sheets'] = [
+            {'name': sheet, 'rowCount': int(count_excel_rows_for_sheet(excel_path, sheet))}
+            for sheet in available_sheets
+        ]
+
+    selected_sheets = resolve_selected_excel_sheets(request.selected_sheets, available_sheets)
+    merge_mode: Literal['single', 'stack'] = request.merge_mode
+    if merge_mode == 'single':
+        selected_sheets = [selected_sheets[0]]
+
+    selection_payload = build_excel_selection_payload(
+        excel_path=excel_path,
+        selected_sheets=selected_sheets,
+        merge_mode=merge_mode,
+    )
+
+    frame = selection_payload['frame']
+    rows = selection_payload['rows']
+    total_rows = int(selection_payload['total_rows'])
+    loaded_row_count = int(selection_payload['loaded_row_count'])
+    preview_loaded = bool(selection_payload['preview_loaded'])
+    duplicate_rows = int(selection_payload['duplicate_rows'])
+    column_info = selection_payload['column_info']
+
+    dataset_entry.update({
+        'selected_sheets': selected_sheets,
+        'active_sheet': selected_sheets[0],
+        'merge_mode': merge_mode,
+        'columns': [str(column) for column in frame.columns],
+        'row_count': total_rows,
+        'column_count': int(len(frame.columns)),
+        'duplicate_count': duplicate_rows,
+    })
+    DATASET_CACHE[request.dataset_id] = dataset_entry
+
+    response = {
+        'datasetId': request.dataset_id,
+        'data': rows,
+        'columns': [str(column) for column in frame.columns],
+        'columnInfo': column_info,
+        'rowCount': total_rows,
+        'loadedRowCount': loaded_row_count,
+        'columnCount': int(len(frame.columns)),
+        'previewLoaded': preview_loaded,
+        'previewLimit': PARQUET_PREVIEW_ROW_LIMIT,
+        'sheetSelection': {
+            'availableSheets': dataset_entry.get('workbook_sheets') or [],
+            'selectedSheets': selected_sheets,
+            'mergeMode': merge_mode,
+            'requiresSelection': bool(len(dataset_entry.get('workbook_sheets') or []) > 1),
+        },
+    }
+    record_activity(
+        request=http_request,
+        action='parse_dataset_sheet_selection',
+        status='success',
+        dataset_id=request.dataset_id,
+        file_name=str(dataset_entry.get('filename') or ''),
+        detail='Updated Excel sheet selection for cached dataset.',
+        metadata={
+            'selected_sheets': selected_sheets,
+            'merge_mode': merge_mode,
+            'row_count': total_rows,
+            'loaded_row_count': loaded_row_count,
+            'column_count': int(len(frame.columns)),
+        },
+    )
+    return JSONResponse(content=response)
 
 
 @router.post('/clean-dataset')

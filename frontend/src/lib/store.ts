@@ -17,6 +17,13 @@ export interface DataRow {
   [key: string]: string | number | boolean | null;
 }
 
+export interface DatasetSheetSummary {
+  name: string;
+  rowCount: number;
+  columnCount: number;
+  columns?: string[];
+}
+
 export interface CleaningLog {
   action: string;
   detail: string;
@@ -144,6 +151,9 @@ export interface DatasetWorkspaceState {
   reportUrl: string | null;
   aiInsights: string | null;
   aiChatHistory: { role: 'user' | 'assistant'; content: string }[];
+  availableSheets: DatasetSheetSummary[];
+  selectedSheets: string[];
+  sheetMergeMode: 'single' | 'stack';
 }
 
 export interface DatasetWorkspace extends DatasetWorkspaceState {
@@ -236,6 +246,9 @@ function createEmptyDatasetState(): DatasetWorkspaceState {
     reportUrl: null,
     aiInsights: null,
     aiChatHistory: [],
+    availableSheets: [],
+    selectedSheets: [],
+    sheetMergeMode: 'single',
   };
 }
 
@@ -281,6 +294,9 @@ const datasetStateKeys: Array<keyof DatasetWorkspaceState> = [
   'reportUrl',
   'aiInsights',
   'aiChatHistory',
+  'availableSheets',
+  'selectedSheets',
+  'sheetMergeMode',
 ];
 
 function getDatasetSnapshot(state: DatasetWorkspaceState): DatasetWorkspaceState {

@@ -47,18 +47,6 @@ export type AdvancedEdaResponse = {
   };
 };
 
-const ADVANCED_EDA_CLIENT_SAMPLE_LIMIT = 1200;
-
-function sampleRowsForAdvancedEda(data: DataRow[], limit = ADVANCED_EDA_CLIENT_SAMPLE_LIMIT) {
-  if (data.length <= limit) return data;
-  const step = Math.max(1, Math.floor(data.length / limit));
-  const sampled: DataRow[] = [];
-  for (let index = 0; index < data.length && sampled.length < limit; index += step) {
-    sampled.push(data[index]);
-  }
-  return sampled;
-}
-
 function EmptyState({ message }: { message: string }) {
   return (
     <div className="flex min-h-[220px] items-center justify-center rounded-xl border border-dashed bg-muted/20 px-6 py-10 text-center">
@@ -85,7 +73,7 @@ function ImageFrame({
   return (
     <div className={cn('overflow-hidden rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-3 shadow-sm dark:border-slate-800 dark:bg-[linear-gradient(180deg,#0f172a_0%,#111827_100%)]', className)}>
       <div className="flex h-full items-center justify-center rounded-xl border border-slate-200/80 bg-white p-3 dark:border-slate-800 dark:bg-slate-950">
-        <img src={src} alt={alt} className={cn('mx-auto block h-auto w-full max-w-full rounded-lg object-contain', imageClassName)} />
+        <img src={src} alt={alt} className={cn('mx-auto block h-auto max-h-[320px] w-full max-w-full rounded-lg object-contain sm:max-h-[360px]', imageClassName)} />
       </div>
     </div>
   );
@@ -147,12 +135,12 @@ function ChartPanel({
                 Close
               </Button>
             </div>
-            <div className="flex min-h-0 flex-1 overflow-auto p-2 sm:p-4">
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3 sm:p-5">
               <ImageFrame
                 src={chartImage.src}
                 alt={chartImage.alt}
                 className="h-full flex-1 border-transparent bg-transparent p-0 shadow-none"
-                imageClassName="h-auto min-h-full w-auto min-w-full max-w-none"
+                imageClassName="h-auto max-h-[calc(100dvh-11rem)] w-auto max-w-[calc(100dvw-4rem)]"
               />
             </div>
           </DialogContent>
@@ -164,25 +152,23 @@ function ChartPanel({
 
 function AnalysisModeBanner({
   requestMode,
-  sampledRowCount,
   totalRowCount,
 }: {
-  requestMode: 'cached' | 'sampled' | null;
-  sampledRowCount: number;
+  requestMode: 'cached' | 'direct' | null;
   totalRowCount: number;
 }) {
   if (requestMode === 'cached') {
     return (
       <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-primary">
-        Advanced EDA is running against the cached backend dataset for full-fidelity analysis.
+        Advanced EDA is running against the complete cached backend dataset.
       </div>
     );
   }
 
-  if (requestMode === 'sampled') {
+  if (requestMode === 'direct') {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/25 dark:text-amber-200">
-        Advanced EDA is using a capped sample of {sampledRowCount.toLocaleString()} row{sampledRowCount === 1 ? '' : 's'} from {totalRowCount.toLocaleString()} total rows because a cached backend dataset was not available for this session.
+      <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-primary">
+        Advanced EDA is analyzing the complete active dataset with {totalRowCount.toLocaleString()} rows.
       </div>
     );
   }
@@ -204,7 +190,7 @@ export default function EdaAdvancedModules({
   const [analysis, setAnalysis] = useState<AdvancedEdaResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [requestMode, setRequestMode] = useState<'cached' | 'sampled' | null>(null);
+  const [requestMode, setRequestMode] = useState<'cached' | 'direct' | null>(null);
 
   useEffect(() => {
     let isCancelled = false;
@@ -221,14 +207,13 @@ export default function EdaAdvancedModules({
       setError(null);
 
       try {
-        const sampledRows = sampleRowsForAdvancedEda(data);
         const payload = datasetId
           ? { dataset_id: datasetId, data: [] as DataRow[] }
-          : { dataset_id: null, data: sampledRows };
+          : { dataset_id: null, data };
         const response = await apiClient.post<AdvancedEdaResponse>('/eda/advanced', payload);
         if (!isCancelled) {
           setAnalysis(response.data);
-          setRequestMode(datasetId ? 'cached' : 'sampled');
+          setRequestMode(datasetId ? 'cached' : 'direct');
           onAnalysisReady?.(response.data);
         }
       } catch (requestError) {
@@ -309,7 +294,6 @@ export default function EdaAdvancedModules({
     <div className="space-y-6">
       <AnalysisModeBanner
         requestMode={requestMode}
-        sampledRowCount={analysis.sampled_row_count}
         totalRowCount={analysis.row_count}
       />
 
