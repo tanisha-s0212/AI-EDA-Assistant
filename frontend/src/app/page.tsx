@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
 import { useAppStore, TabId, AuthenticatedUser } from '@/lib/store';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -29,9 +30,6 @@ import {
   AlertCircle,
   RotateCcw,
   RefreshCw,
-  Orbit,
-  Radar,
-  Cpu,
   LogOut,
   UserRound,
   Mail,
@@ -104,6 +102,8 @@ type DatasetPreviewResponse = {
 };
 
 const INDIA_TIMEZONE = 'Asia/Kolkata';
+const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
+const AROHA_LOGO_URL = 'https://aroha.co.in/wp-content/uploads/2024/08/aroha_logo.png';
 
 function formatActivityTimestamp(value: string | null) {
   const parsed = value ? new Date(value) : new Date();
@@ -196,30 +196,6 @@ function getSessionContinuityLabel(value: string | null) {
   };
 }
 
-function BrandMark({ compact = false }: { compact?: boolean }) {
-  return (
-    <div
-      className={cn(
-        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-[22px] border border-white/12 bg-[linear-gradient(145deg,#08111f_0%,#0f2747_52%,#0b7f8f_100%)] text-white shadow-[0_24px_60px_-28px_rgba(14,116,144,0.62)]',
-        compact ? 'h-11 w-11' : 'h-12 w-12'
-      )}
-    >
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_18%,rgba(255,255,255,0.2),transparent_32%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),transparent_42%,rgba(8,145,178,0.24)_100%)]" />
-      <div className="absolute inset-[18%] rounded-[18px] border border-white/10 bg-slate-950/30" />
-      <div className="absolute inset-x-[26%] top-[24%] h-px bg-cyan-200/50" />
-      <div className="absolute inset-x-[26%] bottom-[24%] h-px bg-cyan-200/35" />
-      <div className="absolute inset-y-[26%] left-[24%] w-px bg-cyan-200/40" />
-      <div className="absolute inset-y-[26%] right-[24%] w-px bg-cyan-200/25" />
-      <div className={cn('absolute rounded-md border border-cyan-200/25 bg-cyan-300/12', compact ? 'left-[19%] top-[19%] h-2 w-2' : 'left-[18%] top-[18%] h-2.5 w-2.5')} />
-      <div className={cn('absolute rounded-md border border-cyan-200/20 bg-cyan-300/10', compact ? 'bottom-[18%] right-[18%] h-2.5 w-2.5' : 'bottom-[18%] right-[18%] h-3 w-3')} />
-      <Orbit className={cn('absolute text-cyan-100/20', compact ? 'h-8 w-8' : 'h-9 w-9')} strokeWidth={1.5} />
-      <Cpu className={cn('absolute text-white', compact ? 'h-4.5 w-4.5' : 'h-5 w-5')} strokeWidth={2.2} />
-      <Radar className={cn('absolute text-cyan-100/85', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} strokeWidth={1.9} />
-    </div>
-  );
-}
-
 function BrandWordmark({
   compact = false,
   inverted = false,
@@ -228,10 +204,10 @@ function BrandWordmark({
   inverted?: boolean;
 }) {
   return (
-    <div className={cn('min-w-0', compact && 'max-w-[180px]')}>
+    <div className={cn('min-w-0', compact && 'max-w-[168px]')}>
       <h1 className={cn(
         'font-black tracking-[-0.03em]',
-        compact ? 'text-[1.05rem] leading-[1.18] sm:text-[1.15rem]' : 'text-[1.95rem] leading-tight sm:text-[2.35rem]',
+        compact ? 'text-[1rem] leading-[1.16] sm:text-[1.08rem]' : 'text-[1.95rem] leading-tight sm:text-[2.35rem]',
         inverted ? 'text-white' : 'text-slate-950'
       )}>
         <span className={cn(
@@ -243,6 +219,44 @@ function BrandWordmark({
           Intelligent Data Assistant
         </span>
       </h1>
+    </div>
+  );
+}
+
+function CompanyLogo({ compact = false }: { compact?: boolean }) {
+  const width = compact ? 86 : 112;
+  const height = compact ? 30 : 40;
+
+  return (
+    <img
+      src={AROHA_LOGO_URL}
+      alt="Aroha Technologies logo"
+      width={width}
+      height={height}
+      className="h-auto w-auto shrink-0 object-contain"
+    />
+  );
+}
+
+function ApplicationLogo({ compact = false }: { compact?: boolean }) {
+  const size = compact ? 42 : 54;
+
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] border border-white/12 bg-[linear-gradient(145deg,#08111f_0%,#0f2747_52%,#0b7f8f_100%)] shadow-[0_22px_58px_-30px_rgba(14,116,144,0.5)]',
+        compact ? 'h-[42px] w-[42px]' : 'h-[54px] w-[54px]'
+      )}
+    >
+      <Image
+        src="/app-logo.svg"
+        alt="Intelligent Data Assistant logo"
+        width={Math.round(size * 0.8)}
+        height={Math.round(size * 0.8)}
+        priority={false}
+        sizes={`${size}px`}
+        className="h-auto w-auto object-contain"
+      />
     </div>
   );
 }
@@ -270,8 +284,10 @@ function SidebarContent({
     <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
-        <div className="flex items-start gap-3">
-          <BrandMark compact />
+        <div className="flex items-center gap-2.5">
+          <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="transition-transform duration-200 hover:scale-[1.03]">
+            <CompanyLogo compact />
+          </a>
           <BrandWordmark compact />
         </div>
       </div>
@@ -639,20 +655,21 @@ export default function HomePage() {
                           </SheetContent>
                         </Sheet>
                         <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-full border border-white/12 bg-white/8 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-200">
-                              Workspace Console
+                          <div className="mb-3 flex flex-wrap items-center gap-3">
+                            <span className="text-[11px] font-semibold uppercase tracking-[0.32em] text-cyan-100/90">
+                              Aroha Intelligent System
                             </span>
-                            <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.22em] text-cyan-100">
+                            <span className="hidden h-1 w-1 rounded-full bg-slate-400/70 sm:inline-block" />
+                            <span className="text-xs font-medium text-slate-300">
                               {activeTabMeta.label}
                             </span>
                           </div>
                           <div className="flex items-center gap-3">
-                            <BrandMark />
+                            <ApplicationLogo />
                             <BrandWordmark inverted />
                           </div>
-                          <p className="mt-3 max-w-2xl text-sm text-slate-300">
-                            A focused analytics workspace for guided dataset intake, profiling, cleaning, and forecasting.
+                          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                            Enterprise-ready analytics workspace for dataset intake, understanding, data preparation, and forecasting workflows.
                           </p>
                           <div className="mt-4 flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
@@ -765,12 +782,30 @@ export default function HomePage() {
 
         {/* Footer */}
         <footer className="mt-auto border-t border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-4 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:px-6 lg:px-8">
-            <div className="mx-auto max-w-7xl">
-              <div className="flex flex-col gap-2 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-4 text-base font-bold text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] transition-all duration-300 hover:shadow-[0_30px_100px_-40px_rgba(15,23,42,0.78)] lg:flex-row lg:items-center lg:justify-between">
-              <span className="bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)] bg-clip-text text-transparent">Intelligent Data Assistant</span>
-              <span className="text-sm font-bold text-slate-300">
-                AI-guided dataset understanding, analysis, and predictive modeling.
-              </span>
+          <div className="mx-auto max-w-7xl">
+            <div className="flex flex-col gap-4 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-5 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] transition-all duration-300 hover:shadow-[0_30px_100px_-40px_rgba(15,23,42,0.78)] lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-col gap-3 text-center lg:flex-row lg:items-center lg:text-left">
+                <ApplicationLogo />
+                <div>
+                  <p className="bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)] bg-clip-text text-base font-bold text-transparent">
+                    Intelligent Data Assistant
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-slate-300">
+                    AI-guided dataset understanding, analysis, and predictive modeling.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col items-center gap-1 text-center text-sm font-medium text-slate-300 lg:items-end lg:text-right">
+                <p>
+                  <span className="text-slate-400">HR:</span>{' '}
+                  <a className="text-cyan-300 transition-colors hover:text-cyan-200" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a>
+                </p>
+                <p>
+                  <span className="text-slate-400">Phone:</span>{' '}
+                  <a className="text-cyan-300 transition-colors hover:text-cyan-200" href="tel:+919886228615">+91 9886228615</a>
+                </p>
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Bangalore | Aroha Technologies</p>
+              </div>
             </div>
           </div>
         </footer>
