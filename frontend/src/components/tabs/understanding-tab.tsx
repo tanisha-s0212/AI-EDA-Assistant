@@ -26,6 +26,8 @@ export default function UnderstandingTab() {
   const duplicates = useAppStore((s) => s.duplicates);
   const memoryUsage = useAppStore((s) => s.memoryUsage);
   const fileName = useAppStore((s) => s.fileName);
+  const selectedSheets = useAppStore((s) => s.selectedSheets);
+  const sheetMergeMode = useAppStore((s) => s.sheetMergeMode);
 
   const data = cleanedData ?? rawData ?? [];
   const hasData = !!rawData && columns.length > 0;
@@ -91,6 +93,11 @@ export default function UnderstandingTab() {
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Data Understanding</h2>
         <p className="mt-1 text-muted-foreground">Review the uploaded dataset identity, quality checks, explainability signals, and a quick preview before exploratory data analysis and data cleaning.</p>
+        {selectedSheets.length > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Workbook scope: {sheetMergeMode === 'stack' ? 'Stacked sheets' : 'Single sheet'} | {selectedSheets.join(', ')}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">

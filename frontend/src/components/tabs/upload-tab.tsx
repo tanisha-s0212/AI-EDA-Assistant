@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
-import { useAppStore, type ColumnInfo, type DataRow, type DatasetWorkspaceDraft } from '@/lib/store';
+import { useAppStore, type ColumnInfo, type DataRow, type DatasetSheetSummary, type DatasetWorkspaceDraft } from '@/lib/store';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,6 +30,26 @@ const COLUMN_ANALYSIS_SAMPLE_SIZE = 5000;
 const DUPLICATE_CHECK_LIMIT = 10000;
 const MEMORY_ESTIMATE_SAMPLE_SIZE = 200;
 const DATASET_PREVIEW_ROW_LIMIT = 20000;
+
+type SheetSelectionPayload = {
+  availableSheets: DatasetSheetSummary[];
+  selectedSheets: string[];
+  mergeMode: 'single' | 'stack';
+  requiresSelection?: boolean;
+} | null;
+
+type ParseDatasetResponse = {
+  datasetId: string | null;
+  data: DataRow[];
+  columns?: string[];
+  columnInfo?: ColumnInfo[];
+  rowCount: number;
+  loadedRowCount: number;
+  columnCount?: number;
+  previewLoaded: boolean;
+  previewLimit?: number;
+  sheetSelection?: SheetSelectionPayload;
+};
 
 function normalizeExcelValue(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;
@@ -212,7 +232,15 @@ function buildFreshDatasetState(
   data: DataRow[],
   fileName: string,
   columns: ColumnInfo[],
-  options?: { datasetId?: string | null; totalRows?: number; previewLoaded?: boolean; loadedRowCount?: number },
+  options?: {
+    datasetId?: string | null;
+    totalRows?: number;
+    previewLoaded?: boolean;
+    loadedRowCount?: number;
+    availableSheets?: DatasetSheetSummary[];
+    selectedSheets?: string[];
+    sheetMergeMode?: 'single' | 'stack';
+  },
 ): DatasetWorkspaceDraft {
   return {
     fileName,
@@ -247,6 +275,9 @@ function buildFreshDatasetState(
     reportUrl: null,
     aiInsights: null,
     aiChatHistory: [],
+    availableSheets: options?.availableSheets ?? [],
+    selectedSheets: options?.selectedSheets ?? [],
+    sheetMergeMode: options?.sheetMergeMode ?? 'single',
   };
 }
 
@@ -258,6 +289,10 @@ export default function UploadTab() {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [pendingWorkbook, setPendingWorkbook] = useState<{ fileName: string; datasetId: string; sheetSelection: SheetSelectionPayload } | null>(null);
+  const [sheetSelection, setSheetSelection] = useState<string[]>([]);
+  const [sheetMergeMode, setSheetMergeMode] = useState<'single' | 'stack'>('single');
+  const [isApplyingSheetSelection, setIsApplyingSheetSelection] = useState(false);
   const dragCounter = useRef(0);
 
   // ── Push data into store ──────────────────────────────────────────────────
@@ -266,7 +301,16 @@ export default function UploadTab() {
     async (
       data: DataRow[],
       fileName: string,
-      options?: { datasetId?: string | null; totalRows?: number; previewLoaded?: boolean; loadedRowCount?: number; columnsOverride?: ColumnInfo[] },
+      options?: {
+        datasetId?: string | null;
+        totalRows?: number;
+        previewLoaded?: boolean;
+        loadedRowCount?: number;
+        columnsOverride?: ColumnInfo[];
+        availableSheets?: DatasetSheetSummary[];
+        selectedSheets?: string[];
+        sheetMergeMode?: 'single' | 'stack';
+      },
     ) => {
       const columns = options?.columnsOverride ? enrichColumnInfo(options.columnsOverride, data) : buildColumnInfo(data);
       let resolvedOptions = options;
@@ -342,13 +386,31 @@ export default function UploadTab() {
       formData.append('file', file);
 
       try {
-        const { data: result } = await apiClient.post('/parse-dataset', formData);
+        const { data: result } = await apiClient.post<ParseDatasetResponse>('/parse-dataset', formData);
 
         if (!result) {
           toast({
             title: 'Upload parse error',
             description: 'Failed to parse the dataset file.',
             variant: 'destructive',
+          });
+          setIsProcessing(false);
+          return;
+        }
+
+        const workbookSelection = result.sheetSelection;
+        const requiresWorkbookSelection = Boolean(workbookSelection?.requiresSelection);
+        if (requiresWorkbookSelection && result.datasetId) {
+          setPendingWorkbook({
+            fileName: file.name,
+            datasetId: result.datasetId,
+            sheetSelection: workbookSelection ?? null,
+          });
+          setSheetSelection(workbookSelection?.selectedSheets ?? []);
+          setSheetMergeMode(workbookSelection?.mergeMode ?? 'single');
+          toast({
+            title: 'Select workbook sheets',
+            description: 'Choose one or more worksheets to continue with upload.',
           });
           setIsProcessing(false);
           return;
@@ -361,6 +423,9 @@ export default function UploadTab() {
             previewLoaded: !!result.previewLoaded,
             loadedRowCount: result.loadedRowCount ?? result.data.length,
             columnsOverride: Array.isArray(result.columnInfo) ? (result.columnInfo as ColumnInfo[]) : undefined,
+            availableSheets: workbookSelection?.availableSheets ?? [],
+            selectedSheets: workbookSelection?.selectedSheets ?? [],
+            sheetMergeMode: workbookSelection?.mergeMode ?? 'single',
           });
 
           if (result.previewLoaded) {
@@ -446,6 +511,72 @@ export default function UploadTab() {
     fileInputRef.current?.click();
   }, []);
 
+  const toggleSheet = useCallback((sheetName: string) => {
+    setSheetSelection((current) => {
+      if (sheetMergeMode === 'single') {
+        return [sheetName];
+      }
+      return current.includes(sheetName)
+        ? current.filter((sheet) => sheet !== sheetName)
+        : [...current, sheetName];
+    });
+  }, [sheetMergeMode]);
+
+  const handleApplySheetSelection = useCallback(async () => {
+    if (!pendingWorkbook) return;
+
+    const selected = sheetMergeMode === 'single' ? sheetSelection.slice(0, 1) : sheetSelection;
+    if (!selected.length) {
+      toast({
+        title: 'Sheet selection required',
+        description: 'Select at least one worksheet to continue.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsApplyingSheetSelection(true);
+    try {
+      const { data: result } = await apiClient.post<ParseDatasetResponse>('/parse-dataset-sheet-selection', {
+        dataset_id: pendingWorkbook.datasetId,
+        selected_sheets: selected,
+        merge_mode: sheetMergeMode,
+      });
+
+      if (!result?.data?.length) {
+        toast({
+          title: 'No rows found',
+          description: 'The selected worksheet combination does not contain usable data rows.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      await pushToStore(result.data as DataRow[], pendingWorkbook.fileName, {
+        datasetId: result.datasetId ?? pendingWorkbook.datasetId,
+        totalRows: result.rowCount,
+        previewLoaded: !!result.previewLoaded,
+        loadedRowCount: result.loadedRowCount ?? result.data.length,
+        columnsOverride: Array.isArray(result.columnInfo) ? (result.columnInfo as ColumnInfo[]) : undefined,
+        availableSheets: result.sheetSelection?.availableSheets ?? pendingWorkbook.sheetSelection?.availableSheets ?? [],
+        selectedSheets: result.sheetSelection?.selectedSheets ?? selected,
+        sheetMergeMode: result.sheetSelection?.mergeMode ?? sheetMergeMode,
+      });
+
+      setPendingWorkbook(null);
+      setSheetSelection([]);
+      setSheetMergeMode('single');
+    } catch (error) {
+      toast({
+        title: 'Sheet selection failed',
+        description: getApiErrorMessage(error, 'Unable to apply worksheet selection.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setIsApplyingSheetSelection(false);
+    }
+  }, [pendingWorkbook, pushToStore, sheetMergeMode, sheetSelection, toast]);
+
   useEffect(() => {
     if (uploadPickerRequestId === 0 || uploadPickerRequestId === handledUploadRequestRef.current) return;
 
@@ -480,7 +611,7 @@ export default function UploadTab() {
         icon: FileSpreadsheet,
         color: 'text-primary',
         bgColor: 'bg-secondary',
-        description: 'Excel workbooks in .xlsx and .xls format, parsed on the backend with first-sheet preview support.',
+        description: 'Excel workbooks in .xlsx and .xls format with worksheet selection and optional sheet stacking.',
         badge: '.xlsx/.xls',
       },
       {
@@ -585,6 +716,73 @@ export default function UploadTab() {
         </div>
       </motion.div>
 
+      {pendingWorkbook && (
+        <motion.div variants={itemVariants}>
+          <Card className="border-primary/20 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="text-lg">Select Workbook Sheets</CardTitle>
+              <CardDescription>
+                Choose the worksheet scope for <span className="font-medium text-foreground">{pendingWorkbook.fileName}</span>. Existing upload and analysis flow remains the same after this step.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant={sheetMergeMode === 'single' ? 'secondary' : 'outline'}
+                  onClick={() => {
+                    setSheetMergeMode('single');
+                    setSheetSelection((current) => current.slice(0, 1));
+                  }}
+                  className="rounded-full"
+                >
+                  Single Sheet
+                </Button>
+                <Button
+                  type="button"
+                  variant={sheetMergeMode === 'stack' ? 'secondary' : 'outline'}
+                  onClick={() => setSheetMergeMode('stack')}
+                  className="rounded-full"
+                >
+                  Stack Matching Sheets
+                </Button>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {(pendingWorkbook.sheetSelection?.availableSheets ?? []).map((sheet) => {
+                  const isActive = sheetSelection.includes(sheet.name);
+                  return (
+                    <button
+                      type="button"
+                      key={sheet.name}
+                      onClick={() => toggleSheet(sheet.name)}
+                      className={`rounded-xl border px-3 py-3 text-left transition-all ${
+                        isActive ? 'border-primary bg-primary/10 shadow-sm' : 'border-border bg-background hover:border-primary/40'
+                      }`}
+                    >
+                      <p className="truncate text-sm font-semibold">{sheet.name}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {sheet.rowCount.toLocaleString()} rows | {sheet.columnCount.toLocaleString()} cols
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {sheetMergeMode === 'stack'
+                    ? 'Stack mode requires selected sheets to have matching column structure.'
+                    : 'Single mode uses one sheet and keeps the legacy flow exactly as before.'}
+                </p>
+                <Button type="button" onClick={() => void handleApplySheetSelection()} disabled={isApplyingSheetSelection || sheetSelection.length === 0}>
+                  {isApplyingSheetSelection ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Continue With Selected Sheets
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
+
       {/* ── Upload Zone ───────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
         <AnimatePresence mode="wait">
@@ -633,7 +831,7 @@ export default function UploadTab() {
                 onDragLeave={handleDragLeave}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
-                onClick={handleBrowseClick}
+                onClick={pendingWorkbook ? undefined : handleBrowseClick}
                 className={`
                   relative min-w-0 cursor-pointer rounded-2xl border-2 border-dashed transition-all duration-300 ease-in-out
                   ${

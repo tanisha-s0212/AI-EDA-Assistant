@@ -95,6 +95,12 @@ type DatasetPreviewResponse = {
   loadedRowCount: number;
   previewLoaded: boolean;
   duplicates: number;
+  sheetSelection?: {
+    availableSheets: Array<{ name: string; rowCount: number; columnCount: number; columns?: string[] }>;
+    selectedSheets: string[];
+    mergeMode: 'single' | 'stack';
+    requiresSelection: boolean;
+  } | null;
 };
 
 const INDIA_TIMEZONE = 'Asia/Kolkata';
@@ -521,6 +527,9 @@ export default function HomePage() {
           previewLoaded: !!result.previewLoaded,
           duplicates: result.duplicates ?? currentState.duplicates,
           reportUrl: null,
+          availableSheets: result.sheetSelection?.availableSheets ?? currentState.availableSheets,
+          selectedSheets: result.sheetSelection?.selectedSheets ?? currentState.selectedSheets,
+          sheetMergeMode: result.sheetSelection?.mergeMode ?? currentState.sheetMergeMode,
         });
       })
       .catch(() => {
