@@ -589,7 +589,7 @@ export default function HomePage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="workspace-shell min-h-screen bg-background">
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
         <div className="app-grid-bg absolute inset-x-0 top-0 h-[520px] opacity-60" />
         <div className="absolute left-[-8rem] top-20 h-72 w-72 rounded-full bg-sky-400/10 blur-3xl" />
