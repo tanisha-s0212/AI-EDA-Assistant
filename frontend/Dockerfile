@@ -3,7 +3,8 @@ ARG NODE_IMAGE=node:20-alpine
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev || npm install --include=dev
+RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
