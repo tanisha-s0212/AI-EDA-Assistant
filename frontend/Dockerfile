@@ -1,13 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:20-alpine
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --no-fund --include=dev --prefer-offline
-RUN test -x ./node_modules/.bin/next
+RUN npm ci
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
