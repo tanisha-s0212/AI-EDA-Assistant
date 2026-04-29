@@ -3,7 +3,10 @@ ARG NODE_IMAGE=node:20-alpine
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm install --network-timeout=600000 || npm install --network-timeout=600000 || npm install --network-timeout=600000
+RUN npm config set registry "http://registry.npmjs.org/" && \
+    npm config set strict-ssl false
+RUN npm install --no-audit --no-fund --network-timeout=600000 || \
+    npm install --no-audit --no-fund --network-timeout=600000
 RUN test -x ./node_modules/.bin/next || { echo "ERROR: npm install silently failed to install the next binary."; exit 1; }
 
 FROM ${NODE_IMAGE} AS builder
