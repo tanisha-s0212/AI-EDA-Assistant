@@ -1,6 +1,26 @@
 name: ai-eda-assistant
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_eda_assistant}
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
   backend:
     build:
       context: ./backend
@@ -10,12 +30,16 @@ services:
     environment:
       ML_PORT: ${ML_PORT:-3004}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://localhost:3000}
+      ACTIVITY_DATABASE_URL: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-agent}@postgres:5432/${POSTGRES_DB:-ai_eda_assistant}
     expose:
       - "3004"
     volumes:
       - backend_models:/app/models
       - backend_datasets:/app/datasets
       - backend_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3004/api/health', timeout=5)"]
       interval: 30s
@@ -29,9 +53,6 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        NODE_IMAGE: node:22-alpine
-        NEXT_PUBLIC_API_BASE_URL: /api
     container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-frontend
     restart: unless-stopped
     environment:
@@ -44,11 +65,11 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 10s
     networks:
       - app-network
 
@@ -76,3 +97,4 @@ volumes:
   backend_models:
   backend_datasets:
   backend_logs:
+  postgres_data:

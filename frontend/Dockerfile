@@ -1,32 +1,14 @@
-# Dockerfile for Next.js Frontend
-FROM node:22-alpine
+FROM node:22-bullseye-slim
 
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
+COPY start.sh /app/start.sh
+COPY public /app/public
 
-# Install dependencies
-RUN npm install
+RUN chmod +x /app/start.sh
 
-# Copy project files
-COPY . .
-
-# Build arguments
-ARG NEXT_PUBLIC_API_BASE_URL
-ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
-
-# Limit Node.js memory to prevent OOM kills on low-memory servers
-ENV NODE_OPTIONS="--max-old-space-size=512"
-
-# Bind to all interfaces so other containers (nginx) can reach this server
 ENV HOSTNAME="0.0.0.0"
-
-# Build the application
-RUN npm run build
-
-# Expose port
 EXPOSE 3000
 
-# Start the application — bind explicitly to 0.0.0.0
-CMD ["npm", "start"]
+CMD ["/app/start.sh"]
