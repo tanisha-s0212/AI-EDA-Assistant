@@ -30,7 +30,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NODE_IMAGE: node:20-bookworm-slim
+        NODE_IMAGE: node:22-alpine
         NEXT_PUBLIC_API_BASE_URL: /api
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
