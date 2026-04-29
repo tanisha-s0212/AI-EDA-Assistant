@@ -1,12 +1,9 @@
-# syntax=docker/dockerfile:1.7
-
 ARG NODE_IMAGE=node:20-alpine
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --include=dev --no-audit --no-fund || npm install --include=dev --no-audit --no-fund
-RUN test -x ./node_modules/.bin/next
+RUN npm ci
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
