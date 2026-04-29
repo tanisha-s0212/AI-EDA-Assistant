@@ -30,8 +30,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NODE_IMAGE: node:20-alpine
+        NODE_IMAGE: node:20-bookworm-slim
         NEXT_PUBLIC_API_BASE_URL: /api
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+        NPM_STRICT_SSL: ${NPM_STRICT_SSL:-false}
     container_name: ${COMPOSE_PROJECT_NAME:-ai-eda-assistant}-frontend
     restart: unless-stopped
     environment:
