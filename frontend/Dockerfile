@@ -12,6 +12,7 @@ ARG NPM_STRICT_SSL=false
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm --version && node --version
+RUN npm install -g yarn --prefer-offline || npm install -g yarn
 # Approach 1: If corporate CA is provided (base64-encoded PEM/CRT), trust it in the container.
 # This is the preferred fix for SSL-intercepting proxy environments.
 RUN set -eux; \
@@ -22,31 +23,25 @@ RUN set -eux; \
 RUN set -eux; \
   npm config delete proxy || true; \
   npm config delete https-proxy || true; \
+  yarn config delete proxy || true; \
+  yarn config delete https-proxy || true; \
   if [ -f /usr/local/share/ca-certificates/corporate-proxy.crt ]; then \
     npm config set cafile /usr/local/share/ca-certificates/corporate-proxy.crt; \
+    yarn config set cafile /usr/local/share/ca-certificates/corporate-proxy.crt; \
   fi; \
   # Approach 2: Allow internal npm registry/mirror via build-arg override.
   npm config set registry "${NPM_REGISTRY}"; \
+  yarn config set registry "${NPM_REGISTRY}"; \
   # Approach 3 (last resort for SSL MITM environments): disable strict SSL for npm only.
   npm config set strict-ssl "${NPM_STRICT_SSL}"; \
-  for attempt in 1 2 3; do \
-    if npm install --include=dev --no-audit --no-fund --prefer-offline || npm install --include=dev --no-audit --no-fund; then \
-      if [ -x ./node_modules/.bin/next ]; then \
-        break; \
-      fi; \
-      echo "npm install succeeded but next binary is missing (attempt ${attempt}); retrying."; \
-    else \
-      echo "npm install failed on attempt ${attempt}; retrying."; \
-    fi; \
-    npm cache clean --force || true; \
-    rm -rf ./node_modules; \
-    if [ "$attempt" -eq 3 ]; then \
-      echo "ERROR: npm install failed after 3 attempts or next binary was not generated."; \
-      exit 1; \
-    fi; \
-    sleep 5; \
-  done
-RUN test -x ./node_modules/.bin/next || { echo "ERROR: next binary missing after install"; exit 1; }
+  yarn config set strict-ssl "${NPM_STRICT_SSL}"; \
+  # Yarn is used instead of npm install/npm ci because npm repeatedly crashes in this proxy environment
+  # with "Exit handler never called!" after long-lived connection interruptions.
+  if [ ! -f yarn.lock ] && [ -f package-lock.json ]; then \
+    yarn import; \
+  fi
+RUN yarn install --frozen-lockfile --non-interactive --network-timeout 300000
+RUN test -x ./node_modules/.bin/next || { echo "ERROR: next binary missing after yarn install"; exit 1; }
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
