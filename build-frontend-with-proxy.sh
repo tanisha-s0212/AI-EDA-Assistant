@@ -53,4 +53,10 @@ if [[ -z "${HTTP_PROXY:-}" || -z "${HTTPS_PROXY:-}" ]]; then
 fi
 
 echo "Running frontend Docker build..."
-docker compose build --no-cache frontend
+docker compose build \
+  --build-arg HTTP_PROXY="${HTTP_PROXY:-}" \
+  --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" \
+  --build-arg NO_PROXY="${NO_PROXY:-}" \
+  --build-arg NPM_REGISTRY="http://registry.npmjs.org/" \
+  --build-arg NPM_STRICT_SSL="false" \
+  --no-cache frontend
