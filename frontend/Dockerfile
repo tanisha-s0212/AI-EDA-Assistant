@@ -5,9 +5,18 @@ ARG NODE_IMAGE=node:20-bookworm-slim
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm install -g npm@10.5.2 --no-audit --no-fund
 RUN npm --version && node --version
-RUN npm ci --include=dev --no-audit --no-fund || npm ci --include=dev --no-audit --no-fund --legacy-peer-deps
+RUN set -eux; \
+  npm config delete proxy || true; \
+  npm config delete https-proxy || true; \
+  npm config set registry https://registry.npmjs.org/; \
+  for attempt in 1 2 3; do \
+    npm ci --include=dev --no-audit --no-fund && break; \
+    npm cache clean --force || true; \
+    rm -rf ./node_modules; \
+    if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+    sleep 5; \
+  done
 RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
