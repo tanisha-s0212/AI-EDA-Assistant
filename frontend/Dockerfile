@@ -6,18 +6,24 @@ FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm --version && node --version
+RUN npm install -g npm@latest --no-audit --no-fund
+RUN npm --version
 RUN set -eux; \
   npm config delete proxy || true; \
   npm config delete https-proxy || true; \
   npm config set registry https://registry.npmjs.org/; \
   for attempt in 1 2 3; do \
-    npm ci --include=dev --no-audit --no-fund && break; \
+    npm ci --include=dev --no-audit --no-fund; \
+    if [ -x ./node_modules/.bin/next ]; then \
+      break; \
+    fi; \
+    echo "npm install attempt ${attempt} did not produce next binary; retrying..."; \
     npm cache clean --force || true; \
     rm -rf ./node_modules; \
     if [ "$attempt" -eq 3 ]; then exit 1; fi; \
     sleep 5; \
   done
-RUN test -x ./node_modules/.bin/next
+RUN test -x ./node_modules/.bin/next || (echo "ERROR: next binary missing after npm install retries" && exit 1)
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
