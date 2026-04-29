@@ -1,18 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:20-bookworm-slim
+ARG NODE_IMAGE=node:18.20-bookworm-slim
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN set -eux; \
-  npm ci --include=dev --no-audit --no-fund || true; \
-  if [ ! -x ./node_modules/.bin/next ]; then \
-    npm cache clean --force || true; \
-    rm -rf ./node_modules; \
-    npm install --include=dev --no-audit --no-fund; \
-  fi; \
-  test -x ./node_modules/.bin/next
+RUN npm ci --include=dev --no-audit --no-fund
+RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
