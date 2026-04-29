@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:18.20-bookworm-slim
+ARG NODE_IMAGE=node:20-bookworm-slim
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --include=dev --no-audit --no-fund
+RUN npm install -g npm@10.5.2 --no-audit --no-fund
+RUN npm --version && node --version
+RUN npm ci --include=dev --no-audit --no-fund || npm ci --include=dev --no-audit --no-fund --legacy-peer-deps
 RUN test -x ./node_modules/.bin/next
 
 FROM ${NODE_IMAGE} AS builder
