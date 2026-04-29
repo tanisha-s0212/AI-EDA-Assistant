@@ -1,13 +1,52 @@
-ARG NODE_IMAGE=node:20-alpine
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_IMAGE=node:20-bookworm-slim
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ARG NPM_STRICT_SSL=false
+ARG CORPORATE_CA_CERT_B64=
 
 FROM ${NODE_IMAGE} AS deps
+ARG CORPORATE_CA_CERT_B64=
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ARG NPM_STRICT_SSL=false
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm config set registry "http://registry.npmjs.org/" && \
-    npm config set strict-ssl false
-RUN npm install --no-audit --no-fund --network-timeout=600000 || \
-    npm install --no-audit --no-fund --network-timeout=600000
-RUN test -x ./node_modules/.bin/next || { echo "ERROR: npm install silently failed to install the next binary."; exit 1; }
+RUN npm --version && node --version
+# Approach 1: If corporate CA is provided (base64-encoded PEM/CRT), trust it in the container.
+# This is the preferred fix for SSL-intercepting proxy environments.
+RUN set -eux; \
+  if [ -n "${CORPORATE_CA_CERT_B64}" ]; then \
+    echo "${CORPORATE_CA_CERT_B64}" | base64 -d > /usr/local/share/ca-certificates/corporate-proxy.crt; \
+    update-ca-certificates; \
+  fi
+RUN set -eux; \
+  npm config delete proxy || true; \
+  npm config delete https-proxy || true; \
+  if [ -f /usr/local/share/ca-certificates/corporate-proxy.crt ]; then \
+    npm config set cafile /usr/local/share/ca-certificates/corporate-proxy.crt; \
+  fi; \
+  # Approach 2: Allow internal npm registry/mirror via build-arg override.
+  npm config set registry "${NPM_REGISTRY}"; \
+  # Approach 3 (last resort for SSL MITM environments): disable strict SSL for npm only.
+  npm config set strict-ssl "${NPM_STRICT_SSL}"; \
+  for attempt in 1 2 3; do \
+    if npm install --include=dev --no-audit --no-fund --prefer-offline || npm install --include=dev --no-audit --no-fund; then \
+      if [ -x ./node_modules/.bin/next ]; then \
+        break; \
+      fi; \
+      echo "npm install succeeded but next binary is missing (attempt ${attempt}); retrying."; \
+    else \
+      echo "npm install failed on attempt ${attempt}; retrying."; \
+    fi; \
+    npm cache clean --force || true; \
+    rm -rf ./node_modules; \
+    if [ "$attempt" -eq 3 ]; then \
+      echo "ERROR: npm install failed after 3 attempts or next binary was not generated."; \
+      exit 1; \
+    fi; \
+    sleep 5; \
+  done
+RUN test -x ./node_modules/.bin/next || { echo "ERROR: next binary missing after install"; exit 1; }
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
