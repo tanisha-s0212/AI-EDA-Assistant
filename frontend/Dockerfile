@@ -30,18 +30,18 @@ RUN set -eux; \
   # Approach 3 (last resort for SSL MITM environments): disable strict SSL for npm only.
   npm config set strict-ssl "${NPM_STRICT_SSL}"; \
   for attempt in 1 2 3; do \
-    if npm ci --include=dev --no-audit --no-fund; then \
+    if npm install --include=dev --no-audit --no-fund --prefer-offline || npm install --include=dev --no-audit --no-fund; then \
       if [ -x ./node_modules/.bin/next ]; then \
         break; \
       fi; \
-      echo "npm ci succeeded but next binary is missing (attempt ${attempt}); retrying."; \
+      echo "npm install succeeded but next binary is missing (attempt ${attempt}); retrying."; \
     else \
-      echo "npm ci failed on attempt ${attempt}; retrying."; \
+      echo "npm install failed on attempt ${attempt}; retrying."; \
     fi; \
     npm cache clean --force || true; \
     rm -rf ./node_modules; \
     if [ "$attempt" -eq 3 ]; then \
-      echo "ERROR: npm ci failed after 3 attempts or next binary was not generated."; \
+      echo "ERROR: npm install failed after 3 attempts or next binary was not generated."; \
       exit 1; \
     fi; \
     sleep 5; \
