@@ -12,7 +12,6 @@ ARG NPM_STRICT_SSL=false
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm --version && node --version
-RUN npm install -g yarn --prefer-offline || npm install -g yarn
 # Approach 1: If corporate CA is provided (base64-encoded PEM/CRT), trust it in the container.
 # This is the preferred fix for SSL-intercepting proxy environments.
 RUN set -eux; \
@@ -34,9 +33,11 @@ RUN set -eux; \
   yarn config set registry "${NPM_REGISTRY}"; \
   # Approach 3 (last resort for SSL MITM environments): disable strict SSL for npm only.
   npm config set strict-ssl "${NPM_STRICT_SSL}"; \
-  yarn config set strict-ssl "${NPM_STRICT_SSL}"; \
-  # Yarn is used instead of npm install/npm ci because npm repeatedly crashes in this proxy environment
-  # with "Exit handler never called!" after long-lived connection interruptions.
+  yarn config set strict-ssl "${NPM_STRICT_SSL}"
+RUN npm install -g yarn --prefer-offline || npm install -g yarn
+# Yarn is used instead of npm install/npm ci because npm repeatedly crashes in this proxy environment
+# with "Exit handler never called!" after long-lived connection interruptions.
+RUN set -eux; \
   if [ ! -f yarn.lock ] && [ -f package-lock.json ]; then \
     yarn import; \
   fi
