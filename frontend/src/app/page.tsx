@@ -229,8 +229,8 @@ function BrandWordmark({
 }
 
 function CompanyLogo({ compact = false }: { compact?: boolean }) {
-  const width = compact ? 86 : 112;
-  const height = compact ? 30 : 40;
+  const width = compact ? 112 : 148;
+  const height = compact ? 40 : 52;
 
   return (
     <img
@@ -238,7 +238,7 @@ function CompanyLogo({ compact = false }: { compact?: boolean }) {
       alt="Aroha Technologies logo"
       width={width}
       height={height}
-      className="h-auto w-auto shrink-0 object-contain"
+      className="h-auto w-auto shrink-0 object-contain mix-blend-multiply dark:mix-blend-screen"
     />
   );
 }
@@ -978,34 +978,34 @@ export default function HomePage() {
         </main>
 
         {/* Footer */}
-        <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.9),rgba(237,241,246,0.78))] px-4 py-4 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.9),rgba(18,32,52,0.76))] sm:px-6 lg:px-8">
+        <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-4 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.94),rgba(18,32,52,0.88))] sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="flex flex-col gap-4 overflow-hidden rounded-[2rem] border-[8px] border-white/80 bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_58%,#67b3df_100%)] px-6 py-5 text-white shadow-[0_26px_90px_-38px_rgba(31,95,168,0.58)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_30px_100px_-40px_rgba(31,95,168,0.68)] dark:border-white/12 dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_58%,#2d7eb2_100%)] lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-col gap-3 text-center lg:flex-row lg:items-center lg:text-left">
+            <div className="grid gap-5 overflow-hidden rounded-2xl border border-white/75 bg-white/72 px-6 py-5 text-[#1f3340] shadow-[0_22px_70px_-42px_rgba(31,95,168,0.34)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_26px_80px_-44px_rgba(31,95,168,0.42)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100 lg:grid-cols-[1fr_auto] lg:items-center">
+              <div className="flex flex-col gap-3 text-left lg:flex-row lg:items-center">
                 <ApplicationLogo />
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/72">Aroha</p>
-                  <p className="bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)] bg-clip-text text-base font-bold text-transparent">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Aroha Intelligent Platform</p>
+                  <p className="bg-[linear-gradient(135deg,#234e9e_0%,#2f5fa8_48%,#4cb8f0_100%)] bg-clip-text text-base font-bold text-transparent dark:bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]">
                     Intelligent Data Assistant
                   </p>
-                  <p className="mt-1 text-sm font-medium text-slate-300">
+                  <p className="mt-1 text-sm font-medium text-muted-foreground">
                     AI-guided dataset understanding, analysis, and predictive modeling.
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-center gap-2 text-center text-sm font-medium text-slate-300 lg:items-end lg:text-right">
-                <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" className="rounded-md bg-white/92 px-3 py-2 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white" aria-label="Open Aroha Technologies website">
-                  <CompanyLogo compact />
-                </a>
+              <div className="flex flex-col items-start gap-1.5 text-left text-sm font-semibold text-muted-foreground lg:min-w-[360px]">
                 <p>
-                  <span className="text-slate-400">HR:</span>{' '}
-                  <a className="text-cyan-300 transition-colors hover:text-cyan-200" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a>
+                  <span className="text-foreground">Location:</span> Bangalore
                 </p>
                 <p>
-                  <span className="text-slate-400">Phone:</span>{' '}
-                  <a className="text-cyan-300 transition-colors hover:text-cyan-200" href="tel:+919886228615">+91 9886228615</a>
+                  <span className="text-foreground">Contact:</span>{' '}
+                  <a className="text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a>
                 </p>
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Bangalore | Aroha Technologies</p>
+                <p>
+                  <span className="text-foreground">Phone:</span>{' '}
+                  <a className="text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="tel:+919886228615">+91 9886228615</a>
+                </p>
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Bangalore | Aroha Technologies</p>
               </div>
             </div>
           </div>

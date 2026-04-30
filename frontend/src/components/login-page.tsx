@@ -28,6 +28,10 @@ const initialForm = {
   confirmPassword: '',
 };
 
+const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
+const AROHA_CONTACT_URL = 'https://aroha.co.in/contact-us/';
+const ANALYTICS_VIDEO_URL = 'https://assets.mixkit.co/videos/preview/mixkit-business-people-analyzing-marketing-data-46685-large.mp4';
+
 export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
   const { toast } = useToast();
   const [mode, setMode] = React.useState<AuthMode>('login');
@@ -119,7 +123,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
   }, [showSuccess]);
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_55%,#67b3df_100%)] dark:bg-[linear-gradient(135deg,#0f1d30_0%,#1b4778_56%,#2d7eb2_100%)]">
+    <div className="relative min-h-screen overflow-hidden bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_55%,#67b3df_100%)] [font-family:'Trebuchet_MS',Inter,ui-sans-serif,system-ui,sans-serif] dark:bg-[linear-gradient(135deg,#0f1d30_0%,#1b4778_56%,#2d7eb2_100%)]">
       <AnimatePresence>
         {isSubmitting ? (
           <motion.div
@@ -156,77 +160,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       </div>
 
       <div className="relative mx-auto flex min-h-screen w-full max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
-        <div className="relative grid w-full overflow-hidden rounded-[2rem] border-[10px] border-white/88 bg-[#edf1f6] shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#122034] lg:grid-cols-[1fr_0.92fr]">
-          <section className="group relative min-h-[560px] overflow-hidden border-b border-white/25 lg:border-b-0 lg:border-r lg:border-r-white/30">
-            <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1400&q=80')] bg-cover bg-center" />
-            <div className="absolute inset-0 bg-[linear-gradient(120deg,rgba(31,79,155,0.84)_0%,rgba(29,120,212,0.74)_46%,rgba(76,184,240,0.58)_100%)]" />
-            <motion.div
-              className="pointer-events-none absolute -inset-y-8 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.18)_50%,transparent_100%)]"
-              animate={{ x: ['0%', '300%'] }}
-              transition={{ duration: 7.5, repeat: Infinity, ease: 'linear' }}
-            />
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_16%,rgba(255,255,255,0.24),transparent_40%),radial-gradient(circle_at_78%_84%,rgba(255,255,255,0.16),transparent_36%)]" />
-            <div className="relative z-10 flex h-full flex-col justify-between p-8 text-white sm:p-10 lg:p-12">
-              <div>
-                <motion.div
-                  whileHover={{ x: 3 }}
-                  transition={{ type: 'spring', stiffness: 220, damping: 18 }}
-                  className="mb-8 flex items-center gap-3"
-                >
-                  <motion.a
-                    href="https://aroha.co.in/"
-                    target="_blank"
-                    rel="noreferrer"
-                    whileHover={{ scale: 1.08, rotate: -2 }}
-                    transition={{ type: 'spring', stiffness: 240, damping: 16 }}
-                    className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-md border border-white/60 bg-white/95 p-1.5 shadow-[0_10px_22px_-12px_rgba(15,23,42,0.7)] transition-all duration-300 group-hover:shadow-[0_12px_28px_-10px_rgba(255,255,255,0.45)]"
-                  >
-                    <img
-                      src={logoSrc}
-                      alt="Aroha Technologies Company Logo"
-                      className="h-full w-full object-contain"
-                    />
-                  </motion.a>
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">Aroha Intelligent Platform</p>
-                    <p className="text-lg font-semibold">Intelligent Data Assistant</p>
-                  </div>
-                </motion.div>
-                <motion.p
-                  className="max-w-xl text-4xl font-light leading-tight tracking-tight sm:text-5xl"
-                  whileHover={{ scale: 1.01 }}
-                  transition={{ duration: 0.25 }}
-                >
-                  Insight-driven data analysis for modern teams
-                </motion.p>
-                <p className="mt-5 max-w-lg text-base leading-7 text-white/92">
-                  A unified application for data upload, profiling, exploratory analysis, forecasting, and model-driven business insights.
-                </p>
-              </div>
-
-              <motion.div
-                whileHover={{ y: -2 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-3 rounded-xl border border-white/25 bg-white/12 p-4 backdrop-blur-md transition-all duration-300 hover:border-white/40 hover:bg-white/16 hover:shadow-[0_14px_36px_-18px_rgba(15,23,42,0.5)]"
-              >
-                <p className="flex items-center gap-2 text-sm sm:text-base"><MapPin className="h-4 w-4 transition-transform duration-300 group-hover:scale-110" /> Location: Bangalore</p>
-                <p className="flex items-center gap-2 text-sm sm:text-base">
-                  <Mail className="h-4 w-4" />
-                  Contact Us:
-                  <a
-                    href="https://aroha.co.in/contact-us/"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-semibold underline underline-offset-4 hover:opacity-90"
-                  >
-                    https://aroha.co.in/contact-us/
-                  </a>
-                </p>
-                <p className="flex items-center gap-2 text-sm sm:text-base"><Phone className="h-4 w-4" /> Phone: +91 9886228615</p>
-              </motion.div>
-            </div>
-          </section>
-
+        <div className="relative grid w-full overflow-hidden rounded-[2rem] border-[10px] border-white/88 bg-[#edf1f6] shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#122034] lg:grid-cols-[0.92fr_1fr]">
           <section className="flex items-center justify-center bg-[#edf1f6] p-6 dark:bg-[#122034] sm:p-8 lg:p-10">
             <motion.div
               initial={{ opacity: 0, y: 14 }}
@@ -299,72 +233,100 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                     {mode === 'register' && (
                       <div className="space-y-1.5">
                         <Label htmlFor="username" className="text-sm text-[#1f3340] dark:text-slate-100">User Name</Label>
-                        <Input
-                          id="username"
-                          type="text"
-                          autoComplete="username"
-                          placeholder="Enter your user name"
-                          value={form.username}
-                          onChange={updateField('username')}
-                          disabled={isSubmitting}
-                          required
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
-                        />
+                        <div className="group relative overflow-hidden rounded-sm p-[1px]">
+                          <motion.span
+                            className="pointer-events-none absolute inset-y-[-80%] left-[-45%] w-1/2 rotate-12 bg-[linear-gradient(90deg,transparent_0%,rgba(76,184,240,0.9)_48%,rgba(255,255,255,0.92)_52%,transparent_100%)] opacity-0 blur-sm transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"
+                            animate={{ x: ['0%', '330%'] }}
+                            transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
+                          />
+                          <Input
+                            id="username"
+                            type="text"
+                            autoComplete="username"
+                            placeholder="Enter your user name"
+                            value={form.username}
+                            onChange={updateField('username')}
+                            disabled={isSubmitting}
+                            required
+                            className="relative z-10 h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
+                          />
+                        </div>
                       </div>
                     )}
 
                     <div className="space-y-1.5">
                       <Label htmlFor="email" className="text-sm text-[#1f3340] dark:text-slate-100">User Name / ID</Label>
-                      <div className="relative">
-                        <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          id="email"
-                          type="email"
-                          autoComplete="email"
-                          placeholder="name@company.com"
-                          value={form.email}
-                          onChange={updateField('email')}
-                          disabled={isSubmitting}
-                          required
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
+                      <div className="group relative overflow-hidden rounded-sm p-[1px]">
+                        <motion.span
+                          className="pointer-events-none absolute inset-y-[-80%] left-[-45%] w-1/2 rotate-12 bg-[linear-gradient(90deg,transparent_0%,rgba(76,184,240,0.9)_48%,rgba(255,255,255,0.92)_52%,transparent_100%)] opacity-0 blur-sm transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"
+                          animate={{ x: ['0%', '330%'] }}
+                          transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
                         />
+                        <div className="relative z-10">
+                          <User className="pointer-events-none absolute left-3 top-1/2 z-20 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <Input
+                            id="email"
+                            type="email"
+                            autoComplete="email"
+                            placeholder="name@company.com"
+                            value={form.email}
+                            onChange={updateField('email')}
+                            disabled={isSubmitting}
+                            required
+                            className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
+                          />
+                        </div>
                       </div>
                     </div>
 
                     <div className="space-y-1.5">
                       <Label htmlFor="password" className="text-sm text-[#1f3340] dark:text-slate-100">Password</Label>
-                      <div className="relative">
-                        <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          id="password"
-                          type="password"
-                          autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-                          placeholder="Enter your password"
-                          value={form.password}
-                          onChange={updateField('password')}
-                          disabled={isSubmitting}
-                          required
-                          minLength={8}
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
+                      <div className="group relative overflow-hidden rounded-sm p-[1px]">
+                        <motion.span
+                          className="pointer-events-none absolute inset-y-[-80%] left-[-45%] w-1/2 rotate-12 bg-[linear-gradient(90deg,transparent_0%,rgba(76,184,240,0.9)_48%,rgba(255,255,255,0.92)_52%,transparent_100%)] opacity-0 blur-sm transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"
+                          animate={{ x: ['0%', '330%'] }}
+                          transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
                         />
+                        <div className="relative z-10">
+                          <Lock className="pointer-events-none absolute left-3 top-1/2 z-20 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <Input
+                            id="password"
+                            type="password"
+                            autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                            placeholder="Enter your password"
+                            value={form.password}
+                            onChange={updateField('password')}
+                            disabled={isSubmitting}
+                            required
+                            minLength={8}
+                            className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
+                          />
+                        </div>
                       </div>
                     </div>
 
                     {mode === 'register' && (
                       <div className="space-y-1.5">
                         <Label htmlFor="confirm-password" className="text-sm text-[#1f3340] dark:text-slate-100">Confirm Password</Label>
-                        <Input
-                          id="confirm-password"
-                          type="password"
-                          autoComplete="new-password"
-                          placeholder="Re-enter password"
-                          value={form.confirmPassword}
-                          onChange={updateField('confirmPassword')}
-                          disabled={isSubmitting}
-                          required
-                          minLength={8}
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
-                        />
+                        <div className="group relative overflow-hidden rounded-sm p-[1px]">
+                          <motion.span
+                            className="pointer-events-none absolute inset-y-[-80%] left-[-45%] w-1/2 rotate-12 bg-[linear-gradient(90deg,transparent_0%,rgba(76,184,240,0.9)_48%,rgba(255,255,255,0.92)_52%,transparent_100%)] opacity-0 blur-sm transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"
+                            animate={{ x: ['0%', '330%'] }}
+                            transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
+                          />
+                          <Input
+                            id="confirm-password"
+                            type="password"
+                            autoComplete="new-password"
+                            placeholder="Re-enter password"
+                            value={form.confirmPassword}
+                            onChange={updateField('confirmPassword')}
+                            disabled={isSubmitting}
+                            required
+                            minLength={8}
+                            className="relative z-10 h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
+                          />
+                        </div>
                       </div>
                     )}
 
@@ -411,6 +373,88 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 </AnimatePresence>
               </div>
             </motion.div>
+          </section>
+
+          <section className="group relative min-h-[560px] overflow-hidden border-t border-white/25 lg:border-l lg:border-t-0 lg:border-l-white/30">
+            <video
+              className="absolute inset-0 h-full w-full object-cover"
+              src={ANALYTICS_VIDEO_URL}
+              poster="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1400&q=80"
+              autoPlay
+              muted
+              loop
+              playsInline
+              preload="metadata"
+            />
+            <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(17,57,118,0.88)_0%,rgba(29,120,212,0.72)_48%,rgba(76,184,240,0.52)_100%)]" />
+            <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,18,42,0.16)_0%,rgba(5,18,42,0.36)_100%)]" />
+            <motion.div
+              className="pointer-events-none absolute -inset-y-8 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.18)_50%,transparent_100%)]"
+              animate={{ x: ['0%', '300%'] }}
+              transition={{ duration: 7.5, repeat: Infinity, ease: 'linear' }}
+            />
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_16%,rgba(255,255,255,0.24),transparent_40%),radial-gradient(circle_at_78%_84%,rgba(255,255,255,0.16),transparent_36%)]" />
+
+            <div className="relative z-10 flex h-full flex-col justify-between p-8 text-white sm:p-10 lg:p-12">
+              <div>
+                <motion.div
+                  whileHover={{ x: 3 }}
+                  transition={{ type: 'spring', stiffness: 220, damping: 18 }}
+                  className="mb-8 flex items-center gap-4"
+                >
+                  <motion.a
+                    href={AROHA_WEBSITE_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    whileHover={{ scale: 1.07, rotate: -1 }}
+                    transition={{ type: 'spring', stiffness: 240, damping: 16 }}
+                    className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-xl border border-white/35 bg-transparent p-0 shadow-[0_18px_40px_-22px_rgba(15,23,42,0.55)] transition-all duration-300 group-hover:shadow-[0_16px_42px_-18px_rgba(255,255,255,0.35)]"
+                  >
+                    <img
+                      src={logoSrc}
+                      alt="Aroha Technologies Company Logo"
+                      className="h-full w-full object-contain mix-blend-multiply drop-shadow-[0_10px_24px_rgba(0,0,0,0.25)] dark:mix-blend-screen"
+                    />
+                  </motion.a>
+                  <div>
+                    <p className="text-sm font-black uppercase tracking-[0.24em] text-white">Aroha Intelligent Platform</p>
+                    <p className="mt-1 text-xl font-black uppercase tracking-[0.12em] text-white">Intelligent Data Assistant</p>
+                  </div>
+                </motion.div>
+
+                <motion.p
+                  className="max-w-xl text-4xl font-black uppercase leading-tight text-white drop-shadow-[0_8px_22px_rgba(8,24,58,0.34)] sm:text-5xl"
+                  whileHover={{ scale: 1.01 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  Insight-driven data analysis for modern teams
+                </motion.p>
+                <p className="mt-5 max-w-lg text-base font-bold leading-7 text-white/92">
+                  A unified application for data upload, profiling, exploratory analysis, forecasting, and model-driven business insights.
+                </p>
+              </div>
+
+              <motion.div
+                whileHover={{ y: -2 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-3 rounded-xl border border-white/28 bg-white/14 p-4 font-bold backdrop-blur-md transition-all duration-300 hover:border-white/42 hover:bg-white/18 hover:shadow-[0_14px_36px_-18px_rgba(15,23,42,0.5)]"
+              >
+                <p className="flex items-center gap-2 text-sm sm:text-base"><MapPin className="h-4 w-4 transition-transform duration-300 group-hover:scale-110" /> Location: Bangalore</p>
+                <p className="flex items-center gap-2 text-sm sm:text-base">
+                  <Mail className="h-4 w-4" />
+                  Contact Us:
+                  <a
+                    href={AROHA_CONTACT_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-black underline underline-offset-4 hover:opacity-90"
+                  >
+                    Contact Page
+                  </a>
+                </p>
+                <p className="flex items-center gap-2 text-sm sm:text-base"><Phone className="h-4 w-4" /> Phone: +91 9886228615</p>
+              </motion.div>
+            </div>
           </section>
         </div>
       </div>
