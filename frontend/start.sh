@@ -1,12 +1,11 @@
 #!/bin/sh
 
 # If the standalone server exists, start it.
-if [ -f "/app/.next/standalone/server.js" ]; then
+if [ -f "/app/server.js" ]; then
     echo "Starting standalone Next.js server..."
-    # Next.js standalone server uses PORT environment variable
     export PORT=3000
     export HOSTNAME="0.0.0.0"
-    node /app/.next/standalone/server.js
+    node /app/server.js
 else
     echo "Standalone server not found, falling back to mock server."
     node -e "
