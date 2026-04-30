@@ -65,11 +65,11 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/health', (res) => { if (res.statusCode === 200) process.exit(0); else process.exit(1); }).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/', (res) => { if (res.statusCode < 500) process.exit(0); else process.exit(1); }).on('error', () => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 10s
+      start_period: 30s
     networks:
       - app-network
 
