@@ -26,7 +26,7 @@ import pandas as pd
 import polars as pl
 import pyarrow.parquet as pq
 import psycopg
-from fastapi import APIRouter, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -74,6 +74,8 @@ ACTIVITY_DB_CONNECT_TIMEOUT = int(os.environ.get('ACTIVITY_DB_CONNECT_TIMEOUT', 
 TRAINING_N_JOBS = 1
 ACTIVITY_DB_AVAILABLE = False
 EMAIL_REGEX = re.compile(r'^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$', re.IGNORECASE)
+PROFILE_IMAGE_MAX_BYTES = 1_500_000
+PROFILE_IMAGE_CONTENT_TYPES = {'image/png', 'image/jpeg', 'image/webp', 'image/gif'}
 PASSWORD_HASH_ITERATIONS = 600_000
 SESSION_COOKIE_NAME = 'ai_eda_session'
 SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7
@@ -187,6 +189,7 @@ def init_activity_db() -> None:
                 username TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT,
+                profile_image_data_url TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_login_at TEXT NOT NULL
@@ -197,6 +200,10 @@ def init_activity_db() -> None:
             connection.execute('ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT')
         except Exception:
             logger.exception('Failed to ensure password_hash column on app_users.')
+        try:
+            connection.execute('ALTER TABLE app_users ADD COLUMN IF NOT EXISTS profile_image_data_url TEXT')
+        except Exception:
+            logger.exception('Failed to ensure profile_image_data_url column on app_users.')
         connection.execute('CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users (email)')
         connection.execute('CREATE INDEX IF NOT EXISTS idx_app_users_last_login_at ON app_users (last_login_at DESC)')
         connection.execute(
@@ -415,11 +422,12 @@ def verify_password(password: str, encoded_hash: str | None) -> bool:
     return secrets.compare_digest(candidate_hash, expected_hash)
 
 
-def build_user_payload(row: dict[str, Any]) -> dict[str, str]:
+def build_user_payload(row: dict[str, Any]) -> dict[str, str | None]:
     return {
         'userId': row['user_id'],
         'username': row['username'],
         'email': row['email'],
+        'profileImageDataUrl': row.get('profile_image_data_url'),
         'createdAt': row['created_at'],
         'updatedAt': row['updated_at'],
         'lastLoginAt': row['last_login_at'],
@@ -430,7 +438,7 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
     with get_activity_connection() as connection:
         return connection.execute(
             '''
-            SELECT user_id, username, email, password_hash, created_at, updated_at, last_login_at
+            SELECT user_id, username, email, password_hash, profile_image_data_url, created_at, updated_at, last_login_at
             FROM app_users
             WHERE email = %s
             ''',
@@ -530,6 +538,7 @@ def get_authenticated_user(request: Request) -> dict[str, Any]:
                 u.user_id,
                 u.username,
                 u.email,
+                u.profile_image_data_url,
                 u.created_at,
                 u.updated_at,
                 u.last_login_at,
@@ -550,7 +559,7 @@ def get_authenticated_user(request: Request) -> dict[str, Any]:
     return row
 
 
-def create_app_user(*, username: str, email: str, password: str) -> dict[str, str]:
+def create_app_user(*, username: str, email: str, password: str) -> dict[str, str | None]:
     normalized_username, normalized_email = validate_login_payload(username, email)
     validated_password = validate_password(password)
 
@@ -572,7 +581,7 @@ def create_app_user(*, username: str, email: str, password: str) -> dict[str, st
                 last_login_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING user_id, username, email, created_at, updated_at, last_login_at
+            RETURNING user_id, username, email, profile_image_data_url, created_at, updated_at, last_login_at
             ''',
             (
                 user_id,
@@ -591,7 +600,7 @@ def create_app_user(*, username: str, email: str, password: str) -> dict[str, st
     return build_user_payload(row)
 
 
-def authenticate_user(*, email: str, password: str) -> dict[str, str]:
+def authenticate_user(*, email: str, password: str) -> dict[str, str | None]:
     normalized_email = normalize_email(email)
     validated_password = validate_password(password)
     row = get_user_by_email(normalized_email)
@@ -606,7 +615,7 @@ def authenticate_user(*, email: str, password: str) -> dict[str, str]:
             UPDATE app_users
             SET updated_at = %s, last_login_at = %s
             WHERE email = %s
-            RETURNING user_id, username, email, created_at, updated_at, last_login_at
+            RETURNING user_id, username, email, profile_image_data_url, created_at, updated_at, last_login_at
             ''',
             (timestamp, timestamp, normalized_email),
         ).fetchone()
@@ -615,6 +624,68 @@ def authenticate_user(*, email: str, password: str) -> dict[str, str]:
         raise HTTPException(status_code=500, detail='Failed to load authenticated user.')
 
     return build_user_payload(updated_row)
+
+
+async def build_profile_image_data_url(profile_image: UploadFile | None) -> str | None:
+    if profile_image is None:
+        return None
+
+    content_type = (profile_image.content_type or '').lower()
+    if content_type not in PROFILE_IMAGE_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail='Profile image must be a PNG, JPEG, WEBP, or GIF file.')
+
+    image_bytes = await profile_image.read()
+    if not image_bytes:
+        return None
+    if len(image_bytes) > PROFILE_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail='Profile image must be 1.5 MB or smaller.')
+
+    encoded = base64.b64encode(image_bytes).decode('ascii')
+    return f'data:{content_type};base64,{encoded}'
+
+
+async def update_authenticated_user_profile(
+    *,
+    request: Request,
+    username: str,
+    profile_image: UploadFile | None,
+) -> dict[str, str | None]:
+    current_user = get_authenticated_user(request)
+    normalized_username = normalize_username(username)
+    if len(normalized_username) < 3:
+        raise HTTPException(status_code=400, detail='Name must be at least 3 characters long.')
+    if len(normalized_username) > 80:
+        raise HTTPException(status_code=400, detail='Name must be 80 characters or fewer.')
+
+    profile_image_data_url = await build_profile_image_data_url(profile_image)
+    timestamp = utc_now_iso()
+
+    with get_activity_connection() as connection:
+        if profile_image_data_url is None:
+            row = connection.execute(
+                '''
+                UPDATE app_users
+                SET username = %s, updated_at = %s
+                WHERE user_id = %s
+                RETURNING user_id, username, email, profile_image_data_url, created_at, updated_at, last_login_at
+                ''',
+                (normalized_username, timestamp, current_user['user_id']),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                '''
+                UPDATE app_users
+                SET username = %s, profile_image_data_url = %s, updated_at = %s
+                WHERE user_id = %s
+                RETURNING user_id, username, email, profile_image_data_url, created_at, updated_at, last_login_at
+                ''',
+                (normalized_username, profile_image_data_url, timestamp, current_user['user_id']),
+            ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=500, detail='Failed to update user profile.')
+
+    return build_user_payload(row)
 
 
 def ensure_session_state(session_id: str) -> dict[str, Any]:
@@ -5747,6 +5818,40 @@ def auth_me(request: Request) -> JSONResponse:
         logger.exception('Auth me failed.')
         raise HTTPException(status_code=500, detail=f'Failed to resolve current session: {error}') from error
 
+    return JSONResponse(content={'user': user})
+
+
+@router.put('/auth/profile')
+async def update_user_profile(
+    request: Request,
+    username: str = Form(...),
+    profile_image: UploadFile | None = File(default=None),
+) -> JSONResponse:
+    try:
+        user = await update_authenticated_user_profile(
+            request=request,
+            username=username,
+            profile_image=profile_image,
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Profile update failed.')
+        raise HTTPException(status_code=500, detail=f'Failed to update profile: {error}') from error
+
+    record_activity(
+        request=request,
+        action='user_profile_update',
+        status='success',
+        activity_type='auth',
+        detail=f'Updated profile for {user["email"]}.',
+        metadata={
+            'user_id': user['userId'],
+            'email': user['email'],
+            'username': user['username'],
+            'profile_image_updated': profile_image is not None,
+        },
+    )
     return JSONResponse(content={'user': user})
 
 

@@ -119,7 +119,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
   }, [showSuccess]);
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_55%,#67b3df_100%)]">
+    <div className="relative min-h-screen overflow-hidden bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_55%,#67b3df_100%)] dark:bg-[linear-gradient(135deg,#0f1d30_0%,#1b4778_56%,#2d7eb2_100%)]">
       <AnimatePresence>
         {isSubmitting ? (
           <motion.div
@@ -140,8 +140,8 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       </AnimatePresence>
 
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute left-[-8%] top-[12%] h-80 w-80 rounded-full bg-blue-200/18 blur-3xl" />
-        <div className="absolute right-[-10%] bottom-[8%] h-96 w-96 rounded-full bg-blue-900/20 blur-3xl" />
+        <div className="absolute left-[-8%] top-[12%] h-80 w-80 rounded-full bg-blue-200/18 blur-3xl dark:bg-blue-200/10" />
+        <div className="absolute right-[-10%] bottom-[8%] h-96 w-96 rounded-full bg-blue-900/20 blur-3xl dark:bg-black/24" />
         <div className="absolute inset-0 bg-[linear-gradient(130deg,rgba(255,255,255,0.14)_0%,rgba(255,255,255,0.03)_44%,rgba(0,0,0,0.2)_100%)]" />
         <motion.div
           className="absolute left-[10%] top-[14%] h-20 w-20 rounded-full border border-white/20"
@@ -156,7 +156,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       </div>
 
       <div className="relative mx-auto flex min-h-screen w-full max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
-        <div className="relative grid w-full overflow-hidden rounded-[2rem] border-[10px] border-white/88 bg-[#edf1f6] shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] lg:grid-cols-[1fr_0.92fr]">
+        <div className="relative grid w-full overflow-hidden rounded-[2rem] border-[10px] border-white/88 bg-[#edf1f6] shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#122034] lg:grid-cols-[1fr_0.92fr]">
           <section className="group relative min-h-[560px] overflow-hidden border-b border-white/25 lg:border-b-0 lg:border-r lg:border-r-white/30">
             <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1400&q=80')] bg-cover bg-center" />
             <div className="absolute inset-0 bg-[linear-gradient(120deg,rgba(31,79,155,0.84)_0%,rgba(29,120,212,0.74)_46%,rgba(76,184,240,0.58)_100%)]" />
@@ -227,12 +227,12 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
             </div>
           </section>
 
-          <section className="flex items-center justify-center bg-[#edf1f6] p-6 sm:p-8 lg:p-10">
+          <section className="flex items-center justify-center bg-[#edf1f6] p-6 dark:bg-[#122034] sm:p-8 lg:p-10">
             <motion.div
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.45, ease: 'easeOut' }}
-              className="relative h-[560px] w-full max-w-md overflow-hidden rounded-2xl border border-white/75 bg-white/70 p-6 shadow-[0_24px_70px_-34px_rgba(15,23,42,0.32)] backdrop-blur-2xl sm:p-8"
+              className="relative h-[560px] w-full max-w-md overflow-hidden rounded-2xl border border-white/75 bg-white/70 p-6 shadow-[0_24px_70px_-34px_rgba(15,23,42,0.32)] backdrop-blur-2xl dark:border-white/10 dark:bg-white/8 dark:shadow-[0_24px_80px_-34px_rgba(1,8,18,0.78)] sm:p-8"
             >
               <motion.div
                 className="pointer-events-none absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(56,189,248,0.08)_46%,transparent_70%)]"
@@ -241,8 +241,8 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               />
               <div className="mb-5 flex items-center justify-between">
                 <div>
-                  <p className="text-4xl font-bold leading-none text-[#234e9e]">{mode === 'register' ? 'Sign Up' : 'Login'}</p>
-                  <p className="mt-2 text-sm text-slate-600">Intelligent Data Assistant</p>
+                  <p className="text-4xl font-bold leading-none text-[#234e9e] dark:text-[#d7ebff]">{mode === 'register' ? 'Sign Up' : 'Login'}</p>
+                  <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Intelligent Data Assistant</p>
                 </div>
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[linear-gradient(135deg,#1d78d4_0%,#4cb8f0_100%)] text-white shadow-[0_8px_24px_-12px_rgba(37,99,235,0.65)]">
                   <ArrowRight className="h-4 w-4" />
@@ -264,7 +264,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                     <AnimatePresence mode="wait">
                       {errorMessage ? (
                         <motion.div key={`error-${mode}`} initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }}>
-                          <Alert variant="destructive" className="border-red-300/80 bg-red-50/85">
+                          <Alert variant="destructive" className="border-red-300/80 bg-red-50/85 dark:border-red-400/30 dark:bg-red-950/28">
                             <AlertCircle />
                             <AlertTitle>{mode === 'register' ? 'Registration error' : 'Login error'}</AlertTitle>
                             <AlertDescription>{errorMessage}</AlertDescription>
@@ -276,7 +276,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                     <AnimatePresence mode="wait">
                       {infoMessage ? (
                         <motion.div key={`info-${mode}`} initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }}>
-                          <Alert className="border-blue-300/60 bg-blue-50/85 text-blue-950">
+                          <Alert className="border-blue-300/60 bg-blue-50/85 text-blue-950 dark:border-blue-300/25 dark:bg-blue-950/28 dark:text-blue-100">
                             <AlertCircle />
                             <AlertTitle>Password help</AlertTitle>
                             <AlertDescription>{infoMessage}</AlertDescription>
@@ -287,8 +287,8 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
                     <AnimatePresence>
                       {showSuccess ? (
-                        <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2">
-                          <div className="flex items-center gap-2 text-emerald-900">
+                        <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 dark:border-emerald-300/30 dark:bg-emerald-950/28">
+                          <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-100">
                             <CheckCircle2 className="h-4 w-4" />
                             <p className="text-sm font-medium">{mode === 'register' ? 'Account created successfully.' : 'Login successful. Opening workspace...'}</p>
                           </div>
@@ -298,7 +298,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
                     {mode === 'register' && (
                       <div className="space-y-1.5">
-                        <Label htmlFor="username" className="text-sm text-[#1f3340]">User Name</Label>
+                        <Label htmlFor="username" className="text-sm text-[#1f3340] dark:text-slate-100">User Name</Label>
                         <Input
                           id="username"
                           type="text"
@@ -308,13 +308,13 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                           onChange={updateField('username')}
                           disabled={isSubmitting}
                           required
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa]"
+                          className="h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
                         />
                       </div>
                     )}
 
                     <div className="space-y-1.5">
-                      <Label htmlFor="email" className="text-sm text-[#1f3340]">User Name / ID</Label>
+                      <Label htmlFor="email" className="text-sm text-[#1f3340] dark:text-slate-100">User Name / ID</Label>
                       <div className="relative">
                         <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                         <Input
@@ -326,13 +326,13 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                           onChange={updateField('email')}
                           disabled={isSubmitting}
                           required
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa]"
+                          className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
                         />
                       </div>
                     </div>
 
                     <div className="space-y-1.5">
-                      <Label htmlFor="password" className="text-sm text-[#1f3340]">Password</Label>
+                      <Label htmlFor="password" className="text-sm text-[#1f3340] dark:text-slate-100">Password</Label>
                       <div className="relative">
                         <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                         <Input
@@ -345,14 +345,14 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                           disabled={isSubmitting}
                           required
                           minLength={8}
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa]"
+                          className="h-11 rounded-sm border-[#cad5e4] bg-white pl-10 text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
                         />
                       </div>
                     </div>
 
                     {mode === 'register' && (
                       <div className="space-y-1.5">
-                        <Label htmlFor="confirm-password" className="text-sm text-[#1f3340]">Confirm Password</Label>
+                        <Label htmlFor="confirm-password" className="text-sm text-[#1f3340] dark:text-slate-100">Confirm Password</Label>
                         <Input
                           id="confirm-password"
                           type="password"
@@ -363,15 +363,15 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                           disabled={isSubmitting}
                           required
                           minLength={8}
-                          className="h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa]"
+                          className="h-11 rounded-sm border-[#cad5e4] bg-white text-[#1a2f3a] caret-[#1d78d4] placeholder:text-[#8a96a8] focus-visible:ring-[#60a5fa] dark:border-white/15 dark:bg-[#0f1d30]/80 dark:text-slate-50 dark:placeholder:text-slate-400"
                         />
                       </div>
                     )}
 
                     {mode === 'login' && (
-                      <div className="flex items-center justify-between text-xs text-slate-600">
+                      <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
                         <span>Stay signed in</span>
-                        <button type="button" onClick={handleForgotPassword} className="font-medium text-[#2f5fa8] hover:underline">
+                        <button type="button" onClick={handleForgotPassword} className="font-medium text-[#2f5fa8] hover:underline dark:text-[#b9ddff]">
                           Forgot password?
                         </button>
                       </div>
@@ -393,16 +393,16 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                     </Button>
 
                     {mode === 'login' ? (
-                      <p className="text-center text-xs text-slate-600">
+                      <p className="text-center text-xs text-slate-600 dark:text-slate-300">
                         New here?{' '}
-                        <button type="button" onClick={() => switchMode('register')} className="font-semibold text-[#2f5fa8] hover:underline">
+                        <button type="button" onClick={() => switchMode('register')} className="font-semibold text-[#2f5fa8] hover:underline dark:text-[#b9ddff]">
                           Sign up
                         </button>
                       </p>
                     ) : (
-                      <p className="text-center text-xs text-slate-600">
+                      <p className="text-center text-xs text-slate-600 dark:text-slate-300">
                         Already have an account?{' '}
-                        <button type="button" onClick={() => switchMode('login')} className="font-semibold text-[#2f5fa8] hover:underline">
+                        <button type="button" onClick={() => switchMode('login')} className="font-semibold text-[#2f5fa8] hover:underline dark:text-[#b9ddff]">
                           Back to Login
                         </button>
                       </p>

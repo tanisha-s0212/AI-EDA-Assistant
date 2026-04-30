@@ -167,6 +167,7 @@ export interface AuthenticatedUser {
   userId: string;
   username: string;
   email: string;
+  profileImageDataUrl?: string | null;
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string;

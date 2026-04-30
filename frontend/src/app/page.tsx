@@ -10,6 +10,10 @@ import StepNavigator from '@/components/step-navigator';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
@@ -31,8 +35,9 @@ import {
   RotateCcw,
   RefreshCw,
   LogOut,
-  UserRound,
-  Mail,
+  Camera,
+  Save,
+  ExternalLink,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -213,8 +218,8 @@ function BrandWordmark({
         <span className={cn(
           'bg-clip-text text-transparent',
           inverted
-            ? 'bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]'
-            : 'bg-[linear-gradient(135deg,#082f49_0%,#0f766e_46%,#0284c7_100%)]'
+            ? 'bg-[linear-gradient(135deg,#ffffff_0%,#e2efff_48%,#b9ddff_100%)]'
+            : 'bg-[linear-gradient(135deg,#234e9e_0%,#2f5fa8_48%,#4cb8f0_100%)]'
         )}>
           Intelligent Data Assistant
         </span>
@@ -244,7 +249,7 @@ function ApplicationLogo({ compact = false }: { compact?: boolean }) {
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] border border-white/12 bg-[linear-gradient(145deg,#08111f_0%,#0f2747_52%,#0b7f8f_100%)] shadow-[0_22px_58px_-30px_rgba(14,116,144,0.5)]',
+        'flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-[0_18px_44px_-28px_rgba(31,95,168,0.55)] ring-1 ring-blue-100/70',
         compact ? 'h-[42px] w-[42px]' : 'h-[54px] w-[54px]'
       )}
     >
@@ -261,16 +266,200 @@ function ApplicationLogo({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function getUserInitials(user?: AuthenticatedUser | null) {
+  const source = user?.username || user?.email || 'User';
+  const parts = source.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return source.slice(0, 2).toUpperCase();
+}
+
+function UserAvatar({ user, className }: { user?: AuthenticatedUser | null; className?: string }) {
+  return (
+    <Avatar className={cn('border border-white/70 bg-white shadow-[0_14px_32px_-22px_rgba(31,95,168,0.55)]', className)}>
+      <AvatarImage src={user?.profileImageDataUrl ?? undefined} alt={user?.username ?? 'User profile'} className="object-cover" />
+      <AvatarFallback className="bg-[linear-gradient(135deg,#2f5fa8_0%,#4cb8f0_100%)] text-xs font-bold text-white">
+        {getUserInitials(user)}
+      </AvatarFallback>
+    </Avatar>
+  );
+}
+
+function UserProfileDialog({
+  open,
+  onOpenChange,
+  currentUser,
+  onProfileUpdated,
+  onLogout,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  currentUser: AuthenticatedUser;
+  onProfileUpdated: (user: AuthenticatedUser) => void;
+  onLogout?: () => void;
+}) {
+  const { toast } = useToast();
+  const [name, setName] = React.useState(currentUser.username);
+  const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [isSaving, setIsSaving] = React.useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setName(currentUser.username);
+    setSelectedFile(null);
+    setPreviewUrl(null);
+  }, [currentUser.username, open]);
+
+  React.useEffect(() => {
+    if (!selectedFile) {
+      setPreviewUrl(null);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(selectedFile);
+    setPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [selectedFile]);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast({
+        title: 'Unsupported image',
+        description: 'Choose a PNG, JPEG, WEBP, or GIF profile image.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setSelectedFile(file);
+  };
+
+  const handleSaveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSaving(true);
+    try {
+      const formData = new FormData();
+      formData.append('username', name.trim());
+      if (selectedFile) {
+        formData.append('profile_image', selectedFile);
+      }
+      const response = await apiClient.put<AuthResponse>('/auth/profile', formData);
+      onProfileUpdated(response.data.user);
+      toast({
+        title: 'Profile updated',
+        description: 'Your profile details were saved successfully.',
+      });
+      onOpenChange(false);
+    } catch (error) {
+      toast({
+        title: 'Profile update failed',
+        description: getApiErrorMessage(error, 'We could not update your profile.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const avatarPreviewUser = {
+    ...currentUser,
+    username: name || currentUser.username,
+    profileImageDataUrl: previewUrl ?? currentUser.profileImageDataUrl,
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="overflow-hidden rounded-[2rem] border-[8px] border-white/80 bg-[#edf1f6] p-0 shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#122034] sm:max-w-2xl">
+        <div className="relative bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_55%,#67b3df_100%)] px-6 py-6 text-white dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)]">
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(130deg,rgba(255,255,255,0.16)_0%,rgba(255,255,255,0.04)_44%,rgba(0,0,0,0.16)_100%)]" />
+          <DialogHeader className="relative gap-2 text-left">
+            <DialogTitle className="flex items-center gap-3 text-2xl font-bold">
+              <UserAvatar user={avatarPreviewUser} className="size-12" />
+              User Profile
+            </DialogTitle>
+            <DialogDescription className="text-white/82">
+              Manage your profile information for the Intelligent Data Assistant workspace.
+            </DialogDescription>
+          </DialogHeader>
+        </div>
+
+        <form onSubmit={handleSaveProfile} className="space-y-5 p-6">
+          <div className="flex flex-col gap-5 rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_20px_56px_-36px_rgba(31,95,168,0.32)] backdrop-blur-xl dark:border-white/10 dark:bg-white/8 sm:flex-row sm:items-center">
+            <div className="relative">
+              <UserAvatar user={avatarPreviewUser} className="size-24" />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full border border-white/80 bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white shadow-[0_14px_32px_-18px_rgba(34,139,64,0.65)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105"
+                aria-label="Upload profile image"
+              >
+                <Camera className="h-4 w-4" />
+              </button>
+              <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={handleFileChange} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Profile Picture</p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Upload a square image for best results. PNG, JPEG, WEBP, and GIF files up to 1.5 MB are stored with your account.
+              </p>
+              <Button type="button" variant="outline" className="mt-3 rounded-sm" onClick={() => fileInputRef.current?.click()}>
+                <Upload className="mr-2 h-4 w-4" />
+                Choose Image
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-4 rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_20px_56px_-36px_rgba(31,95,168,0.28)] backdrop-blur-xl dark:border-white/10 dark:bg-white/8 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="profile-name">Name</Label>
+              <Input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={3} maxLength={80} required className="rounded-sm" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-email">Email ID</Label>
+              <Input id="profile-email" value={currentUser.email} disabled className="rounded-sm opacity-90" />
+            </div>
+            <div className="space-y-1 text-sm">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Account Created</p>
+              <p className="font-medium text-foreground">{formatIndiaDate(currentUser.createdAt)}</p>
+            </div>
+            <div className="space-y-1 text-sm">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Last Login</p>
+              <p className="font-medium text-foreground">{formatActivityTimestamp(currentUser.lastLoginAt)}</p>
+            </div>
+          </div>
+
+          <DialogFooter className="items-center justify-between gap-3 sm:flex-row">
+            <Button type="button" variant="ghost" className="rounded-sm text-muted-foreground" onClick={onLogout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </Button>
+            <Button type="submit" disabled={isSaving} className="rounded-sm bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white">
+              <Save className="mr-2 h-4 w-4" />
+              {isSaving ? 'Saving...' : 'Save Profile'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function SidebarContent({
   onNavigate,
   currentUser,
   onLogout,
+  onProfileUpdated,
 }: {
   onNavigate?: (id: TabId) => void;
   currentUser?: AuthenticatedUser | null;
   onLogout?: () => void;
+  onProfileUpdated?: (user: AuthenticatedUser) => void;
 }) {
   const { activeTab, setActiveTab, rawData, modelTrained, totalRows } = useAppStore();
+  const [profileOpen, setProfileOpen] = React.useState(false);
   const hasDatasetContext = Boolean(rawData?.length || totalRows > 0);
 
   const isTabEnabled = (tabId: TabId) => {
@@ -284,11 +473,15 @@ function SidebarContent({
     <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
-        <div className="flex items-center gap-2.5">
-          <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="transition-transform duration-200 hover:scale-[1.03]">
+        <div className="group rounded-2xl border border-white/55 bg-white/58 p-3 shadow-[0_18px_48px_-34px_rgba(31,95,168,0.35)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/72 dark:border-white/10 dark:bg-white/8 dark:hover:bg-white/12">
+          <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="flex items-center gap-3">
             <CompanyLogo compact />
+            <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
           </a>
-          <BrandWordmark compact />
+          <div className="mt-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Aroha</p>
+            <BrandWordmark compact />
+          </div>
         </div>
       </div>
       <Separator className="opacity-50" />
@@ -356,34 +549,30 @@ function SidebarContent({
       </div>
 
       {/* Footer */}
-      <div className="border-t p-4 sm:p-5">
-        <div className="rounded-[26px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.78),rgba(248,250,252,0.96))] p-4 shadow-[0_18px_50px_-32px_rgba(15,23,42,0.25)] dark:bg-[linear-gradient(180deg,rgba(30,41,59,0.8),rgba(15,23,42,0.96))]">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0f172a_0%,#0f766e_100%)] text-white shadow-[0_16px_40px_-26px_rgba(15,23,42,0.55)]">
-              <UserRound className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                Signed In Profile
-              </p>
-              <p className="mt-1 truncate text-sm font-semibold text-foreground">
-                {currentUser?.username ?? 'Workspace User'}
-              </p>
-              <p className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                <Mail className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">{currentUser?.email ?? 'No email available'}</span>
-              </p>
-            </div>
+      <div className="border-t border-white/40 p-4 sm:p-5 dark:border-white/10">
+        <button
+          type="button"
+          onClick={() => setProfileOpen(true)}
+          className="group flex w-full items-center gap-3 rounded-2xl border border-white/60 bg-[linear-gradient(135deg,rgba(255,255,255,0.74),rgba(226,239,255,0.66))] p-3 text-left shadow-[0_18px_50px_-32px_rgba(31,95,168,0.32)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-white/80 hover:shadow-[0_22px_58px_-32px_rgba(31,95,168,0.42)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.1),rgba(76,184,240,0.08))]"
+        >
+          <UserAvatar user={currentUser} className="size-11" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-foreground">
+              {currentUser?.username ?? 'Workspace User'}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">View profile</p>
           </div>
-          <Button
-            variant="outline"
-            className="mt-4 h-10 w-full justify-center rounded-2xl border-border/70 bg-background/80 font-semibold"
-            onClick={onLogout}
-          >
-            <LogOut className="mr-2 h-4 w-4" />
-            Logout
-          </Button>
-        </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform duration-300 group-hover:translate-x-1" />
+        </button>
+        {currentUser && (
+          <UserProfileDialog
+            open={profileOpen}
+            onOpenChange={setProfileOpen}
+            currentUser={currentUser}
+            onProfileUpdated={(user) => onProfileUpdated?.(user)}
+            onLogout={onLogout}
+          />
+        )}
       </div>
     </div>
   );
@@ -616,14 +805,14 @@ export default function HomePage() {
   return (
     <div className="workspace-shell min-h-screen bg-background">
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="app-grid-bg absolute inset-x-0 top-0 h-[520px] opacity-60" />
-        <div className="absolute left-[-8rem] top-20 h-72 w-72 rounded-full bg-sky-400/10 blur-3xl" />
-        <div className="absolute right-[-6rem] top-36 h-80 w-80 rounded-full bg-primary/10 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-emerald-400/10 blur-3xl" />
+        <div className="app-grid-bg absolute inset-x-0 top-0 h-[520px] opacity-40" />
+        <div className="absolute left-[-8rem] top-20 h-72 w-72 rounded-full bg-blue-200/24 blur-3xl" />
+        <div className="absolute right-[-6rem] top-36 h-80 w-80 rounded-full bg-sky-300/20 blur-3xl" />
+        <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-blue-900/10 blur-3xl" />
       </div>
       {/* Desktop Sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-border/70 bg-sidebar/82 shadow-[0_24px_80px_-28px_rgba(15,23,42,0.18)] backdrop-blur-2xl lg:flex">
-        <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} />
+      <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-white/45 bg-sidebar/72 shadow-[0_24px_80px_-30px_rgba(31,95,168,0.22)] backdrop-blur-2xl dark:border-white/10 lg:flex">
+        <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} onProfileUpdated={setCurrentUser} />
       </aside>
 
       {/* Main Content */}
@@ -631,16 +820,21 @@ export default function HomePage() {
         {/* Content */}
         <main className="flex-1 overflow-y-auto overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <div className="mx-auto max-w-7xl px-4 pb-6 pt-3 sm:px-6 sm:pt-4 lg:px-8">
-            <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-3 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
+            <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.9),rgba(237,241,246,0.72))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.9),rgba(18,32,52,0.74))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
               <div className="mx-auto max-w-7xl">
-                <div className="group relative overflow-hidden rounded-[30px] border border-slate-800/80 bg-[linear-gradient(135deg,#08111f_0%,#13233b_48%,#1d3148_100%)] p-4 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] sm:p-5">
+                <div className="group relative overflow-hidden rounded-[2rem] border-[8px] border-white/80 bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_56%,#67b3df_100%)] p-4 text-white shadow-[0_30px_100px_-42px_rgba(31,95,168,0.62)] transition-all duration-500 hover:shadow-[0_34px_110px_-42px_rgba(31,95,168,0.74)] dark:border-white/12 dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)] sm:p-5">
                   <div className="pointer-events-none absolute inset-0 opacity-80">
-                    <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-sky-400/12 blur-3xl transition-transform duration-700 group-hover:scale-125" />
-                    <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-500/10 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
-                    <div className="absolute inset-y-0 right-[24%] w-px bg-white/8" />
-                    <div className="absolute inset-x-0 top-16 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+                    <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-white/18 blur-3xl transition-transform duration-700 group-hover:scale-125" />
+                    <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-100/18 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
+                    <div className="absolute inset-y-0 right-[24%] w-px bg-white/12" />
+                    <div className="absolute inset-x-0 top-16 h-px bg-gradient-to-r from-transparent via-white/18 to-transparent" />
                     <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
                   </div>
+                  <motion.div
+                    className="pointer-events-none absolute -inset-y-8 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.18)_50%,transparent_100%)]"
+                    animate={{ x: ['0%', '300%'] }}
+                    transition={{ duration: 7.5, repeat: Infinity, ease: 'linear' }}
+                  />
                   <div className="flex flex-col gap-4">
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                       <div className="flex items-start gap-3">
@@ -651,36 +845,39 @@ export default function HomePage() {
                             </Button>
                           </SheetTrigger>
                           <SheetContent side="left" className="w-72 p-0">
-                            <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} />
+                            <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} onProfileUpdated={setCurrentUser} />
                           </SheetContent>
                         </Sheet>
                         <div className="min-w-0">
                           <div className="mb-3 flex flex-wrap items-center gap-3">
-                            <span className="text-[11px] font-semibold uppercase tracking-[0.32em] text-cyan-100/90">
+                            <span className="text-[11px] font-semibold uppercase tracking-[0.32em] text-white/86">
                               Aroha Intelligent System
                             </span>
                             <span className="hidden h-1 w-1 rounded-full bg-slate-400/70 sm:inline-block" />
-                            <span className="text-xs font-medium text-slate-300">
+                            <span className="text-xs font-medium text-white/76">
                               {activeTabMeta.label}
                             </span>
                           </div>
                           <div className="flex items-center gap-3">
                             <ApplicationLogo />
-                            <BrandWordmark inverted />
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/78">Aroha</p>
+                              <BrandWordmark inverted />
+                            </div>
                           </div>
-                          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                          <p className="mt-3 max-w-2xl text-sm leading-6 text-white/86">
                             Enterprise-ready analytics workspace for dataset intake, understanding, data preparation, and forecasting workflows.
                           </p>
                           <div className="mt-4 flex flex-wrap items-center gap-2">
-                            <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
+                            <Badge variant="outline" className="rounded-full !border-white/15 !bg-white/10 px-3 py-1 !text-white">
                               {hasWorkspace ? <CheckCircle2 className="mr-2 h-3.5 w-3.5 text-emerald-300" /> : <AlertCircle className="mr-2 h-3.5 w-3.5 text-amber-300" />}
                               {isRestoringWorkspace ? 'Restoring workspace' : hasWorkspace ? 'Workspace in progress' : 'Awaiting dataset'}
                             </Badge>
-                            <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
+                            <Badge variant="outline" className="rounded-full !border-white/15 !bg-white/10 px-3 py-1 !text-white">
                               <ShieldCheck className="mr-2 h-3.5 w-3.5 text-sky-300" />
                               PostgreSQL activity tracking connected
                             </Badge>
-                            <Badge variant="outline" className="rounded-full border-white/15 bg-white/10 px-3 py-1 text-white">
+                            <Badge variant="outline" className="rounded-full !border-white/15 !bg-white/10 px-3 py-1 !text-white">
                               <RefreshCw className={cn('mr-2 h-3.5 w-3.5 text-cyan-300', isRefreshingActivity && 'animate-spin')} />
                               {sessionContinuity.freshness}
                             </Badge>
@@ -689,13 +886,13 @@ export default function HomePage() {
                       </div>
 
                       <div className="flex flex-col gap-3 xl:max-w-[62%] xl:items-end">
-                        <div className="rounded-[24px] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.09),rgba(255,255,255,0.04))] px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.58)] backdrop-blur-sm">
+                        <div className="rounded-xl border border-white/25 bg-white/12 px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.45)] backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/16">
                           <div className="flex items-start justify-between gap-4">
                             <div>
                               <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-300">Workspace Time</p>
                               <p className="mt-1 text-xl font-semibold tracking-tight text-white">{liveIndiaTime}</p>
                             </div>
-                            <Badge variant="outline" className="rounded-full border-white/12 bg-white/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                            <Badge variant="outline" className="rounded-full !border-white/12 !bg-white/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] !text-slate-200">
                               IST
                             </Badge>
                           </div>
@@ -706,19 +903,19 @@ export default function HomePage() {
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                        <Button size="sm" className="h-9 rounded-full border border-white/10 bg-white px-4 text-slate-950 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
+                        <Button size="sm" className="h-9 rounded-sm border border-white/10 bg-white px-4 text-slate-950 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
                           <History className="mr-2 h-4 w-4" />
                           {hasWorkspace ? 'Resume Workspace' : 'Open Workspace'}
                         </Button>
-                        <Button size="sm" className="h-9 rounded-full border border-sky-300/20 bg-sky-400/15 px-4 text-white shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-sky-400/22 hover:shadow-lg" onClick={handleAddDataset}>
+                        <Button size="sm" className="h-9 rounded-sm border border-sky-100/25 bg-white/14 px-4 text-white shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/20 hover:shadow-lg" onClick={handleAddDataset}>
                           <Upload className="mr-2 h-4 w-4" />
                           Add Dataset
                         </Button>
-                        <Button size="sm" variant="outline" className="h-9 rounded-full border-white/20 bg-white/5 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={handleFreshStart}>
+                        <Button size="sm" variant="outline" className="h-9 rounded-sm border-white/24 bg-white/8 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/14 hover:text-white" onClick={handleFreshStart}>
                           <RotateCcw className="mr-2 h-4 w-4" />
                           Fresh Start
                         </Button>
-                        <Button size="sm" variant="ghost" className="h-9 rounded-full px-3 text-slate-200 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
+                        <Button size="sm" variant="ghost" className="h-9 rounded-sm px-3 text-white/86 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/10 hover:text-white" onClick={() => void refreshRecentActivity()}>
                           <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshingActivity && 'animate-spin')} />
                           Sync
                         </Button>
@@ -736,8 +933,8 @@ export default function HomePage() {
                   <UploadTab />
                 </div>
               )}
-              <div className="glass-panel rounded-[30px] border border-border/70 px-3 py-4 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.32)] sm:px-5 sm:py-5">
-                <div className="mb-5 flex flex-col gap-3 rounded-[24px] border border-border/70 bg-background/70 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.2)] backdrop-blur-sm lg:flex-row lg:items-center lg:justify-between">
+              <div className="glass-panel rounded-[2rem] border-[8px] border-white/80 px-3 py-4 shadow-[0_30px_90px_-42px_rgba(31,95,168,0.34)] dark:border-white/10 sm:px-5 sm:py-5">
+                <div className="mb-5 flex flex-col gap-3 rounded-xl border border-white/68 bg-white/66 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(31,95,168,0.28)] backdrop-blur-sm transition-all duration-300 hover:bg-white/78 dark:border-white/10 dark:bg-white/8 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Active Dataset</p>
                     <p className="mt-1 truncate text-base font-semibold text-foreground">
@@ -751,7 +948,7 @@ export default function HomePage() {
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <Select value={activeDatasetKey ?? undefined} onValueChange={selectDataset} disabled={!hasDatasetLibrary}>
-                      <SelectTrigger className="w-full min-w-[260px] rounded-2xl border-border/70 bg-card/80 sm:w-[320px]">
+                      <SelectTrigger className="w-full min-w-[260px] rounded-sm border-border/70 bg-card/80 sm:w-[320px]">
                         <SelectValue placeholder="Choose a dataset" />
                       </SelectTrigger>
                       <SelectContent>
@@ -767,7 +964,7 @@ export default function HomePage() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button type="button" variant="outline" className="rounded-2xl" onClick={handleAddDataset}>
+                    <Button type="button" variant="outline" className="rounded-sm" onClick={handleAddDataset}>
                       <Upload className="mr-2 h-4 w-4" />
                       Upload Another
                     </Button>
@@ -781,12 +978,13 @@ export default function HomePage() {
         </main>
 
         {/* Footer */}
-        <footer className="mt-auto border-t border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.97),rgba(244,247,251,0.94))] px-4 py-4 backdrop-blur-xl dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.92))] sm:px-6 lg:px-8">
+        <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.9),rgba(237,241,246,0.78))] px-4 py-4 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.9),rgba(18,32,52,0.76))] sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="flex flex-col gap-4 overflow-hidden rounded-[28px] border border-slate-800/80 bg-[linear-gradient(135deg,#0f172a_0%,#162338_55%,#1e293b_100%)] px-6 py-5 text-white shadow-[0_26px_90px_-38px_rgba(15,23,42,0.72)] transition-all duration-300 hover:shadow-[0_30px_100px_-40px_rgba(15,23,42,0.78)] lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-4 overflow-hidden rounded-[2rem] border-[8px] border-white/80 bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_58%,#67b3df_100%)] px-6 py-5 text-white shadow-[0_26px_90px_-38px_rgba(31,95,168,0.58)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_30px_100px_-40px_rgba(31,95,168,0.68)] dark:border-white/12 dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_58%,#2d7eb2_100%)] lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-col gap-3 text-center lg:flex-row lg:items-center lg:text-left">
                 <ApplicationLogo />
                 <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/72">Aroha</p>
                   <p className="bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)] bg-clip-text text-base font-bold text-transparent">
                     Intelligent Data Assistant
                   </p>
@@ -795,7 +993,10 @@ export default function HomePage() {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-center gap-1 text-center text-sm font-medium text-slate-300 lg:items-end lg:text-right">
+              <div className="flex flex-col items-center gap-2 text-center text-sm font-medium text-slate-300 lg:items-end lg:text-right">
+                <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" className="rounded-md bg-white/92 px-3 py-2 transition-all duration-300 hover:-translate-y-0.5 hover:bg-white" aria-label="Open Aroha Technologies website">
+                  <CompanyLogo compact />
+                </a>
                 <p>
                   <span className="text-slate-400">HR:</span>{' '}
                   <a className="text-cyan-300 transition-colors hover:text-cyan-200" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a>
