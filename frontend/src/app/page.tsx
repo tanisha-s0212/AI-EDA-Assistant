@@ -36,8 +36,11 @@ import {
   RefreshCw,
   LogOut,
   Camera,
+  Pencil,
   Save,
   ExternalLink,
+  TrendingDown,
+  TrendingUp,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -50,6 +53,8 @@ import MlTab from '@/components/tabs/ml-tab';
 import PredictionTab from '@/components/tabs/prediction-tab';
 import TimeSeriesForecastTab from '@/components/tabs/time-series-forecast-tab';
 import MlForecastTab from '@/components/tabs/ml-forecast-tab';
+import LossForecastTab from '@/components/tabs/loss-forecast-tab';
+import ProfitForecastTab from '@/components/tabs/profit-forecast-tab';
 import ReportTab from '@/components/tabs/report-tab';
 
 const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
@@ -59,6 +64,8 @@ const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: 'cleaning', label: 'Data Cleaning', icon: Sparkles },
   { id: 'forecast_ts', label: 'Time Series Forecast', icon: LineChart },
   { id: 'forecast_ml', label: 'Machine Learning Forecast', icon: LineChart },
+  { id: 'loss_forecast', label: 'Loss Forecast', icon: TrendingDown },
+  { id: 'profit_forecast', label: 'Profit Forecast', icon: TrendingUp },
   { id: 'ml', label: 'ML Assistant', icon: BrainCircuit },
   { id: 'prediction', label: 'Prediction', icon: Target },
   { id: 'report', label: 'Report', icon: FileText },
@@ -303,6 +310,7 @@ function UserProfileDialog({
   const [name, setName] = React.useState(currentUser.username);
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [isEditing, setIsEditing] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -311,6 +319,7 @@ function UserProfileDialog({
     setName(currentUser.username);
     setSelectedFile(null);
     setPreviewUrl(null);
+    setIsEditing(false);
   }, [currentUser.username, open]);
 
   React.useEffect(() => {
@@ -324,6 +333,7 @@ function UserProfileDialog({
   }, [selectedFile]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isEditing) return;
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
     if (!file.type.startsWith('image/')) {
@@ -352,6 +362,7 @@ function UserProfileDialog({
         title: 'Profile updated',
         description: 'Your profile details were saved successfully.',
       });
+      setIsEditing(false);
       onOpenChange(false);
     } catch (error) {
       toast({
@@ -384,6 +395,16 @@ function UserProfileDialog({
               Manage your profile information for the Intelligent Data Assistant workspace.
             </DialogDescription>
           </DialogHeader>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="absolute right-14 top-6 rounded-full border-white/28 bg-white/14 px-4 text-white hover:bg-white/22 hover:text-white"
+            onClick={() => setIsEditing((current) => !current)}
+          >
+            <Pencil className="mr-2 h-4 w-4" />
+            {isEditing ? 'Editing' : 'Edit Profile'}
+          </Button>
         </div>
 
         <form onSubmit={handleSaveProfile} className="space-y-5 p-6">
@@ -393,7 +414,11 @@ function UserProfileDialog({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full border border-white/80 bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white shadow-[0_14px_32px_-18px_rgba(34,139,64,0.65)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105"
+                disabled={!isEditing}
+                className={cn(
+                  'absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full border border-white/80 bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white shadow-[0_14px_32px_-18px_rgba(34,139,64,0.65)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105',
+                  !isEditing && 'cursor-not-allowed opacity-55 hover:translate-y-0 hover:brightness-100'
+                )}
                 aria-label="Upload profile image"
               >
                 <Camera className="h-4 w-4" />
@@ -403,9 +428,11 @@ function UserProfileDialog({
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Profile Picture</p>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Upload a square image for best results. PNG, JPEG, WEBP, and GIF files up to 1.5 MB are stored with your account.
+                {isEditing
+                  ? 'Upload a square image for best results. PNG, JPEG, WEBP, and GIF files up to 1.5 MB are stored with your account.'
+                  : 'Use Edit Profile to update your display name or profile picture.'}
               </p>
-              <Button type="button" variant="outline" className="mt-3 rounded-sm" onClick={() => fileInputRef.current?.click()}>
+              <Button type="button" variant="outline" className="mt-3 rounded-sm" onClick={() => fileInputRef.current?.click()} disabled={!isEditing}>
                 <Upload className="mr-2 h-4 w-4" />
                 Choose Image
               </Button>
@@ -415,19 +442,11 @@ function UserProfileDialog({
           <div className="grid gap-4 rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_20px_56px_-36px_rgba(31,95,168,0.28)] backdrop-blur-xl dark:border-white/10 dark:bg-white/8 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="profile-name">Name</Label>
-              <Input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={3} maxLength={80} required className="rounded-sm" />
+              <Input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={3} maxLength={80} required disabled={!isEditing} className="rounded-sm" />
             </div>
             <div className="space-y-2">
               <Label htmlFor="profile-email">Email ID</Label>
               <Input id="profile-email" value={currentUser.email} disabled className="rounded-sm opacity-90" />
-            </div>
-            <div className="space-y-1 text-sm">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Account Created</p>
-              <p className="font-medium text-foreground">{formatIndiaDate(currentUser.createdAt)}</p>
-            </div>
-            <div className="space-y-1 text-sm">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Last Login</p>
-              <p className="font-medium text-foreground">{formatActivityTimestamp(currentUser.lastLoginAt)}</p>
             </div>
           </div>
 
@@ -436,10 +455,32 @@ function UserProfileDialog({
               <LogOut className="mr-2 h-4 w-4" />
               Logout
             </Button>
-            <Button type="submit" disabled={isSaving} className="rounded-sm bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white">
-              <Save className="mr-2 h-4 w-4" />
-              {isSaving ? 'Saving...' : 'Save Profile'}
-            </Button>
+            {isEditing ? (
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-sm"
+                  onClick={() => {
+                    setName(currentUser.username);
+                    setSelectedFile(null);
+                    setPreviewUrl(null);
+                    setIsEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={isSaving} className="rounded-sm bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white">
+                  <Save className="mr-2 h-4 w-4" />
+                  {isSaving ? 'Saving...' : 'Save Profile'}
+                </Button>
+              </div>
+            ) : (
+              <Button type="button" className="rounded-sm bg-[linear-gradient(135deg,#2f5fa8_0%,#4cb8f0_100%)] text-white" onClick={() => setIsEditing(true)}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit Profile
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>
@@ -787,6 +828,8 @@ export default function HomePage() {
       case 'eda': return <EdaTab />;
       case 'forecast_ts': return <TimeSeriesForecastTab />;
       case 'forecast_ml': return <MlForecastTab />;
+      case 'loss_forecast': return <LossForecastTab />;
+      case 'profit_forecast': return <ProfitForecastTab />;
       case 'ml': return <MlTab />;
       case 'prediction': return <PredictionTab />;
       case 'report': return <ReportTab />;

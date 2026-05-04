@@ -14,6 +14,8 @@ import {
   LineChart,
   FileText,
   CheckCircle2,
+  TrendingDown,
+  TrendingUp,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -26,6 +28,8 @@ const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementT
   { id: 'cleaning', label: 'Data Cleaning', shortLabel: 'Clean', icon: Sparkles },
   { id: 'forecast_ts', label: 'Time Series Forecast', shortLabel: 'TS Forecast', icon: LineChart },
   { id: 'forecast_ml', label: 'Machine Learning Forecast', shortLabel: 'ML Forecast', icon: LineChart },
+  { id: 'loss_forecast', label: 'Loss Forecast', shortLabel: 'Loss', icon: TrendingDown },
+  { id: 'profit_forecast', label: 'Profit Forecast', shortLabel: 'Profit', icon: TrendingUp },
   { id: 'ml', label: 'ML Assistant', shortLabel: 'ML', icon: BrainCircuit },
   { id: 'prediction', label: 'Prediction', shortLabel: 'Predict', icon: Target },
   { id: 'report', label: 'Report', shortLabel: 'Report', icon: FileText },

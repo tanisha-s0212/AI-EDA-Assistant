@@ -254,6 +254,47 @@ def init_activity_db() -> None:
         connection.execute('CREATE INDEX IF NOT EXISTS idx_user_activities_dataset_id ON user_activities (dataset_id)')
         connection.execute('CREATE INDEX IF NOT EXISTS idx_user_activities_server_session_id ON user_activities (server_session_id)')
         connection.execute('CREATE INDEX IF NOT EXISTS idx_user_activities_action ON user_activities (action)')
+        connection.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS loss_forecast_results (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                period DATE NOT NULL,
+                revenue_loss DOUBLE PRECISION NOT NULL DEFAULT 0,
+                operational_loss DOUBLE PRECISION NOT NULL DEFAULT 0,
+                inventory_loss DOUBLE PRECISION NOT NULL DEFAULT 0,
+                discount_loss DOUBLE PRECISION NOT NULL DEFAULT 0,
+                total_loss DOUBLE PRECISION NOT NULL DEFAULT 0,
+                lower_bound DOUBLE PRECISION,
+                upper_bound DOUBLE PRECISION,
+                loss_risk_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+                risk_label TEXT NOT NULL,
+                segment TEXT,
+                created_at TEXT NOT NULL
+            )
+            '''
+        )
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_loss_forecast_session_period ON loss_forecast_results (session_id, period)')
+        connection.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS profit_forecast_results (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                period DATE NOT NULL,
+                forecasted_revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+                forecasted_cogs DOUBLE PRECISION NOT NULL DEFAULT 0,
+                gross_profit DOUBLE PRECISION NOT NULL DEFAULT 0,
+                operating_expenses DOUBLE PRECISION NOT NULL DEFAULT 0,
+                total_losses DOUBLE PRECISION NOT NULL DEFAULT 0,
+                net_profit DOUBLE PRECISION NOT NULL DEFAULT 0,
+                gross_margin_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+                net_margin_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+                scenario TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            '''
+        )
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_profit_forecast_session_scenario_period ON profit_forecast_results (session_id, scenario, period)')
 
 
 def sanitize_metadata(metadata: dict[str, Any] | None) -> str | None:
@@ -691,7 +732,7 @@ async def update_authenticated_user_profile(
 def ensure_session_state(session_id: str) -> dict[str, Any]:
     if session_id not in SESSION_STATE:
         SESSION_STATE[session_id] = {
-            'forecast_steps': {'ts': False, 'ml': False},
+            'forecast_steps': {'ts': False, 'ml': False, 'loss': False, 'profit': False},
             'time_series_result': None,
             'ml_forecast_result': None,
             'updated_at': datetime.utcnow().isoformat(),
@@ -1245,6 +1286,17 @@ class MlForecastRequest(BaseModel):
     feature_groups: list[str] = Field(default_factory=lambda: ['trend', 'calendar', 'lags', 'rolling'])
 
 
+class ForecastRunRequest(BaseModel):
+    session_id: str
+    forecast_periods: int = Field(default=30, ge=1, le=180)
+
+
+class ReportConfigPayload(BaseModel):
+    includeLoss: bool = True
+    includeProfit: bool = True
+    scenario: Literal['optimistic', 'baseline', 'pessimistic'] = 'baseline'
+
+
 class CleaningLog(BaseModel):
     action: str
     detail: str
@@ -1405,6 +1457,12 @@ class ReportPayload(BaseModel):
     uploadedModel: UploadedModelPayload | None = None
     timeSeriesForecastResult: TimeSeriesForecastResultPayload | None = None
     mlForecastResult: MlForecastResultPayload | None = None
+    lossForecast: list[dict[str, Any]] = Field(default_factory=list)
+    profitForecast: list[dict[str, Any]] = Field(default_factory=list)
+    lossSegments: list[dict[str, Any]] = Field(default_factory=list)
+    scenarios: dict[str, list[dict[str, Any]]] | None = None
+    breakevenPeriod: str | None = None
+    reportConfig: ReportConfigPayload = Field(default_factory=ReportConfigPayload)
     forecastingStepsCompleted: list[int] = Field(default_factory=list)
     predictionResult: str | float | int | None = None
     predictionAnalysis: str | None = None
@@ -3416,6 +3474,503 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
     return JSONResponse(content=safe_serialize(response))
 
 
+LOSS_COLUMN_PATTERNS = {
+    'returns': re.compile(r'return|refund|return_qty', re.IGNORECASE),
+    'discount': re.compile(r'discount|promo|markdown', re.IGNORECASE),
+    'waste': re.compile(r'waste|spoil|damage|scrap', re.IGNORECASE),
+    'stockout': re.compile(r'stockout|missed_revenue|lost_sale', re.IGNORECASE),
+    'quantity': re.compile(r'quantity|qty|units', re.IGNORECASE),
+    'unit_cost': re.compile(r'unit_cost|cost_per_unit|cogs|cost', re.IGNORECASE),
+    'operating_cost': re.compile(r'operating_cost|opex|expense|overhead', re.IGNORECASE),
+    'category': re.compile(r'category|product|segment|sku|item', re.IGNORECASE),
+    'region': re.compile(r'region|market|territory|location|state|city', re.IGNORECASE),
+    'revenue': re.compile(r'revenue|sales|amount|total|net_sales', re.IGNORECASE),
+    'date': re.compile(r'date|month|period|time', re.IGNORECASE),
+    'price': re.compile(r'price|unit_price|rate', re.IGNORECASE),
+}
+
+
+def first_matching_column(frame: pd.DataFrame, pattern: re.Pattern[str], numeric: bool | None = None) -> str | None:
+    for column in frame.columns:
+        if not pattern.search(str(column)):
+            continue
+        if numeric is True and not pd.api.types.is_numeric_dtype(pd.to_numeric(frame[column], errors='coerce')):
+            converted = pd.to_numeric(frame[column], errors='coerce')
+            if converted.notna().sum() == 0:
+                continue
+        return str(column)
+    return None
+
+
+def numeric_series(frame: pd.DataFrame, column: str | None, default: float = 0.0) -> pd.Series:
+    if not column or column not in frame.columns:
+        return pd.Series(default, index=frame.index, dtype='float64')
+    return pd.to_numeric(frame[column], errors='coerce').fillna(default).astype(float)
+
+
+def normalize_period_value(value: Any) -> date:
+    parsed = pd.to_datetime(value, errors='coerce')
+    if pd.isna(parsed):
+        return datetime.utcnow().date()
+    return pd.Timestamp(parsed).date()
+
+
+def forecast_periods_to_frame(points: list[dict[str, Any]], value_name: str) -> pd.DataFrame:
+    rows = []
+    for point in points or []:
+        period = point.get('period')
+        if period is None:
+            continue
+        rows.append({
+            'period': normalize_period_value(period),
+            value_name: float(point.get('predicted') or point.get('actual') or 0),
+            f'{value_name}_lower': float(point.get('lower') or point.get('predicted') or 0),
+            f'{value_name}_upper': float(point.get('upper') or point.get('predicted') or 0),
+        })
+    return pd.DataFrame(rows)
+
+
+def get_cached_clean_frame(session_id: str) -> pd.DataFrame:
+    dataset_entry = DATASET_CACHE.get(session_id)
+    if dataset_entry is None:
+        raise HTTPException(
+            status_code=422,
+            detail='Cleaned dataset cache is unavailable for this session. Reopen the dataset or rerun Data Upload and Data Cleaning.',
+        )
+    frame = load_full_dataset_frame(session_id, [])
+    if frame.empty:
+        raise HTTPException(status_code=422, detail='The cached dataset is empty. Upload a dataset with revenue, cost, and date columns.')
+    return frame.copy()
+
+
+def fetch_upstream_forecasts(session_id: str) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any], pd.DataFrame]:
+    session_state = ensure_session_state(session_id)
+    ts_result = session_state.get('time_series_result')
+    ml_result = session_state.get('ml_forecast_result')
+    if not ts_result or not ml_result:
+        raise HTTPException(status_code=422, detail='Complete Time Series Forecasting and Machine Learning Forecasting before running Loss or Profit Forecast.')
+
+    clean_frame = get_cached_clean_frame(session_id).fillna(0)
+    ts_future = forecast_periods_to_frame(ts_result.get('future_forecast', []), 'forecasted_revenue')
+    ml_future = forecast_periods_to_frame(ml_result.get('future_forecast', []), 'forecasted_cogs')
+    if ts_future.empty or ml_future.empty:
+        raise HTTPException(status_code=422, detail='Upstream forecast results do not contain future periods. Rerun the TS and ML forecast tabs.')
+
+    merged = pd.merge(ts_future, ml_future, on='period', how='outer').sort_values('period').fillna(0)
+    if 'forecasted_cogs' in merged:
+        median_cogs = float(merged['forecasted_cogs'].replace(0, np.nan).median() or 0)
+        if median_cogs > float(merged['forecasted_revenue'].replace(0, np.nan).median() or 0) * 1.4:
+            merged['forecasted_cogs'] = merged['forecasted_cogs'] * 0.58
+    return merged, ts_result, ml_result, clean_frame
+
+
+def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.DataFrame, list[dict[str, Any]], dict[str, float]]:
+    forecast_frame, ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id)
+    forecast_frame = forecast_frame.head(forecast_periods).copy()
+    if forecast_frame.empty:
+        raise HTTPException(status_code=422, detail='No forecast periods are available for loss forecasting.')
+
+    date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
+    revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
+    cost_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
+    missing = []
+    if not date_column:
+        missing.append('date / period')
+    if not revenue_column:
+        missing.append('revenue / sales amount')
+    if not cost_column:
+        missing.append('cost / COGS')
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Missing required columns for loss forecasting: {', '.join(missing)}. Remap or rename these fields in Data Upload, then rerun forecasting.",
+        )
+
+    returns_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['returns'], numeric=True)
+    discount_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['discount'], numeric=True)
+    waste_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['waste'], numeric=True)
+    stockout_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['stockout'], numeric=True)
+    quantity_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
+    unit_cost_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
+    operating_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
+    category_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['category'])
+    region_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['region'])
+    price_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['price'], numeric=True)
+
+    work = clean_frame.copy()
+    work['_period'] = pd.to_datetime(work[date_column], errors='coerce')
+    work = work.dropna(subset=['_period'])
+    if work.empty:
+        raise HTTPException(status_code=422, detail='No usable dates were found for loss forecasting. Check the mapped date column.')
+    period_label = ts_result.get('period_label') or 'month'
+    period_freq = 'D' if period_label == 'day' else 'W' if period_label == 'week' else 'Q' if period_label == 'quarter' else 'M'
+    work['_period'] = work['_period'].dt.to_period(period_freq).dt.to_timestamp().dt.date
+
+    revenue = numeric_series(work, revenue_column)
+    quantity = numeric_series(work, quantity_column, 1.0).clip(lower=0)
+    unit_cost = numeric_series(work, unit_cost_column, 0.0).clip(lower=0)
+    actual_cost = numeric_series(work, cost_column, 0.0).clip(lower=0)
+    if quantity_column and unit_cost_column and actual_cost.sum() == unit_cost.sum():
+        actual_cost = quantity * unit_cost
+    operating_cost = numeric_series(work, operating_column, 0.0).clip(lower=0)
+    if operating_cost.sum() == 0:
+        operating_cost = actual_cost * 0.12
+    returns = numeric_series(work, returns_column, 0.0).clip(lower=0)
+    discounts = numeric_series(work, discount_column, 0.0).clip(lower=0)
+    waste = numeric_series(work, waste_column, 0.0).clip(lower=0)
+    stockout = numeric_series(work, stockout_column, 0.0).clip(lower=0)
+    price = numeric_series(work, price_column, 0.0)
+    if price.sum() == 0:
+        price = revenue / quantity.replace(0, np.nan)
+        price = price.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    discount_pct = discounts.where(discounts <= 1, discounts / 100).clip(lower=0, upper=0.95)
+    baseline_cost = operating_cost.rolling(7, min_periods=1).mean() * 1.2
+    work['_actual_revenue'] = revenue
+    work['_operational_loss'] = (operating_cost - baseline_cost).clip(lower=0)
+    work['_inventory_loss'] = (waste * unit_cost) + (stockout * price)
+    work['_discount_loss'] = revenue * discount_pct
+    work['_return_loss'] = returns.where(returns > 1, returns * price).clip(lower=0)
+    historical = work.groupby('_period', as_index=False).agg({
+        '_actual_revenue': 'sum',
+        '_operational_loss': 'sum',
+        '_inventory_loss': 'sum',
+        '_discount_loss': 'sum',
+        '_return_loss': 'sum',
+    })
+
+    average_actual_revenue = max(float(historical['_actual_revenue'].mean() or 0), 1.0)
+    driver_totals = {
+        'Revenue Loss': 0.0,
+        'Operational Loss': float(historical['_operational_loss'].sum()),
+        'Inventory Loss': float(historical['_inventory_loss'].sum()),
+        'Discount Loss': float(historical['_discount_loss'].sum()),
+        'Returns / Refunds': float(historical['_return_loss'].sum()),
+    }
+    total_driver = sum(driver_totals.values()) or 1.0
+    driver_weights = {key: value / total_driver for key, value in driver_totals.items()}
+
+    rows: list[dict[str, Any]] = []
+    for index, item in forecast_frame.reset_index(drop=True).iterrows():
+        forecasted_revenue = max(float(item.get('forecasted_revenue') or 0), 0.0)
+        pressure = 1 + (index * 0.015)
+        revenue_loss = max(0.0, forecasted_revenue - average_actual_revenue) * 0.12 * pressure
+        operational_loss = max(float(historical['_operational_loss'].mean() or 0), forecasted_revenue * 0.025) * pressure
+        inventory_loss = max(float(historical['_inventory_loss'].mean() or 0), forecasted_revenue * 0.018) * pressure
+        discount_loss = max(float(historical['_discount_loss'].mean() or 0), forecasted_revenue * 0.02) * pressure
+        return_loss = max(float(historical['_return_loss'].mean() or 0), 0.0) * pressure
+        total_loss = revenue_loss + operational_loss + inventory_loss + discount_loss + return_loss
+        risk_score = min(1.0, total_loss / max(forecasted_revenue, 1.0))
+        risk_label = 'Low' if risk_score < 0.05 else 'Medium' if risk_score <= 0.15 else 'High'
+        lower = max(0.0, total_loss * 0.82)
+        upper = total_loss * 1.18
+        rows.append({
+            'id': uuid.uuid4().hex,
+            'session_id': session_id,
+            'period': item['period'],
+            'revenue_loss': round(revenue_loss + return_loss, 2),
+            'operational_loss': round(operational_loss, 2),
+            'inventory_loss': round(inventory_loss, 2),
+            'discount_loss': round(discount_loss, 2),
+            'total_loss': round(total_loss, 2),
+            'lower_bound': round(lower, 2),
+            'upper_bound': round(upper, 2),
+            'loss_risk_score': round(risk_score, 4),
+            'risk_label': risk_label,
+            'segment': 'All Business',
+            'created_at': utc_now_iso(),
+        })
+
+    segments: list[dict[str, Any]] = []
+    for column, segment_type in [(category_column, 'category'), (region_column, 'region')]:
+        if not column or column not in work.columns:
+            continue
+        grouped = work.assign(
+            _segment_loss=work['_operational_loss'] + work['_inventory_loss'] + work['_discount_loss'] + work['_return_loss'],
+            _segment_revenue=work['_actual_revenue'],
+        ).groupby(column, dropna=False).agg({'_segment_loss': 'sum', '_segment_revenue': 'sum'}).reset_index()
+        for _, segment_row in grouped.sort_values('_segment_loss', ascending=False).head(12).iterrows():
+            risk_score = min(1.0, float(segment_row['_segment_loss']) / max(float(segment_row['_segment_revenue']), 1.0))
+            segments.append({
+                'segment': str(segment_row[column] or 'Unassigned'),
+                'segment_type': segment_type,
+                'total_loss': round(float(segment_row['_segment_loss']), 2),
+                'risk_score': round(risk_score, 4),
+                'risk_label': 'Low' if risk_score < 0.05 else 'Medium' if risk_score <= 0.15 else 'High',
+            })
+    if not segments:
+        segments = [{'segment': 'All Business', 'segment_type': 'portfolio', 'total_loss': round(sum(row['total_loss'] for row in rows), 2), 'risk_score': round(float(np.mean([row['loss_risk_score'] for row in rows])), 4), 'risk_label': rows[0]['risk_label'] if rows else 'Low'}]
+
+    return pd.DataFrame(rows), segments, driver_weights
+
+
+def persist_loss_forecast(session_id: str, rows: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
+    if not ACTIVITY_DB_AVAILABLE:
+        return
+    with get_activity_connection() as connection:
+        connection.execute('DELETE FROM loss_forecast_results WHERE session_id = %s', (session_id,))
+        for row in rows:
+            connection.execute(
+                '''
+                INSERT INTO loss_forecast_results (
+                    id, session_id, period, revenue_loss, operational_loss, inventory_loss, discount_loss, total_loss,
+                    lower_bound, upper_bound, loss_risk_score, risk_label, segment, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''',
+                (
+                    row['id'], session_id, row['period'], row['revenue_loss'], row['operational_loss'],
+                    row['inventory_loss'], row['discount_loss'], row['total_loss'], row.get('lower_bound'),
+                    row.get('upper_bound'), row['loss_risk_score'], row['risk_label'], row.get('segment'), row['created_at'],
+                ),
+            )
+
+
+def query_loss_results(session_id: str) -> list[dict[str, Any]]:
+    session_state = ensure_session_state(session_id)
+    if session_state.get('loss_forecast_result'):
+        return list(session_state['loss_forecast_result'])
+    if not ACTIVITY_DB_AVAILABLE:
+        return []
+    with get_activity_connection() as connection:
+        rows = connection.execute(
+            '''
+            SELECT id, session_id, period::text, revenue_loss, operational_loss, inventory_loss, discount_loss,
+                   total_loss, lower_bound, upper_bound, loss_risk_score, risk_label, segment, created_at
+            FROM loss_forecast_results
+            WHERE session_id = %s
+            ORDER BY period ASC
+            ''',
+            (session_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def build_loss_summary(rows: list[dict[str, Any]], driver_weights: dict[str, float] | None = None) -> dict[str, Any]:
+    if not rows:
+        return {'total_loss': 0, 'highest_risk_period': None, 'average_risk_score': 0, 'top_loss_driver': 'N/A'}
+    highest = max(rows, key=lambda row: float(row.get('loss_risk_score') or 0))
+    driver_totals = {
+        'Revenue Loss': sum(float(row.get('revenue_loss') or 0) for row in rows),
+        'Operational Loss': sum(float(row.get('operational_loss') or 0) for row in rows),
+        'Inventory Loss': sum(float(row.get('inventory_loss') or 0) for row in rows),
+        'Discount Loss': sum(float(row.get('discount_loss') or 0) for row in rows),
+    }
+    top_driver, top_value = max(driver_totals.items(), key=lambda item: item[1])
+    total_loss = sum(float(row.get('total_loss') or 0) for row in rows)
+    share = (top_value / total_loss * 100) if total_loss else 0
+    return {
+        'total_loss': round(total_loss, 2),
+        'highest_risk_period': highest.get('period'),
+        'average_risk_score': round(sum(float(row.get('loss_risk_score') or 0) for row in rows) / len(rows), 4),
+        'top_loss_driver': f'{top_driver} - {share:.0f}%',
+        'driver_weights': driver_weights or {},
+    }
+
+
+def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    forecast_frame, _ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id)
+    loss_rows = query_loss_results(session_id)
+    if not loss_rows:
+        loss_frame, segments, driver_weights = build_loss_base_frame(session_id, forecast_periods)
+        loss_rows = safe_serialize(loss_frame.to_dict(orient='records'))
+        persist_loss_forecast(session_id, loss_rows, segments)
+        state = ensure_session_state(session_id)
+        state['loss_forecast_result'] = loss_rows
+        state['loss_segments'] = segments
+        state['loss_summary'] = build_loss_summary(loss_rows, driver_weights)
+
+    loss_by_period = {normalize_period_value(row['period']): float(row.get('total_loss') or 0) for row in loss_rows}
+    forecast_frame = forecast_frame.head(forecast_periods).copy()
+    operating_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
+    revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
+    operating_expense_ratio = 0.12
+    if operating_column and revenue_column:
+        revenue_total = float(numeric_series(clean_frame, revenue_column).sum() or 0)
+        opex_total = float(numeric_series(clean_frame, operating_column).sum() or 0)
+        if revenue_total > 0 and opex_total > 0:
+            operating_expense_ratio = min(0.45, max(0.04, opex_total / revenue_total))
+
+    scenario_config = {
+        'optimistic': {'revenue': 1.10, 'cogs': 0.97, 'loss': 0.80},
+        'baseline': {'revenue': 1.0, 'cogs': 1.0, 'loss': 1.0},
+        'pessimistic': {'revenue': 0.90, 'cogs': 1.05, 'loss': 1.20},
+    }
+    scenarios: dict[str, list[dict[str, Any]]] = {}
+    for scenario, multipliers in scenario_config.items():
+        rows: list[dict[str, Any]] = []
+        for _, item in forecast_frame.iterrows():
+            period = normalize_period_value(item['period'])
+            revenue = max(float(item.get('forecasted_revenue') or 0) * multipliers['revenue'], 0.0)
+            cogs = max(float(item.get('forecasted_cogs') or revenue * 0.58) * multipliers['cogs'], 0.0)
+            if cogs > revenue * 0.92:
+                cogs = revenue * 0.62
+            losses = max(loss_by_period.get(period, 0.0) * multipliers['loss'], 0.0)
+            operating_expenses = revenue * operating_expense_ratio
+            gross_profit = revenue - cogs
+            net_profit = gross_profit - operating_expenses - losses
+            gross_margin = (gross_profit / revenue * 100) if revenue else 0.0
+            net_margin = (net_profit / revenue * 100) if revenue else 0.0
+            rows.append({
+                'id': uuid.uuid4().hex,
+                'session_id': session_id,
+                'period': period,
+                'forecasted_revenue': round(revenue, 2),
+                'forecasted_cogs': round(cogs, 2),
+                'gross_profit': round(gross_profit, 2),
+                'operating_expenses': round(operating_expenses, 2),
+                'total_losses': round(losses, 2),
+                'net_profit': round(net_profit, 2),
+                'gross_margin_pct': round(gross_margin, 2),
+                'net_margin_pct': round(net_margin, 2),
+                'scenario': scenario,
+                'created_at': utc_now_iso(),
+            })
+        scenarios[scenario] = rows
+
+    baseline = scenarios.get('baseline', [])
+    breakeven_index = next((index for index, row in enumerate(baseline) if float(row['net_profit']) >= 0), None)
+    breakeven = {
+        'breakeven_period': baseline[breakeven_index]['period'] if breakeven_index is not None else None,
+        'periods_to_breakeven': breakeven_index + 1 if breakeven_index is not None else None,
+    }
+    return scenarios, breakeven
+
+
+def persist_profit_forecast(session_id: str, scenarios: dict[str, list[dict[str, Any]]]) -> None:
+    if not ACTIVITY_DB_AVAILABLE:
+        return
+    with get_activity_connection() as connection:
+        connection.execute('DELETE FROM profit_forecast_results WHERE session_id = %s', (session_id,))
+        for scenario_rows in scenarios.values():
+            for row in scenario_rows:
+                connection.execute(
+                    '''
+                    INSERT INTO profit_forecast_results (
+                        id, session_id, period, forecasted_revenue, forecasted_cogs, gross_profit, operating_expenses,
+                        total_losses, net_profit, gross_margin_pct, net_margin_pct, scenario, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ''',
+                    (
+                        row['id'], session_id, row['period'], row['forecasted_revenue'], row['forecasted_cogs'],
+                        row['gross_profit'], row['operating_expenses'], row['total_losses'], row['net_profit'],
+                        row['gross_margin_pct'], row['net_margin_pct'], row['scenario'], row['created_at'],
+                    ),
+                )
+
+
+def query_profit_results(session_id: str) -> dict[str, list[dict[str, Any]]]:
+    state = ensure_session_state(session_id)
+    if state.get('profit_scenarios'):
+        return dict(state['profit_scenarios'])
+    if not ACTIVITY_DB_AVAILABLE:
+        return {'optimistic': [], 'baseline': [], 'pessimistic': []}
+    with get_activity_connection() as connection:
+        rows = connection.execute(
+            '''
+            SELECT id, session_id, period::text, forecasted_revenue, forecasted_cogs, gross_profit, operating_expenses,
+                   total_losses, net_profit, gross_margin_pct, net_margin_pct, scenario, created_at
+            FROM profit_forecast_results
+            WHERE session_id = %s
+            ORDER BY scenario ASC, period ASC
+            ''',
+            (session_id,),
+        ).fetchall()
+    scenarios = {'optimistic': [], 'baseline': [], 'pessimistic': []}
+    for row in rows:
+        scenarios.setdefault(row['scenario'], []).append(dict(row))
+    return scenarios
+
+
+@router.post('/loss-forecast/run')
+def run_loss_forecast(request: ForecastRunRequest, http_request: Request) -> JSONResponse:
+    try:
+        session_id = request.session_id
+        frame, segments, driver_weights = build_loss_base_frame(session_id, request.forecast_periods)
+        rows = safe_serialize(frame.to_dict(orient='records'))
+        persist_loss_forecast(session_id, rows, segments)
+        state = ensure_session_state(session_id)
+        state['forecast_steps']['loss'] = True
+        state['loss_forecast_result'] = rows
+        state['loss_segments'] = segments
+        state['loss_summary'] = build_loss_summary(rows, driver_weights)
+        state['updated_at'] = utc_now_iso()
+        record_activity(request=http_request, action='loss_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail=f'Generated {len(rows)} loss forecast rows.')
+        return JSONResponse(content=safe_serialize({'status': 'success', 'loss_forecast': rows, 'summary': state['loss_summary']}))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Loss forecast failed session_id=%s', request.session_id)
+        raise HTTPException(status_code=422, detail=f'Loss forecast failed: {error}') from error
+
+
+@router.get('/loss-forecast/results/{session_id}')
+def get_loss_forecast_results(session_id: str, limit: int = Query(default=250, ge=1, le=1000), offset: int = Query(default=0, ge=0)) -> JSONResponse:
+    try:
+        rows = query_loss_results(session_id)
+        return JSONResponse(content=safe_serialize({'results': rows[offset:offset + limit], 'count': len(rows)}))
+    except Exception as error:
+        logger.exception('Loss forecast result lookup failed session_id=%s', session_id)
+        raise HTTPException(status_code=422, detail=f'Unable to fetch loss forecast results: {error}') from error
+
+
+@router.get('/loss-forecast/segments/{session_id}')
+def get_loss_forecast_segments(session_id: str) -> JSONResponse:
+    try:
+        state = ensure_session_state(session_id)
+        segments = state.get('loss_segments') or []
+        return JSONResponse(content=safe_serialize({'segments': segments}))
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f'Unable to fetch loss segments: {error}') from error
+
+
+@router.post('/profit-forecast/run')
+def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> JSONResponse:
+    try:
+        session_id = request.session_id
+        scenarios, breakeven = build_profit_rows(session_id, request.forecast_periods)
+        serialized = safe_serialize(scenarios)
+        persist_profit_forecast(session_id, serialized)
+        state = ensure_session_state(session_id)
+        state['forecast_steps']['profit'] = True
+        state['profit_scenarios'] = serialized
+        state['breakeven'] = safe_serialize(breakeven)
+        state['updated_at'] = utc_now_iso()
+        record_activity(request=http_request, action='profit_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail='Generated profit forecast scenarios.')
+        return JSONResponse(content=safe_serialize({'status': 'success', 'scenarios': serialized, 'breakeven': breakeven}))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Profit forecast failed session_id=%s', request.session_id)
+        raise HTTPException(status_code=422, detail=f'Profit forecast failed: {error}') from error
+
+
+@router.get('/profit-forecast/results/{session_id}')
+def get_profit_forecast_results(session_id: str) -> JSONResponse:
+    try:
+        scenarios = query_profit_results(session_id)
+        return JSONResponse(content=safe_serialize({'scenarios': scenarios}))
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f'Unable to fetch profit forecast results: {error}') from error
+
+
+@router.get('/profit-forecast/breakeven/{session_id}')
+def get_profit_breakeven(session_id: str) -> JSONResponse:
+    try:
+        state = ensure_session_state(session_id)
+        breakeven = state.get('breakeven')
+        if not breakeven:
+            scenarios = query_profit_results(session_id)
+            baseline = scenarios.get('baseline', [])
+            index = next((idx for idx, row in enumerate(baseline) if float(row.get('net_profit') or 0) >= 0), None)
+            breakeven = {
+                'breakeven_period': baseline[index]['period'] if index is not None else None,
+                'periods_to_breakeven': index + 1 if index is not None else None,
+            }
+        return JSONResponse(content=safe_serialize(breakeven))
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f'Unable to fetch break-even analysis: {error}') from error
+
+
 @router.post('/predict')
 def predict(request: PredictRequest, http_request: Request) -> JSONResponse:
     bundle = load_model_bundle(request.model_id)
@@ -4539,11 +5094,20 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         completed_steps.add(5)
     if session_state['forecast_steps'].get('ml'):
         completed_steps.add(6)
+    if session_state['forecast_steps'].get('loss'):
+        completed_steps.add(7)
+    if session_state['forecast_steps'].get('profit'):
+        completed_steps.add(8)
 
     ts_result_raw = payload.timeSeriesForecastResult or session_state.get('time_series_result')
     ml_result_raw = payload.mlForecastResult or session_state.get('ml_forecast_result')
     ts_result = ts_result_raw.model_dump() if hasattr(ts_result_raw, 'model_dump') else ts_result_raw
     ml_forecast_result = ml_result_raw.model_dump() if hasattr(ml_result_raw, 'model_dump') else ml_result_raw
+    loss_forecast_result = payload.lossForecast or session_state.get('loss_forecast_result') or []
+    profit_scenarios = payload.scenarios or session_state.get('profit_scenarios') or {}
+    selected_profit_result = payload.profitForecast or profit_scenarios.get(payload.reportConfig.scenario, [])
+    loss_segments = payload.lossSegments or session_state.get('loss_segments') or []
+    breakeven_period = payload.breakevenPeriod or (session_state.get('breakeven') or {}).get('breakeven_period')
 
     page_size = landscape(letter)
     page_width, page_height = page_size
@@ -4687,11 +5251,13 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         ['4', 'Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} logged operations and {payload.cleanedRowCount:,} cleaned rows retained'],
         ['5', 'Forecast TS', 'Completed' if ts_result else 'Skipped', 'Time-driven forecasting, backtest metrics, horizon outputs, and interval-aware charting'],
         ['6', 'Forecast ML', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting, SHAP importance, generated features, and projected horizon'],
-        ['7', 'ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'Model selection, target setup, {len(payload.selectedFeatures)} features, and training metrics'],
-        ['8', 'Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction history entries and latest scoring output'],
+        ['7', 'Loss Forecast', 'Completed' if loss_forecast_result else 'Skipped', 'Revenue, operational, inventory, and discount-loss projections with risk scoring'],
+        ['8', 'Profit Forecast', 'Completed' if selected_profit_result else 'Skipped', 'Scenario-based P&L projection, margins, net profit, and break-even analysis'],
+        ['9', 'ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'Model selection, target setup, {len(payload.selectedFeatures)} features, and training metrics'],
+        ['10', 'Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction history entries and latest scoring output'],
     ]
-    workflow_status = f"{sum(1 for row in workflow_rows[1:] if row[2] == 'Completed')}/8 core tabs completed"
-    forecast_status = ', '.join(name for name, present in [('TS', bool(ts_result)), ('ML', bool(ml_forecast_result))] if present) or 'None'
+    workflow_status = f"{sum(1 for row in workflow_rows[1:] if row[2] == 'Completed')}/10 core tabs completed"
+    forecast_status = ', '.join(name for name, present in [('TS', bool(ts_result)), ('ML', bool(ml_forecast_result)), ('Loss', bool(loss_forecast_result)), ('Profit', bool(selected_profit_result))] if present) or 'None'
 
     generated_on = datetime.now().strftime('%d %b %Y, %I:%M %p')
     cover_card = Table([[
@@ -4910,8 +5476,138 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         elements.append(Spacer(1, 8))
         add_paragraph(ml_forecast_result.get('analysis', 'ML forecasting output was recorded for this workflow.'), body_style)
 
+    if payload.reportConfig.includeLoss and loss_forecast_result:
+        elements.append(PageBreak())
+        add_section('Tab 7: Loss Forecast Analysis', 'Loss forecasting quantifies future value erosion across revenue, operational, inventory, and discount drivers.')
+        total_loss = sum(float(row.get('total_loss') or 0) for row in loss_forecast_result)
+        peak_row = max(loss_forecast_result, key=lambda row: float(row.get('total_loss') or 0))
+        avg_risk = sum(float(row.get('loss_risk_score') or 0) for row in loss_forecast_result) / max(1, len(loss_forecast_result))
+        driver_totals = {
+            'Revenue Loss': sum(float(row.get('revenue_loss') or 0) for row in loss_forecast_result),
+            'Operational Loss': sum(float(row.get('operational_loss') or 0) for row in loss_forecast_result),
+            'Inventory Loss': sum(float(row.get('inventory_loss') or 0) for row in loss_forecast_result),
+            'Discount Loss': sum(float(row.get('discount_loss') or 0) for row in loss_forecast_result),
+        }
+        top_driver = max(driver_totals.items(), key=lambda item: item[1])
+        add_stat_cards([
+            ('Total Loss', f'{total_loss:,.0f}'),
+            ('Peak Loss Period', peak_row.get('period', 'N/A')),
+            ('Avg Risk Score', f'{avg_risk:.1%}'),
+            ('Top Loss Driver', f'{top_driver[0]} ({(top_driver[1] / total_loss * 100) if total_loss else 0:.0f}%)'),
+        ])
+        elements.append(Spacer(1, 8))
+        try:
+            fig, ax = plt.subplots(figsize=(8.8, 2.8))
+            periods = [str(row.get('period')) for row in loss_forecast_result]
+            ax.plot(periods, [float(row.get('total_loss') or 0) for row in loss_forecast_result], color='#dc2626', linewidth=2.5, label='Total Loss')
+            ax.plot(periods, [float(row.get('revenue_loss') or 0) for row in loss_forecast_result], color='#ef4444', linewidth=1.5, label='Revenue')
+            ax.plot(periods, [float(row.get('operational_loss') or 0) for row in loss_forecast_result], color='#f97316', linewidth=1.5, label='Operational')
+            ax.plot(periods, [float(row.get('inventory_loss') or 0) for row in loss_forecast_result], color='#f59e0b', linewidth=1.5, label='Inventory')
+            ax.plot(periods, [float(row.get('discount_loss') or 0) for row in loss_forecast_result], color='#8b5cf6', linewidth=1.5, label='Discount')
+            ax.set_title('Loss Trend by Driver')
+            ax.tick_params(axis='x', rotation=35, labelsize=7)
+            ax.grid(True, alpha=0.25)
+            ax.legend(fontsize=7, ncol=5)
+            chart_buffer = io.BytesIO()
+            fig.tight_layout()
+            fig.savefig(chart_buffer, format='png', dpi=160)
+            plt.close(fig)
+            chart_buffer.seek(0)
+            elements.append(Image(chart_buffer, width=content_width * 0.92, height=190))
+            elements.append(Spacer(1, 8))
+        except Exception:
+            logger.exception('Failed to render loss chart for report.')
+        loss_rows = [['Period', 'Revenue', 'Operational', 'Inventory', 'Discount', 'Total', 'Risk']]
+        for row in loss_forecast_result[:14]:
+            loss_rows.append([
+                row.get('period', 'N/A'),
+                metric_text(row.get('revenue_loss')),
+                metric_text(row.get('operational_loss')),
+                metric_text(row.get('inventory_loss')),
+                metric_text(row.get('discount_loss')),
+                metric_text(row.get('total_loss')),
+                f"{float(row.get('loss_risk_score') or 0):.1%} {row.get('risk_label', '')}",
+            ])
+        add_table(loss_rows, [content_width * 0.15, content_width * 0.13, content_width * 0.14, content_width * 0.13, content_width * 0.13, content_width * 0.13, content_width * 0.13], header_bg='#991b1b')
+        if loss_segments:
+            elements.append(Spacer(1, 8))
+            segment_rows = [['Segment', 'Type', 'Total Loss', 'Risk Score', 'Risk Label']]
+            for item in loss_segments[:12]:
+                segment_rows.append([item.get('segment', 'N/A'), item.get('segment_type', 'N/A'), metric_text(item.get('total_loss')), f"{float(item.get('risk_score') or 0):.1%}", item.get('risk_label', 'N/A')])
+            add_table(segment_rows, [content_width * 0.3, content_width * 0.15, content_width * 0.18, content_width * 0.14, content_width * 0.14], header_bg='#b91c1c')
+        driver_sentence = ', '.join(f'{name} ({value / total_loss * 100:.0f}%)' for name, value in sorted(driver_totals.items(), key=lambda item: item[1], reverse=True)[:3]) if total_loss else 'no material drivers'
+        add_callout(
+            'Loss Forecast Insights',
+            f'The top forecasted loss drivers are {driver_sentence}. Peak exposure appears in {peak_row.get("period", "N/A")} with total loss {float(peak_row.get("total_loss") or 0):,.0f}. Recommended action is to focus mitigation on the largest driver before the next planning cycle.',
+            tone='#fff1f2',
+            border='#fda4af',
+        )
+
+    if payload.reportConfig.includeProfit and selected_profit_result:
+        elements.append(PageBreak())
+        add_section('Tab 8: Profit Forecast & P&L Projection', 'Profit forecasting combines revenue, cost, operating expense, and forecasted losses into scenario-based P&L projections.')
+        scenario_names = ['optimistic', 'baseline', 'pessimistic']
+        scenario_summary_rows = [['Scenario', 'Total Revenue', 'Total COGS', 'Gross Profit', 'Total Losses', 'Net Profit', 'Net Margin']]
+        for scenario_name in scenario_names:
+            rows = profit_scenarios.get(scenario_name, [])
+            total_revenue = sum(float(row.get('forecasted_revenue') or 0) for row in rows)
+            total_cogs = sum(float(row.get('forecasted_cogs') or 0) for row in rows)
+            gross_profit = sum(float(row.get('gross_profit') or 0) for row in rows)
+            total_losses = sum(float(row.get('total_losses') or 0) for row in rows)
+            net_profit = sum(float(row.get('net_profit') or 0) for row in rows)
+            net_margin = (net_profit / total_revenue * 100) if total_revenue else 0
+            scenario_summary_rows.append([scenario_name.title(), f'{total_revenue:,.0f}', f'{total_cogs:,.0f}', f'{gross_profit:,.0f}', f'{total_losses:,.0f}', f'{net_profit:,.0f}', f'{net_margin:.1f}%'])
+        add_table(scenario_summary_rows, [content_width * 0.14, content_width * 0.14, content_width * 0.14, content_width * 0.14, content_width * 0.14, content_width * 0.14, content_width * 0.12], header_bg='#075985')
+        elements.append(Spacer(1, 8))
+        try:
+            fig, ax = plt.subplots(figsize=(8.8, 2.8))
+            for scenario_name, color in [('optimistic', '#10b981'), ('baseline', '#2563eb'), ('pessimistic', '#f43f5e')]:
+                rows = profit_scenarios.get(scenario_name, [])
+                ax.plot([str(row.get('period')) for row in rows], [float(row.get('net_profit') or 0) for row in rows], label=scenario_name.title(), color=color, linewidth=2)
+            ax.axhline(0, color='#64748b', linewidth=1)
+            ax.set_title('Net Profit Forecast by Scenario')
+            ax.tick_params(axis='x', rotation=35, labelsize=7)
+            ax.grid(True, alpha=0.25)
+            ax.legend(fontsize=8)
+            chart_buffer = io.BytesIO()
+            fig.tight_layout()
+            fig.savefig(chart_buffer, format='png', dpi=160)
+            plt.close(fig)
+            chart_buffer.seek(0)
+            elements.append(Image(chart_buffer, width=content_width * 0.92, height=190))
+        except Exception:
+            logger.exception('Failed to render profit chart for report.')
+        elements.append(Spacer(1, 8))
+        selected_rows = selected_profit_result[:14]
+        pnl_rows = [['Period', 'Revenue', 'COGS', 'Gross Profit', 'OpEx', 'Losses', 'Net Profit', 'Net Margin']]
+        for row in selected_rows:
+            pnl_rows.append([
+                row.get('period', 'N/A'),
+                metric_text(row.get('forecasted_revenue')),
+                metric_text(row.get('forecasted_cogs')),
+                metric_text(row.get('gross_profit')),
+                metric_text(row.get('operating_expenses')),
+                metric_text(row.get('total_losses')),
+                metric_text(row.get('net_profit')),
+                f"{float(row.get('net_margin_pct') or 0):.1f}%",
+            ])
+        add_table(pnl_rows, [content_width * 0.13, content_width * 0.12, content_width * 0.12, content_width * 0.13, content_width * 0.12, content_width * 0.12, content_width * 0.13, content_width * 0.11], header_bg='#0369a1')
+        elements.append(Spacer(1, 8))
+        add_callout(
+            'Break-even Analysis',
+            f'Break-even period for the baseline scenario is {breakeven_period or "not reached in the selected horizon"}. The selected report scenario is {payload.reportConfig.scenario.title()}, and the final period net profit is {float(selected_profit_result[-1].get("net_profit") or 0):,.0f}.',
+            tone='#ecfdf5',
+            border='#86efac',
+        )
+        add_callout(
+            'Executive Profit Outlook',
+            f'The {payload.reportConfig.scenario} scenario projects total revenue of {sum(float(row.get("forecasted_revenue") or 0) for row in selected_profit_result):,.0f}. Key risk periods are those where net profit approaches or falls below zero, especially when losses absorb margin. Recommended actions are to protect margin through cost control, loss-driver mitigation, and scenario monitoring before the forecast horizon closes.',
+            tone='#eff6ff',
+            border='#93c5fd',
+        )
+
     elements.append(PageBreak())
-    add_section('Tab 7: ML Assistant', 'This section summarizes the supervised learning branch, including selected target, modeling objective, chosen algorithm, feature set, and performance evidence.')
+    add_section('Tab 9: ML Assistant', 'This section summarizes the supervised learning branch, including selected target, modeling objective, chosen algorithm, feature set, and performance evidence.')
     add_stat_cards([
         ('Target', payload.targetColumn or 'N/A'),
         ('Problem Type', str(payload.problemType).title()),
@@ -4936,7 +5632,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         add_table(importance_rows, [60, content_width * 0.62, content_width * 0.22], header_bg='#115e59')
 
     elements.append(PageBreak())
-    add_section('Tab 8: Prediction', 'The final tab captures the application outcome by storing the latest inference result, probability breakdowns when available, and recent prediction history.')
+    add_section('Tab 10: Prediction', 'The final tab captures the application outcome by storing the latest inference result, probability breakdowns when available, and recent prediction history.')
     if payload.uploadedModel:
         add_table([
             ['Model Name', 'Type', 'Target', 'Problem', 'Trained At'],

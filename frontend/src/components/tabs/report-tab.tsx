@@ -6,10 +6,13 @@ import { Bot, BrainCircuit, Database, FileText, FilePenLine, Loader2, Sparkles, 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAppStore } from '@/lib/store';
 import { computeEdaStats } from '@/lib/eda';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
+import type { ProfitScenario, ReportConfig } from '@/types/forecast';
 
 const STEP_TAB_MAP = {
   1: 'upload',
@@ -18,8 +21,10 @@ const STEP_TAB_MAP = {
   4: 'cleaning',
   5: 'forecast_ts',
   6: 'forecast_ml',
-  7: 'ml',
-  8: 'prediction',
+  7: 'loss_forecast',
+  8: 'profit_forecast',
+  9: 'ml',
+  10: 'prediction',
 } as const;
 
 function buildReportFileName(fileName: string | null, extension = 'pdf'): string {
@@ -106,7 +111,7 @@ export default function ReportTab() {
     cleaningLogs, cleaningDone, cleanedRowCount, aiInsights,
     targetColumn, problemType, selectedFeatures, selectedModel, modelMetrics, featureImportance,
     uploadedModel, predictionResult, predictionAnalysis, predictionProbabilities, predictionHistory,
-    timeSeriesForecastResult, mlForecastResult, modelTrained,
+    timeSeriesForecastResult, mlForecastResult, lossForecast, profitForecast, lossSegments, scenarios, breakevenPeriod, modelTrained,
     reportGenerated, reportUrl, setReportGenerated, setReportUrl, setActiveTab,
   } = store;
 
@@ -114,6 +119,7 @@ export default function ReportTab() {
   const [generating, setGenerating] = useState(false);
   const [generatingDocument, setGeneratingDocument] = useState(false);
   const [reportFileName, setReportFileName] = useState(() => buildReportFileName(fileName));
+  const [reportConfig, setReportConfig] = useState<ReportConfig>({ includeLoss: true, includeProfit: true, scenario: 'baseline' });
   const analysisData = cleanedData ?? rawData ?? [];
   const edaStats = useMemo(() => computeEdaStats(analysisData, columns), [analysisData, columns]);
 
@@ -180,6 +186,24 @@ export default function ReportTab() {
     },
     {
       step: 7,
+      title: 'Loss Forecast',
+      icon: TrendingUp,
+      status: lossForecast?.length ? 'Completed' : 'Skipped',
+      detail: lossForecast?.length
+        ? `${lossForecast.length} future periods were evaluated for revenue, operational, inventory, and discount loss pressure.`
+        : 'Loss forecasting is optional and appears in the report after tab 7 has been executed.',
+    },
+    {
+      step: 8,
+      title: 'Profit Forecast',
+      icon: TrendingUp,
+      status: scenarios?.baseline?.length ? 'Completed' : 'Skipped',
+      detail: scenarios?.baseline?.length
+        ? `Optimistic, baseline, and pessimistic P&L scenarios were generated with break-even period ${breakevenPeriod ?? 'not reached'}.`
+        : 'Profit forecasting is optional and appears in the report after tab 8 has been executed.',
+    },
+    {
+      step: 9,
       title: 'ML Assistant',
       icon: BrainCircuit,
       status: modelTrained ? 'Completed' : 'Pending',
@@ -188,7 +212,7 @@ export default function ReportTab() {
         : 'The supervised ML branch has not been trained yet.',
     },
     {
-      step: 8,
+      step: 10,
       title: 'Prediction',
       icon: Target,
       status: predictionResult !== null ? 'Completed' : 'Pending',
@@ -199,7 +223,7 @@ export default function ReportTab() {
   ], [
     cleanedRowCount, cleaningDone, cleaningLogs.length, columns.length, edaStats.categoricalColumns.length, edaStats.correlations.length,
     edaStats.numericColumns.length, fileName, loadedRowCount, mlForecastResult, modelTrained, predictionResult, previewLoaded, problemType,
-    rawData, selectedFeatures.length, selectedModel, targetColumn, timeSeriesForecastResult, totalRows,
+    breakevenPeriod, lossForecast, rawData, scenarios, selectedFeatures.length, selectedModel, targetColumn, timeSeriesForecastResult, totalRows,
   ]);
 
   const reportNarrative = useMemo(() => {
@@ -214,12 +238,18 @@ export default function ReportTab() {
       timeSeriesForecastResult || mlForecastResult
         ? 'Forecasting sections will be included conditionally based on which forecasting tabs were run in this session.'
         : 'Forecasting sections will be omitted because no forecast results are currently available.',
+      lossForecast?.length
+        ? 'Loss forecast results can be included as a dedicated risk and value-erosion section.'
+        : 'Loss forecast results are not available yet; run tab 7 to include loss risk analysis.',
+      scenarios?.baseline?.length
+        ? 'Profit forecast scenarios can be included with the selected scenario emphasized in the report.'
+        : 'Profit forecast scenarios are not available yet; run tab 8 to include P&L projections.',
       predictionResult !== null
         ? 'The report will close with the final prediction result and supporting model context.'
         : 'The report will still generate without a prediction, but the final outcome section will be lighter.',
     ];
     return sections;
-  }, [cleaningDone, loadedRowCount, mlForecastResult, predictionResult, previewLoaded, rawData, timeSeriesForecastResult, totalRows]);
+  }, [cleaningDone, loadedRowCount, lossForecast?.length, mlForecastResult, predictionResult, previewLoaded, rawData, scenarios?.baseline?.length, timeSeriesForecastResult, totalRows]);
 
   const completedSteps = workflowSteps.filter((step) => step.status === 'Completed').length;
   const pendingSteps = workflowSteps.filter((step) => step.status === 'Pending').length;
@@ -260,9 +290,17 @@ export default function ReportTab() {
       ...mlForecastResult,
       training_summary: normalizeForecastTrainingSummary(mlForecastResult.training_summary),
     } : null,
+    lossForecast: reportConfig.includeLoss ? lossForecast ?? [] : [],
+    profitForecast: reportConfig.includeProfit ? scenarios?.[reportConfig.scenario] ?? profitForecast ?? [] : [],
+    lossSegments: reportConfig.includeLoss ? lossSegments ?? [] : [],
+    scenarios: reportConfig.includeProfit ? scenarios : null,
+    breakevenPeriod,
+    reportConfig,
     forecastingStepsCompleted: [
       ...(timeSeriesForecastResult ? [5] : []),
       ...(mlForecastResult ? [6] : []),
+      ...(lossForecast?.length ? [7] : []),
+      ...(scenarios?.baseline?.length ? [8] : []),
     ],
     predictionResult,
     predictionAnalysis,
@@ -272,7 +310,8 @@ export default function ReportTab() {
   }), [
     aiInsights, cleanedData?.length, cleanedRowCount, cleaningDone, cleaningLogs, columns, datasetId, duplicates, edaStats, featureImportance,
     fileName, memoryUsage, mlForecastResult, modelMetrics, predictionAnalysis, predictionHistory, predictionProbabilities, predictionResult,
-    loadedRowCount, previewLoaded, problemType, rawData?.length, selectedFeatures, selectedModel, targetColumn, timeSeriesForecastResult, totalRows, uploadedModel,
+    loadedRowCount, lossForecast, lossSegments, previewLoaded, problemType, profitForecast, rawData?.length, reportConfig, scenarios, selectedFeatures,
+    selectedModel, targetColumn, timeSeriesForecastResult, totalRows, uploadedModel, breakevenPeriod,
   ]);
 
   const cacheGeneratedReport = useCallback((blob: Blob, nextFileName: string) => {
@@ -387,10 +426,38 @@ export default function ReportTab() {
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{fileName ?? 'Untitled Dataset'}</Badge>
-                <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{completedSteps}/8 steps completed</Badge>
+                <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{completedSteps}/10 steps completed</Badge>
                 <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{(cleanedRowCount ?? totalRows ?? rawData.length).toLocaleString()} rows in final flow</Badge>
               </div>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Forecast Report Options</CardTitle>
+          <CardDescription>Choose the new forecast sections and the scenario emphasized in the generated report.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-3">
+          <label className="flex items-center gap-3 rounded-2xl border p-4">
+            <Checkbox checked={reportConfig.includeLoss} onCheckedChange={(checked) => setReportConfig((current) => ({ ...current, includeLoss: Boolean(checked) }))} />
+            <span className="font-medium">Include Loss Forecast Section</span>
+          </label>
+          <label className="flex items-center gap-3 rounded-2xl border p-4">
+            <Checkbox checked={reportConfig.includeProfit} onCheckedChange={(checked) => setReportConfig((current) => ({ ...current, includeProfit: Boolean(checked) }))} />
+            <span className="font-medium">Include Profit Forecast Section</span>
+          </label>
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Select scenario for report</p>
+            <Select value={reportConfig.scenario} onValueChange={(value) => setReportConfig((current) => ({ ...current, scenario: value as ProfitScenario }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="optimistic">Optimistic</SelectItem>
+                <SelectItem value="baseline">Baseline</SelectItem>
+                <SelectItem value="pessimistic">Pessimistic</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>

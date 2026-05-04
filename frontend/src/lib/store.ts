@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { apiClient, getApiErrorMessage } from '@/lib/api';
+import type { LossForecastResult, LossForecastSummary, ProfitForecastResult, ScenarioComparison, SegmentBreakdown } from '@/types/forecast';
 
-export type TabId = 'upload' | 'understanding' | 'cleaning' | 'eda' | 'forecast_ts' | 'forecast_ml' | 'ml' | 'prediction' | 'report';
+export type TabId = 'upload' | 'understanding' | 'cleaning' | 'eda' | 'forecast_ts' | 'forecast_ml' | 'loss_forecast' | 'profit_forecast' | 'ml' | 'prediction' | 'report';
 
 export interface ColumnInfo {
   name: string;
@@ -147,6 +149,17 @@ export interface DatasetWorkspaceState {
   predictionHistory: { id: string; prediction: number | string; confidence?: number; probabilities?: Record<string, number>; features: Record<string, string | number>; timestamp: string }[];
   timeSeriesForecastResult: TimeSeriesForecastResult | null;
   mlForecastResult: MlForecastResult | null;
+  lossForecast: LossForecastResult[] | null;
+  profitForecast: ProfitForecastResult[] | null;
+  lossSegments: SegmentBreakdown[] | null;
+  lossSummary: LossForecastSummary | null;
+  scenarios: ScenarioComparison | null;
+  breakevenPeriod: string | null;
+  periodsToBreakeven: number | null;
+  lossLoading: boolean;
+  profitLoading: boolean;
+  lossError: string | null;
+  profitError: string | null;
   reportGenerated: boolean;
   reportUrl: string | null;
   aiInsights: string | null;
@@ -195,6 +208,11 @@ export interface AppState extends DatasetWorkspaceState {
   selectDataset: (key: string) => void;
   setReportGenerated: (v: boolean) => void;
   setReportUrl: (v: string | null) => void;
+  runLossForecast: (sessionId: string, periods: number) => Promise<void>;
+  runProfitForecast: (sessionId: string, periods: number) => Promise<void>;
+  fetchLossSegments: (sessionId: string) => Promise<void>;
+  fetchBreakeven: (sessionId: string) => Promise<void>;
+  resetForecasts: () => void;
 }
 
 type PersistedAppSlice = Pick<
@@ -211,7 +229,7 @@ type PersistedAppSlice = Pick<
 >;
 
 const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
-const STORE_PERSIST_VERSION = 2;
+const STORE_PERSIST_VERSION = 3;
 
 function createEmptyDatasetState(): DatasetWorkspaceState {
   return {
@@ -243,6 +261,17 @@ function createEmptyDatasetState(): DatasetWorkspaceState {
     predictionHistory: [],
     timeSeriesForecastResult: null,
     mlForecastResult: null,
+    lossForecast: null,
+    profitForecast: null,
+    lossSegments: null,
+    lossSummary: null,
+    scenarios: null,
+    breakevenPeriod: null,
+    periodsToBreakeven: null,
+    lossLoading: false,
+    profitLoading: false,
+    lossError: null,
+    profitError: null,
     reportGenerated: false,
     reportUrl: null,
     aiInsights: null,
@@ -291,6 +320,17 @@ const datasetStateKeys: Array<keyof DatasetWorkspaceState> = [
   'predictionHistory',
   'timeSeriesForecastResult',
   'mlForecastResult',
+  'lossForecast',
+  'profitForecast',
+  'lossSegments',
+  'lossSummary',
+  'scenarios',
+  'breakevenPeriod',
+  'periodsToBreakeven',
+  'lossLoading',
+  'profitLoading',
+  'lossError',
+  'profitError',
   'reportGenerated',
   'reportUrl',
   'aiInsights',
@@ -406,6 +446,64 @@ const store = create<AppState>()(
       },
       setReportGenerated: (v) => set({ reportGenerated: v }),
       setReportUrl: (v) => set({ reportUrl: v }),
+      runLossForecast: async (sessionId, periods) => {
+        set({ lossLoading: true, lossError: null });
+        try {
+          const response = await apiClient.post('/loss-forecast/run', { session_id: sessionId, forecast_periods: periods });
+          set({
+            lossForecast: response.data.loss_forecast ?? [],
+            lossSummary: response.data.summary ?? null,
+            lossLoading: false,
+            lossError: null,
+          });
+          await get().fetchLossSegments(sessionId);
+        } catch (error) {
+          set({ lossLoading: false, lossError: getApiErrorMessage(error, 'Loss forecast failed.') });
+          throw error;
+        }
+      },
+      runProfitForecast: async (sessionId, periods) => {
+        set({ profitLoading: true, profitError: null });
+        try {
+          const response = await apiClient.post('/profit-forecast/run', { session_id: sessionId, forecast_periods: periods });
+          const scenarios = response.data.scenarios as ScenarioComparison;
+          set({
+            scenarios,
+            profitForecast: scenarios?.baseline ?? [],
+            breakevenPeriod: response.data.breakeven?.breakeven_period ?? null,
+            periodsToBreakeven: response.data.breakeven?.periods_to_breakeven ?? null,
+            profitLoading: false,
+            profitError: null,
+          });
+        } catch (error) {
+          set({ profitLoading: false, profitError: getApiErrorMessage(error, 'Profit forecast failed.') });
+          throw error;
+        }
+      },
+      fetchLossSegments: async (sessionId) => {
+        const response = await apiClient.get(`/loss-forecast/segments/${sessionId}`);
+        set({ lossSegments: response.data.segments ?? [] });
+      },
+      fetchBreakeven: async (sessionId) => {
+        const response = await apiClient.get(`/profit-forecast/breakeven/${sessionId}`);
+        set({
+          breakevenPeriod: response.data.breakeven_period ?? null,
+          periodsToBreakeven: response.data.periods_to_breakeven ?? null,
+        });
+      },
+      resetForecasts: () => set({
+        lossForecast: null,
+        profitForecast: null,
+        lossSegments: null,
+        lossSummary: null,
+        scenarios: null,
+        breakevenPeriod: null,
+        periodsToBreakeven: null,
+        lossLoading: false,
+        profitLoading: false,
+        lossError: null,
+        profitError: null,
+      }),
     }),
     {
       name: STORE_PERSIST_KEY,
@@ -438,7 +536,10 @@ const store = create<AppState>()(
           datasets: Object.fromEntries(
             Object.entries(state.datasets ?? {}).map(([key, dataset]) => [
               key,
-              stripTransientDatasetState(dataset as DatasetWorkspace),
+              stripTransientDatasetState({
+                ...createEmptyDatasetState(),
+                ...(dataset as DatasetWorkspace),
+              }),
             ])
           ),
           ...buildDatasetStatePatch(
