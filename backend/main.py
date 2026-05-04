@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import io
 import json
@@ -812,13 +813,36 @@ def read_cached_parquet(dataset_entry: dict[str, Any], **kwargs: Any) -> pl.Data
         raise HTTPException(status_code=400, detail=f'Failed to load cached parquet dataset: {error}') from error
 
 
+def get_delimited_separator(dataset_entry: dict[str, Any]) -> str:
+    separator = dataset_entry.get('separator')
+    if separator in {',', '\t', ';', '|'}:
+        return str(separator)
+
+    csv_path = str(dataset_entry.get('csv_path') or '').lower()
+    if csv_path.endswith('.tsv'):
+        return '\t'
+    return ','
+
+
+def sniff_delimited_separator(path: Path, fallback: str = ',') -> str:
+    if path.suffix.lower() == '.tsv':
+        return '\t'
+    try:
+        sample = path.read_text(encoding='utf-8-sig', errors='ignore')[:8192]
+        dialect = csv.Sniffer().sniff(sample, delimiters=[',', '\t', ';', '|'])
+        delimiter = dialect.delimiter
+        return delimiter if delimiter in {',', '\t', ';', '|'} else fallback
+    except Exception:
+        return fallback
+
+
 def read_cached_csv_preview(dataset_entry: dict[str, Any], n_rows: int | None = None) -> pl.DataFrame:
     csv_path = dataset_entry.get('csv_path')
     if not csv_path:
         raise HTTPException(status_code=400, detail='Cached CSV dataset path is missing. Please upload the file again.')
 
     try:
-        separator = '\t' if str(csv_path).lower().endswith('.tsv') else ','
+        separator = get_delimited_separator(dataset_entry)
         return pl.read_csv(csv_path, separator=separator, n_rows=n_rows, infer_schema_length=1000, ignore_errors=True)
     except Exception as error:
         raise HTTPException(status_code=400, detail=f'Failed to load cached CSV preview: {error}') from error
@@ -830,7 +854,7 @@ def read_cached_csv(dataset_entry: dict[str, Any], columns: list[str] | None = N
         raise HTTPException(status_code=400, detail='Cached CSV dataset path is missing. Please upload the file again.')
 
     try:
-        return pd.read_csv(csv_path, usecols=columns, nrows=n_rows, low_memory=True)
+        return pd.read_csv(csv_path, sep=get_delimited_separator(dataset_entry), usecols=columns, nrows=n_rows, low_memory=True)
     except Exception as error:
         raise HTTPException(status_code=400, detail=f'Failed to load cached CSV dataset: {error}') from error
 
@@ -2388,6 +2412,30 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
     return series_frame, freq, period_label
 
 
+def prepare_sales_series_from_cached_dataset(dataset_entry: dict[str, Any], date_column: str, target_column: str) -> tuple[pd.DataFrame, str, str]:
+    required_columns = [date_column, target_column]
+    available_columns = list(dataset_entry['columns'])
+    resolved_columns = resolve_requested_columns(required_columns, available_columns)
+    resolved_date_column = resolved_columns[date_column]
+    resolved_target_column = resolved_columns[target_column]
+
+    if dataset_entry.get('parquet_path'):
+        return prepare_sales_series_from_parquet(dataset_entry, resolved_date_column, resolved_target_column)
+
+    if dataset_entry.get('frame_path'):
+        frame = read_cached_frame(dataset_entry, columns=[resolved_date_column, resolved_target_column])
+    elif dataset_entry.get('csv_path'):
+        frame = read_cached_csv(dataset_entry, columns=[resolved_date_column, resolved_target_column])
+    elif dataset_entry.get('excel_path'):
+        frame = read_cached_excel(dataset_entry, columns=[resolved_date_column, resolved_target_column])
+    else:
+        raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
+
+    frame.columns = required_columns
+    frame = normalize_dataframe(frame)
+    return prepare_sales_series(frame, date_column, target_column)
+
+
 def infer_sales_time_frequency(dates: pd.Series) -> tuple[str, str]:
     ordered = pd.Series(pd.to_datetime(dates, errors='coerce')).dropna().sort_values().drop_duplicates()
     if len(ordered) < 2:
@@ -3238,8 +3286,14 @@ def sales_forecast(request: SalesForecastRequest, http_request: Request) -> JSON
 @router.post('/forecast/ts/run')
 def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Request) -> JSONResponse:
     required_columns = [request.date_column, request.target_column]
-    frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
-    series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
+    if request.dataset_id:
+        dataset_entry = DATASET_CACHE.get(request.dataset_id)
+        if dataset_entry is None:
+            raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
+        series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, request.date_column, request.target_column)
+    else:
+        frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
+        series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
 
     total_periods = len(series_frame)
     effective_test_periods = min(max(1, int(round(total_periods * (request.test_percentage / 100)))), max(1, total_periods - 4))
@@ -3355,8 +3409,14 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
 @router.post('/forecast/ml/run')
 def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONResponse:
     required_columns = [request.date_column, request.target_column]
-    frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
-    series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
+    if request.dataset_id:
+        dataset_entry = DATASET_CACHE.get(request.dataset_id)
+        if dataset_entry is None:
+            raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
+        series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, request.date_column, request.target_column)
+    else:
+        frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
+        series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
 
     total_periods = len(series_frame)
     effective_test_periods = min(max(1, int(round(total_periods * (request.test_percentage / 100)))), max(1, total_periods - 4))
@@ -3509,6 +3569,30 @@ def numeric_series(frame: pd.DataFrame, column: str | None, default: float = 0.0
 
 
 def normalize_period_value(value: Any) -> date:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+
+    text_value = str(value).strip()
+    quarter_match = re.fullmatch(r'(\d{4})-Q([1-4])', text_value, flags=re.IGNORECASE)
+    if quarter_match:
+        year = int(quarter_match.group(1))
+        month = (int(quarter_match.group(2)) - 1) * 3 + 1
+        return date(year, month, 1)
+
+    week_match = re.fullmatch(r'Week of (\d{4}-\d{2}-\d{2})', text_value, flags=re.IGNORECASE)
+    if week_match:
+        parsed_week = pd.to_datetime(week_match.group(1), errors='coerce')
+        if not pd.isna(parsed_week):
+            return pd.Timestamp(parsed_week).date()
+
+    if re.fullmatch(r'\d{4}', text_value):
+        return date(int(text_value), 1, 1)
+
+    if re.fullmatch(r'\d{4}-\d{2}', text_value):
+        parsed_month = pd.to_datetime(f'{text_value}-01', errors='coerce')
+        if not pd.isna(parsed_month):
+            return pd.Timestamp(parsed_month).date()
+
     parsed = pd.to_datetime(value, errors='coerce')
     if pd.isna(parsed):
         return datetime.utcnow().date()
@@ -6035,11 +6119,11 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             column_info = build_column_info_from_polars_frame(frame)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         elif lower_file_name.endswith('.csv') or lower_file_name.endswith('.tsv'):
-            sep = '\t' if lower_file_name.endswith('.tsv') else ','
+            sep = sniff_delimited_separator(cached_path)
             frame = pl.read_csv(cached_path, separator=sep, n_rows=PARQUET_PREVIEW_ROW_LIMIT, infer_schema_length=1000, ignore_errors=True)
             total_rows = count_csv_rows_from_path(cached_path, sep=sep)
             column_count = frame.width
-            dataset_entry.update({'csv_path': str(cached_path)})
+            dataset_entry.update({'csv_path': str(cached_path), 'separator': sep})
             rows = frame.to_dicts()
             column_info = build_column_info_from_polars_frame(frame)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
