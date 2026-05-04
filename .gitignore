@@ -13,6 +13,7 @@ backend/datasets/*.xls
 backend/datasets/*.parquet
 backend/*.log
 *.pyc
+*.tsbuildinfo
 .env
 .env.local
 backend/tmp/*
