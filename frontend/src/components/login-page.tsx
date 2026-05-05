@@ -10,12 +10,9 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
-  LinkIcon,
   Loader2,
   Lock,
   Mail,
-  MapPin,
-  Phone,
   ShieldCheck,
   Sparkles,
   UploadCloud,
@@ -454,28 +451,6 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 );
               })}
             </motion.div>
-
-            <div className="flex items-center justify-between gap-4 border-t border-white/10 pt-4 text-sm text-white/70">
-              <div className="flex items-center gap-2 whitespace-nowrap">
-                <MapPin className="h-4 w-4" />
-                <span>Bangalore</span>
-              </div>
-
-              <a
-                href="https://aroha.co.in/contact-us/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 whitespace-nowrap transition hover:text-white"
-              >
-                <LinkIcon className="h-4 w-4" />
-                <span className="underline underline-offset-4">Contact</span>
-              </a>
-
-              <div className="flex items-center gap-2 whitespace-nowrap">
-                <Phone className="h-4 w-4" />
-                <span>+91 9886228615</span>
-              </div>
-            </div>
           </motion.div>
         </section>
       </div>

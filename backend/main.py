@@ -154,7 +154,7 @@ TRAIN_SAMPLE_LIMIT = 30_000
 VERY_LARGE_TRAIN_SAMPLE_LIMIT = 15_000
 IMPORTANCE_SAMPLE_LIMIT = 800
 VERY_LARGE_IMPORTANCE_SAMPLE_LIMIT = 300
-PARQUET_PREVIEW_ROW_LIMIT = 20_000
+DATASET_PREVIEW_ROW_LIMIT = 5_000
 EDA_MAX_MISSINGNESS_COLUMNS = 30
 EDA_MISSINGNESS_BUCKETS = 60
 UPLOAD_READ_CHUNK_SIZE = 4 * 1024 * 1024
@@ -690,14 +690,22 @@ async def update_authenticated_user_profile(
     *,
     request: Request,
     username: str,
+    email: str,
     profile_image: UploadFile | None,
 ) -> dict[str, str | None]:
     current_user = get_authenticated_user(request)
     normalized_username = normalize_username(username)
+    normalized_email = normalize_email(email)
     if len(normalized_username) < 3:
         raise HTTPException(status_code=400, detail='Name must be at least 3 characters long.')
     if len(normalized_username) > 80:
         raise HTTPException(status_code=400, detail='Name must be 80 characters or fewer.')
+    if not EMAIL_REGEX.fullmatch(normalized_email):
+        raise HTTPException(status_code=400, detail='Enter a valid email address.')
+
+    existing_user = get_user_by_email(normalized_email)
+    if existing_user is not None and existing_user.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=409, detail='An account with this email already exists.')
 
     profile_image_data_url = await build_profile_image_data_url(profile_image)
     timestamp = utc_now_iso()
@@ -707,21 +715,21 @@ async def update_authenticated_user_profile(
             row = connection.execute(
                 '''
                 UPDATE app_users
-                SET username = %s, updated_at = %s
+                SET username = %s, email = %s, updated_at = %s
                 WHERE user_id = %s
                 RETURNING user_id, username, email, profile_image_data_url, created_at, updated_at, last_login_at
                 ''',
-                (normalized_username, timestamp, current_user['user_id']),
+                (normalized_username, normalized_email, timestamp, current_user['user_id']),
             ).fetchone()
         else:
             row = connection.execute(
                 '''
                 UPDATE app_users
-                SET username = %s, profile_image_data_url = %s, updated_at = %s
+                SET username = %s, email = %s, profile_image_data_url = %s, updated_at = %s
                 WHERE user_id = %s
                 RETURNING user_id, username, email, profile_image_data_url, created_at, updated_at, last_login_at
                 ''',
-                (normalized_username, profile_image_data_url, timestamp, current_user['user_id']),
+                (normalized_username, normalized_email, profile_image_data_url, timestamp, current_user['user_id']),
             ).fetchone()
 
     if row is None:
@@ -912,7 +920,7 @@ def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None =
         raise HTTPException(status_code=400, detail=f'Failed to load cached Excel dataset: {error}') from error
 
 
-def load_cached_preview(dataset_entry: dict[str, Any], limit: int = PARQUET_PREVIEW_ROW_LIMIT) -> tuple[pd.DataFrame | pl.DataFrame, bool]:
+def load_cached_preview(dataset_entry: dict[str, Any], limit: int = DATASET_PREVIEW_ROW_LIMIT) -> tuple[pd.DataFrame | pl.DataFrame, bool]:
     if dataset_entry.get('parquet_path'):
         return read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True), True
     if dataset_entry.get('csv_path'):
@@ -1106,14 +1114,14 @@ def build_excel_selection_payload(
 
     if resolved_merge_mode == 'single':
         sheet_name = selected_sheets[0]
-        preview_frame = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=PARQUET_PREVIEW_ROW_LIMIT)
+        preview_frame = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=DATASET_PREVIEW_ROW_LIMIT)
         total_rows = count_excel_rows_for_sheet(excel_path, sheet_name)
     else:
         preview_frames: list[pd.DataFrame] = []
         base_columns: list[str] | None = None
         total_rows = 0
         for sheet_name in selected_sheets:
-            preview_sheet = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=PARQUET_PREVIEW_ROW_LIMIT)
+            preview_sheet = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=DATASET_PREVIEW_ROW_LIMIT)
             current_columns = [str(col) for col in preview_sheet.columns]
             if base_columns is None:
                 base_columns = current_columns
@@ -4319,7 +4327,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             updated_entry['parquet_path'] = dataset_entry['parquet_path']
         DATASET_CACHE[request.dataset_id] = updated_entry
         memory_size = updated_dataset_path.stat().st_size
-        preview_frame = frame.head(PARQUET_PREVIEW_ROW_LIMIT)
+        preview_frame = frame.head(DATASET_PREVIEW_ROW_LIMIT)
         return {
             'datasetId': request.dataset_id,
             'data': safe_serialize(preview_frame.to_dict(orient='records')),
@@ -4434,7 +4442,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
     }
     memory_size = updated_dataset_path.stat().st_size
 
-    preview_frame = frame.head(PARQUET_PREVIEW_ROW_LIMIT)
+    preview_frame = frame.head(DATASET_PREVIEW_ROW_LIMIT)
     return {
         'datasetId': request.dataset_id,
         'data': safe_serialize(preview_frame.to_dicts()),
@@ -6042,7 +6050,7 @@ def get_dataset_preview(
     if dataset_entry is None:
         raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
 
-    preview_frame, is_polars_preview = load_cached_preview(dataset_entry, PARQUET_PREVIEW_ROW_LIMIT)
+    preview_frame, is_polars_preview = load_cached_preview(dataset_entry, DATASET_PREVIEW_ROW_LIMIT)
     row_count = int(dataset_entry.get('row_count') or (preview_frame.height if is_polars_preview else len(preview_frame)))
     loaded_row_count = int(preview_frame.height if is_polars_preview else len(preview_frame))
     preview_loaded = row_count > loaded_row_count
@@ -6113,14 +6121,14 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             parquet_file = pq.ParquetFile(cached_path)
             total_rows = int(parquet_file.metadata.num_rows)
             column_count = len(parquet_file.schema.names)
-            frame = pl.read_parquet(cached_path, n_rows=PARQUET_PREVIEW_ROW_LIMIT, low_memory=True)
+            frame = pl.read_parquet(cached_path, n_rows=DATASET_PREVIEW_ROW_LIMIT, low_memory=True)
             dataset_entry.update({'parquet_path': str(cached_path)})
             rows = frame.to_dicts()
             column_info = build_column_info_from_polars_frame(frame)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         elif lower_file_name.endswith('.csv') or lower_file_name.endswith('.tsv'):
             sep = sniff_delimited_separator(cached_path)
-            frame = pl.read_csv(cached_path, separator=sep, n_rows=PARQUET_PREVIEW_ROW_LIMIT, infer_schema_length=1000, ignore_errors=True)
+            frame = pl.read_csv(cached_path, separator=sep, n_rows=DATASET_PREVIEW_ROW_LIMIT, infer_schema_length=1000, ignore_errors=True)
             total_rows = count_csv_rows_from_path(cached_path, sep=sep)
             column_count = frame.width
             dataset_entry.update({'csv_path': str(cached_path), 'separator': sep})
@@ -6145,7 +6153,7 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             sheet_summaries: list[dict[str, Any]] = []
             for sheet_name in available_sheets:
                 try:
-                    sheet_preview = pd.read_excel(cached_path, sheet_name=sheet_name, nrows=min(50, PARQUET_PREVIEW_ROW_LIMIT))
+                    sheet_preview = pd.read_excel(cached_path, sheet_name=sheet_name, nrows=min(50, DATASET_PREVIEW_ROW_LIMIT))
                     sheet_columns = [str(column) for column in sheet_preview.columns]
                 except Exception:
                     sheet_columns = []
@@ -6182,7 +6190,7 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'loadedRowCount': int(len(rows)),
             'columnCount': int(column_count),
             'previewLoaded': preview_loaded,
-            'previewLimit': PARQUET_PREVIEW_ROW_LIMIT,
+            'previewLimit': DATASET_PREVIEW_ROW_LIMIT,
             'sheetSelection': {
                 'availableSheets': dataset_entry.get('workbook_sheets') or [],
                 'selectedSheets': dataset_entry.get('selected_sheets') or [],
@@ -6280,7 +6288,7 @@ def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_re
         'loadedRowCount': loaded_row_count,
         'columnCount': int(len(frame.columns)),
         'previewLoaded': preview_loaded,
-        'previewLimit': PARQUET_PREVIEW_ROW_LIMIT,
+        'previewLimit': DATASET_PREVIEW_ROW_LIMIT,
         'sheetSelection': {
             'availableSheets': dataset_entry.get('workbook_sheets') or [],
             'selectedSheets': selected_sheets,
@@ -6605,12 +6613,14 @@ def auth_me(request: Request) -> JSONResponse:
 async def update_user_profile(
     request: Request,
     username: str = Form(...),
+    email: str = Form(...),
     profile_image: UploadFile | None = File(default=None),
 ) -> JSONResponse:
     try:
         user = await update_authenticated_user_profile(
             request=request,
             username=username,
+            email=email,
             profile_image=profile_image,
         )
     except HTTPException:

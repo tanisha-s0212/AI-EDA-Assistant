@@ -41,6 +41,9 @@ import {
   ExternalLink,
   TrendingDown,
   TrendingUp,
+  Mail,
+  MapPin,
+  Phone,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -308,6 +311,7 @@ function UserProfileDialog({
 }) {
   const { toast } = useToast();
   const [name, setName] = React.useState(currentUser.username);
+  const [email, setEmail] = React.useState(currentUser.email);
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
   const [isEditing, setIsEditing] = React.useState(false);
@@ -317,10 +321,11 @@ function UserProfileDialog({
   React.useEffect(() => {
     if (!open) return;
     setName(currentUser.username);
+    setEmail(currentUser.email);
     setSelectedFile(null);
     setPreviewUrl(null);
     setIsEditing(false);
-  }, [currentUser.username, open]);
+  }, [currentUser.email, currentUser.username, open]);
 
   React.useEffect(() => {
     if (!selectedFile) {
@@ -353,6 +358,7 @@ function UserProfileDialog({
     try {
       const formData = new FormData();
       formData.append('username', name.trim());
+      formData.append('email', email.trim());
       if (selectedFile) {
         formData.append('profile_image', selectedFile);
       }
@@ -430,7 +436,7 @@ function UserProfileDialog({
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 {isEditing
                   ? 'Upload a square image for best results. PNG, JPEG, WEBP, and GIF files up to 1.5 MB are stored with your account.'
-                  : 'Use Edit Profile to update your display name or profile picture.'}
+                  : 'Use Edit Profile to update your display name, email, or profile picture.'}
               </p>
               <Button type="button" variant="outline" className="mt-3 rounded-sm" onClick={() => fileInputRef.current?.click()} disabled={!isEditing}>
                 <Upload className="mr-2 h-4 w-4" />
@@ -446,7 +452,15 @@ function UserProfileDialog({
             </div>
             <div className="space-y-2">
               <Label htmlFor="profile-email">Email ID</Label>
-              <Input id="profile-email" value={currentUser.email} disabled className="rounded-sm opacity-90" />
+              <Input
+                id="profile-email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+                disabled={!isEditing}
+                className="rounded-sm"
+              />
             </div>
           </div>
 
@@ -463,6 +477,7 @@ function UserProfileDialog({
                   className="rounded-sm"
                   onClick={() => {
                     setName(currentUser.username);
+                    setEmail(currentUser.email);
                     setSelectedFile(null);
                     setPreviewUrl(null);
                     setIsEditing(false);
@@ -1021,11 +1036,11 @@ export default function HomePage() {
         </main>
 
         {/* Footer */}
-        <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-4 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.94),rgba(18,32,52,0.88))] sm:px-6 lg:px-8">
+        <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.94),rgba(18,32,52,0.88))] sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="grid gap-5 overflow-hidden rounded-2xl border border-white/75 bg-white/72 px-6 py-5 text-[#1f3340] shadow-[0_22px_70px_-42px_rgba(31,95,168,0.34)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_26px_80px_-44px_rgba(31,95,168,0.42)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100 lg:grid-cols-[1fr_auto] lg:items-center">
-              <div className="flex flex-col gap-3 text-left lg:flex-row lg:items-center">
-                <ApplicationLogo />
+            <div className="grid gap-4 overflow-hidden rounded-xl border border-white/75 bg-white/72 px-5 py-4 text-[#1f3340] shadow-[0_18px_56px_-38px_rgba(31,95,168,0.3)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_22px_66px_-40px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+              <div className="flex min-w-0 flex-col gap-3 text-left sm:flex-row sm:items-center">
+                <ApplicationLogo compact />
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Aroha Intelligent Platform</p>
                   <p className="bg-[linear-gradient(135deg,#234e9e_0%,#2f5fa8_48%,#4cb8f0_100%)] bg-clip-text text-base font-bold text-transparent dark:bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]">
@@ -1036,19 +1051,23 @@ export default function HomePage() {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-start gap-1.5 text-left text-sm font-semibold text-muted-foreground lg:min-w-[360px]">
-                <p>
-                  <span className="text-foreground">Location:</span> Bangalore
-                </p>
-                <p>
-                  <span className="text-foreground">Contact:</span>{' '}
-                  <a className="text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="mailto:hr@aroha.co.in">hr@aroha.co.in</a>
-                </p>
-                <p>
-                  <span className="text-foreground">Phone:</span>{' '}
-                  <a className="text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="tel:+919886228615">+91 9886228615</a>
-                </p>
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Bangalore | Aroha Technologies</p>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-semibold text-muted-foreground xl:justify-end">
+                <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                  <MapPin className="h-4 w-4 text-[#2f5fa8] dark:text-cyan-300" />
+                  Bangalore
+                </span>
+                <a className="inline-flex items-center gap-2 whitespace-nowrap text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="mailto:hr@aroha.co.in">
+                  <Mail className="h-4 w-4" />
+                  hr@aroha.co.in
+                </a>
+                <a className="inline-flex items-center gap-2 whitespace-nowrap text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="tel:+919886228615">
+                  <Phone className="h-4 w-4" />
+                  +91 9886228615
+                </a>
+                <a className="inline-flex items-center gap-2 whitespace-nowrap text-xs uppercase tracking-[0.18em] text-muted-foreground transition-colors hover:text-foreground" href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer">
+                  Aroha Technologies
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
               </div>
             </div>
           </div>

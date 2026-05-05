@@ -18,6 +18,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
 
+const DEFAULT_FEATURE_GROUPS: FeatureGroupId[] = ['trend', 'calendar', 'lags', 'rolling'];
+
 const FEATURE_GROUPS: { id: FeatureGroupId; label: string; description: string }[] = [
   { id: 'trend', label: 'Trend index', description: 'Numeric step counter that lets the model learn growth or decay.' },
   { id: 'calendar', label: 'Calendar markers', description: 'Month, quarter, weekday, and related date breakdowns.' },
@@ -135,7 +137,7 @@ export default function MlForecastTab() {
   const [forecastPeriods, setForecastPeriods] = useState(3);
   const [trainSplitPercent, setTrainSplitPercent] = useState(80);
   const [lagPeriods, setLagPeriods] = useState(3);
-  const [featureGroups, setFeatureGroups] = useState<FeatureGroupId[]>(['trend', 'calendar', 'lags', 'rolling']);
+  const [featureGroups, setFeatureGroups] = useState<FeatureGroupId[]>(DEFAULT_FEATURE_GROUPS);
   const [selectedModelType, setSelectedModelType] = useState('gradient_boosting');
   const [result, setResult] = useState<MlForecastResult | null>(storedResult);
   const [isTraining, setIsTraining] = useState(false);
@@ -144,6 +146,12 @@ export default function MlForecastTab() {
     if (!dateColumn) setDateColumn(getPreferredDateColumn(columns));
     if (!targetColumn) setTargetColumn(getPreferredSalesColumn(columns));
   }, [columns, dateColumn, targetColumn]);
+
+  useEffect(() => {
+    if (featureGroups.length === 0 && currentStep > 1) {
+      setFeatureGroups(DEFAULT_FEATURE_GROUPS);
+    }
+  }, [currentStep, featureGroups.length]);
 
   useEffect(() => {
     if (storedResult) {
@@ -192,23 +200,32 @@ export default function MlForecastTab() {
   };
 
   const handleRun = async () => {
-    if (!dateColumn || !targetColumn || featureGroups.length === 0) {
-      toast({ title: 'Configuration incomplete', description: 'Choose the core columns and at least one feature engineering group.', variant: 'destructive' });
+    const resolvedDateColumn = dateColumn || getPreferredDateColumn(columns);
+    const resolvedTargetColumn = targetColumn || getPreferredSalesColumn(columns);
+    const resolvedFeatureGroups = featureGroups.length ? featureGroups : DEFAULT_FEATURE_GROUPS;
+
+    if (!resolvedDateColumn || !resolvedTargetColumn) {
+      setCurrentStep(1);
+      toast({ title: 'Configuration incomplete', description: 'Choose the date column and sales target before training.', variant: 'destructive' });
       return;
     }
+
+    if (!dateColumn) setDateColumn(resolvedDateColumn);
+    if (!targetColumn) setTargetColumn(resolvedTargetColumn);
+    if (!featureGroups.length) setFeatureGroups(resolvedFeatureGroups);
 
     setIsTraining(true);
     try {
       const payload = {
         dataset_id: datasetId ?? null,
         data: datasetId ? [] : data,
-        date_column: dateColumn,
-        target_column: targetColumn,
+        date_column: resolvedDateColumn,
+        target_column: resolvedTargetColumn,
         forecast_periods: forecastPeriods,
         test_percentage: 100 - trainSplitPercent,
         lag_periods: lagPeriods,
         model_type: selectedModelType,
-        feature_groups: featureGroups,
+        feature_groups: resolvedFeatureGroups,
       };
 
       const response = await apiClient.post('/forecast/ml/run', payload);

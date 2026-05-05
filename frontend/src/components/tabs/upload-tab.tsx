@@ -29,7 +29,7 @@ const MAX_FILE_SIZE_LABEL = '512MB';
 const COLUMN_ANALYSIS_SAMPLE_SIZE = 5000;
 const DUPLICATE_CHECK_LIMIT = 10000;
 const MEMORY_ESTIMATE_SAMPLE_SIZE = 200;
-const DATASET_PREVIEW_ROW_LIMIT = 20000;
+const DATASET_PREVIEW_ROW_LIMIT = 5000;
 
 type SheetSelectionPayload = {
   availableSheets: DatasetSheetSummary[];
