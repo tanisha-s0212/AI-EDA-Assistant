@@ -1,29 +1,28 @@
 'use client';
 
 import * as React from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   AlertCircle,
+  ArrowRight,
   BarChart3,
+  BrainCircuit,
   CheckCircle2,
-  Database,
-  LineChart,
+  Eye,
+  EyeOff,
+  LinkIcon,
   Loader2,
   Lock,
-  LogIn,
   Mail,
   MapPin,
   Phone,
   ShieldCheck,
-  User,
+  Sparkles,
+  UploadCloud,
 } from 'lucide-react';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import type { AuthenticatedUser } from '@/lib/store';
 import { useToast } from '@/hooks/use-toast';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 
 type LoginPageProps = {
   onAuthSuccess: (user: AuthenticatedUser) => void;
@@ -40,38 +39,54 @@ const initialForm = {
   email: '',
   password: '',
   confirmPassword: '',
+  remember: false,
+  acceptedTerms: false,
 };
 
-const AROHA_CONTACT_URL = 'https://aroha.co.in/contact-us/';
-const ANALYTICS_VIDEO_URL = 'https://assets.mixkit.co/videos/preview/mixkit-business-people-analyzing-marketing-data-46685-large.mp4';
-
-const features = [
-  { label: 'Secure Workspace', icon: ShieldCheck },
-  { label: 'Smart Upload', icon: Database },
-  { label: 'Auto Analysis', icon: BarChart3 },
-  { label: 'AI Forecasting', icon: LineChart },
+const heroFeatures = [
+  {
+    title: 'Secure Workspace',
+    benefit: 'Protected sessions for every dataset.',
+    icon: ShieldCheck,
+  },
+  {
+    title: 'Smart Upload',
+    benefit: 'Bring files in with guided validation.',
+    icon: UploadCloud,
+  },
+  {
+    title: 'Auto Analysis',
+    benefit: 'Surface patterns without manual setup.',
+    icon: BarChart3,
+  },
+  {
+    title: 'AI Forecasting',
+    benefit: 'Project outcomes with assisted models.',
+    icon: BrainCircuit,
+  },
 ];
 
 export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
   const { toast } = useToast();
-  const [mode, setMode] = React.useState<AuthMode>('login');
-  const [modeDirection, setModeDirection] = React.useState(1);
+  const [showPassword, setShowPassword] = React.useState(false);
+  const [authMode, setAuthMode] = React.useState<AuthMode>('login');
   const [form, setForm] = React.useState(initialForm);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [infoMessage, setInfoMessage] = React.useState<string | null>(null);
   const [showSuccess, setShowSuccess] = React.useState(false);
+  const isRegister = authMode === 'register';
 
   const updateField = (field: keyof typeof initialForm) => (event: React.ChangeEvent<HTMLInputElement>) => {
     setErrorMessage(null);
     setInfoMessage(null);
-    setForm((current) => ({ ...current, [field]: event.target.value }));
+    const value = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
+    setForm((current) => ({ ...current, [field]: value }));
   };
 
   const switchMode = (nextMode: AuthMode) => {
-    if (nextMode === mode) return;
-    setModeDirection(nextMode === 'register' ? 1 : -1);
-    setMode(nextMode);
+    if (nextMode === authMode) return;
+    setAuthMode(nextMode);
     setForm(initialForm);
     setErrorMessage(null);
     setInfoMessage(null);
@@ -80,7 +95,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
   const handleForgotPassword = () => {
     setErrorMessage(null);
-    setInfoMessage('Password reset is handled by Aroha support. Use the support desk link for assistance.');
+    setInfoMessage('Password reset is handled by Aroha support. Use the contact link for assistance.');
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -89,20 +104,23 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
     setInfoMessage(null);
     setShowSuccess(false);
 
-    if (mode === 'register' && form.password !== form.confirmPassword) {
+    if (isRegister && form.password !== form.confirmPassword) {
       const message = 'Password and confirm password must match before we can create your account.';
       setErrorMessage(message);
-      toast({
-        title: 'Password mismatch',
-        description: message,
-        variant: 'destructive',
-      });
+      toast({ title: 'Password mismatch', description: message, variant: 'destructive' });
+      return;
+    }
+
+    if (isRegister && !form.acceptedTerms) {
+      const message = 'Please agree to continue before creating your account.';
+      setErrorMessage(message);
+      toast({ title: 'Confirmation required', description: message, variant: 'destructive' });
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const response = mode === 'register'
+      const response = isRegister
         ? await apiClient.post<AuthResponse>('/auth/register', {
             username: form.username,
             email: form.email,
@@ -116,17 +134,21 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       setShowSuccess(true);
       onAuthSuccess(response.data.user);
       toast({
-        title: mode === 'register' ? 'Account created' : 'Login successful',
-        description: mode === 'register' ? `Welcome, ${response.data.user.username}.` : `Welcome back, ${response.data.user.username}.`,
+        title: isRegister ? 'Account created' : 'Login successful',
+        description: isRegister
+          ? `Welcome, ${response.data.user.username}.`
+          : `Welcome back, ${response.data.user.username}.`,
       });
     } catch (error) {
       const message = getApiErrorMessage(
         error,
-        mode === 'register' ? 'We could not create your account.' : 'We could not sign you in. Please verify your credentials and try again.'
+        isRegister
+          ? 'We could not create your account.'
+          : 'We could not sign you in. Please verify your credentials and try again.',
       );
       setErrorMessage(message);
       toast({
-        title: mode === 'register' ? 'Registration failed' : 'Login failed',
+        title: isRegister ? 'Registration failed' : 'Login failed',
         description: message,
         variant: 'destructive',
       });
@@ -135,379 +157,328 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
     }
   };
 
-  React.useEffect(() => {
-    if (!showSuccess) return;
-    const timer = window.setTimeout(() => setShowSuccess(false), 1800);
-    return () => window.clearTimeout(timer);
-  }, [showSuccess]);
-
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#f8fbff] font-['Plus_Jakarta_Sans','Inter','Segoe_UI',sans-serif] text-[#15263a]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_17%_20%,rgba(99,102,241,0.1),transparent_30%),radial-gradient(circle_at_82%_42%,rgba(34,211,238,0.16),transparent_34%),linear-gradient(180deg,#ffffff_0%,#f8fbff_58%,#edf6ff_100%)]" />
-      <motion.div
-        className="pointer-events-none absolute left-[-16%] top-[14%] h-[32rem] w-[32rem] rounded-full border border-indigo-200/42"
-        animate={{ rotate: 360, scale: [1, 1.05, 1] }}
-        transition={{ rotate: { duration: 38, repeat: Infinity, ease: 'linear' }, scale: { duration: 7, repeat: Infinity } }}
-      />
-      <motion.div
-        className="pointer-events-none absolute bottom-[-19%] right-[-8%] h-[30rem] w-[30rem] rounded-full border border-cyan-200/55"
-        animate={{ rotate: -360, scale: [1, 1.08, 1] }}
-        transition={{ rotate: { duration: 42, repeat: Infinity, ease: 'linear' }, scale: { duration: 8, repeat: Infinity } }}
-      />
-
-      <AnimatePresence>
-        {isSubmitting ? (
+    <main
+      className="relative h-screen max-h-screen w-screen overflow-hidden bg-background text-foreground"
+      style={{
+        fontFamily: "'Satoshi', 'Clash Display', 'General Sans', Inter, ui-sans-serif, system-ui, sans-serif",
+      }}
+    >
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden md:flex-row">
+        <section className="relative flex min-h-0 w-full items-center justify-center overflow-hidden border-b border-white/20 bg-[radial-gradient(circle_at_18%_16%,rgba(255,255,255,0.62),transparent_30%),radial-gradient(circle_at_78%_72%,rgba(129,140,248,0.22),transparent_34%),linear-gradient(135deg,#ede9fe_0%,#dbeafe_48%,#eef2ff_100%)] px-6 py-8 md:h-full md:w-[40%] md:border-b-0 md:border-r">
           <motion.div
-            key="auth-loading-bar"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute left-0 top-0 z-50 h-1 w-full bg-slate-200"
+            aria-hidden="true"
+            className="absolute right-[16%] top-[18%] text-indigo-400/55"
+            animate={{ y: [-8, 8, -8] }}
+            transition={{ duration: 4.5, repeat: Infinity, ease: 'easeInOut' }}
           >
-            <motion.div
-              className="h-full bg-[linear-gradient(90deg,#6c63ff_0%,#22d3ee_52%,#35d08f_100%)] shadow-[0_0_18px_rgba(99,102,241,0.55)]"
-              initial={{ x: '-45%', width: '35%' }}
-              animate={{ x: '210%', width: '45%' }}
-              transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }}
-            />
+            <Sparkles className="h-10 w-10 drop-shadow-[0_0_24px_rgba(99,102,241,0.4)]" />
           </motion.div>
-        ) : null}
-      </AnimatePresence>
 
-      <div className="relative mx-auto grid min-h-screen w-full max-w-[92rem] items-center gap-8 px-4 py-8 sm:px-8 lg:grid-cols-[0.84fr_1.16fr] lg:px-12">
-          <section className="relative flex min-h-[660px] items-center justify-center overflow-hidden rounded-[2rem] bg-white/42 p-5 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.35)] sm:p-8 lg:p-10">
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.7)_0%,rgba(255,255,255,0.2)_45%,rgba(219,234,254,0.42)_100%)]" />
-            <motion.div
-              className="pointer-events-none absolute left-10 top-16 h-20 w-20 rounded-full border border-indigo-200/70"
-              animate={{ y: [0, -12, 0], opacity: [0.45, 0.85, 0.45] }}
-              transition={{ duration: 5.5, repeat: Infinity }}
-            />
-            <motion.div
-              className="pointer-events-none absolute bottom-16 right-12 h-16 w-16 rounded-2xl border border-cyan-300/50"
-              animate={{ rotate: [0, 90, 0], opacity: [0.35, 0.75, 0.35] }}
-              transition={{ duration: 8, repeat: Infinity }}
-            />
-
-            <motion.div
-              initial={{ opacity: 0, y: 18 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.55, ease: 'easeOut' }}
-              className="relative w-full max-w-[30rem] overflow-hidden rounded-[1.6rem] border border-white/80 bg-white/58 px-6 py-8 shadow-[0_28px_70px_-38px_rgba(35,78,158,0.35),0_18px_42px_-34px_rgba(15,23,42,0.3),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-2xl sm:px-8 sm:py-10"
-            >
-              <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,0.85),rgba(255,255,255,0.28)_44%,rgba(219,234,254,0.44))]" />
-              <motion.div
-                className="pointer-events-none absolute -left-10 top-20 h-28 w-[118%] rotate-[-18deg] bg-white/60 blur-2xl"
-                animate={{ x: ['-28%', '22%', '-28%'], opacity: [0.35, 0.72, 0.35] }}
-                transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
-              />
-              <motion.div
-                className="pointer-events-none absolute inset-y-0 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.78)_50%,transparent_100%)]"
-                animate={{ x: ['0%', '315%'] }}
-                transition={{ duration: 5.8, repeat: Infinity, ease: 'linear' }}
-              />
-
-              <div className="relative">
-                <motion.div
-                  className="mx-auto mb-8 flex h-24 w-24 items-center justify-center rounded-full border border-slate-200/80 bg-white/80 shadow-[0_18px_42px_-28px_rgba(99,102,241,0.45)]"
-                  animate={{ y: [0, -5, 0] }}
-                  transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-                >
-                  <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-[linear-gradient(135deg,#6c63ff_0%,#8b7cff_100%)]">
-                    <User className="h-8 w-8 text-white" />
-                    <span className="absolute -right-1 top-2 h-3 w-3 rounded-full bg-[#35d08f] ring-4 ring-white" />
-                  </div>
-                </motion.div>
-
-                <div className="mb-9 text-center">
-                  <p className="text-xs font-bold uppercase tracking-[0.3em] text-slate-500">Aroha Secure Access</p>
-                  <h1 className="mt-4 bg-[linear-gradient(135deg,#5b55ff_0%,#7b6cff_48%,#22b8cf_100%)] bg-clip-text text-5xl font-black tracking-tight text-transparent">
-                      {mode === 'register' ? 'Sign Up' : 'Login'}
-                  </h1>
-                  <p className="mt-5 text-base font-medium text-slate-600">Exploring more by connecting with us</p>
-                </div>
-
-                <div className="min-h-[360px] overflow-hidden">
-                  <AnimatePresence mode="wait" custom={modeDirection}>
-                    <motion.form
-                      key={mode}
-                      custom={modeDirection}
-                      initial={{ x: modeDirection > 0 ? 42 : -42, opacity: 0, filter: 'blur(2px)' }}
-                      animate={{ x: 0, opacity: 1, filter: 'blur(0px)' }}
-                      exit={{ x: modeDirection > 0 ? -42 : 42, opacity: 0, filter: 'blur(2px)' }}
-                      transition={{ duration: 0.35, ease: 'easeOut' }}
-                      className="space-y-4"
-                      onSubmit={handleSubmit}
-                    >
-                      <AnimatePresence mode="wait">
-                        {errorMessage ? (
-                          <motion.div key={`error-${mode}`} initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }}>
-                            <Alert variant="destructive" className="border-red-200 bg-red-50 text-red-950">
-                              <AlertCircle />
-                              <AlertTitle>{mode === 'register' ? 'Registration error' : 'Login error'}</AlertTitle>
-                              <AlertDescription>{errorMessage}</AlertDescription>
-                            </Alert>
-                          </motion.div>
-                        ) : null}
-                      </AnimatePresence>
-
-                      <AnimatePresence mode="wait">
-                        {infoMessage ? (
-                          <motion.div key={`info-${mode}`} initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }}>
-                            <Alert className="border-indigo-200 bg-indigo-50 text-indigo-950">
-                              <AlertCircle />
-                              <AlertTitle>Password help</AlertTitle>
-                              <AlertDescription>{infoMessage}</AlertDescription>
-                            </Alert>
-                          </motion.div>
-                        ) : null}
-                      </AnimatePresence>
-
-                      <AnimatePresence>
-                        {showSuccess ? (
-                          <motion.div
-                            initial={{ opacity: 0, scale: 0.98 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.98 }}
-                            className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-950"
-                          >
-                            <div className="flex items-center gap-2">
-                              <CheckCircle2 className="h-4 w-4" />
-                              <p className="text-sm font-semibold">{mode === 'register' ? 'Account created successfully.' : 'Login successful. Opening workspace...'}</p>
-                            </div>
-                          </motion.div>
-                        ) : null}
-                      </AnimatePresence>
-
-                      {mode === 'register' && (
-                        <GlassInput
-                          id="username"
-                          label="User Name"
-                          type="text"
-                          autoComplete="username"
-                          placeholder="Enter your user name"
-                          value={form.username}
-                          onChange={updateField('username')}
-                          disabled={isSubmitting}
-                          icon={User}
-                          required
-                        />
-                      )}
-
-                      <GlassInput
-                        id="email"
-                        label="User Name / ID"
-                        type="email"
-                        autoComplete="email"
-                        placeholder="name@company.com"
-                        value={form.email}
-                        onChange={updateField('email')}
-                        disabled={isSubmitting}
-                        icon={User}
-                        required
-                      />
-
-                      <GlassInput
-                        id="password"
-                        label="Password"
-                        type="password"
-                        autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-                        placeholder="Enter your password"
-                        value={form.password}
-                        onChange={updateField('password')}
-                        disabled={isSubmitting}
-                        icon={Lock}
-                        minLength={8}
-                        required
-                      />
-
-                      {mode === 'register' && (
-                        <GlassInput
-                          id="confirm-password"
-                          label="Confirm Password"
-                          type="password"
-                          autoComplete="new-password"
-                          placeholder="Re-enter password"
-                          value={form.confirmPassword}
-                          onChange={updateField('confirmPassword')}
-                          disabled={isSubmitting}
-                          icon={Lock}
-                          minLength={8}
-                          required
-                        />
-                      )}
-
-                      {mode === 'login' && (
-                        <div className="flex items-center justify-between text-sm text-slate-600">
-                          <label className="flex items-center gap-2">
-                            <span className="h-3.5 w-3.5 rounded-[3px] border border-slate-300 bg-white shadow-inner" />
-                            Stay signed in
-                          </label>
-                          <button type="button" onClick={handleForgotPassword} className="font-semibold text-[#5f55ff] hover:text-[#4238d3] hover:underline">
-                            Forgot password?
-                          </button>
-                        </div>
-                      )}
-
-                      <Button
-                        type="submit"
-                        disabled={isSubmitting}
-                        className="group relative h-12 w-full overflow-hidden rounded-sm bg-[linear-gradient(135deg,#6c63ff_0%,#786cff_100%)] text-white shadow-[0_18px_42px_-24px_rgba(99,102,241,0.72)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105"
-                      >
-                        <motion.span
-                          className="pointer-events-none absolute inset-y-0 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.42)_50%,transparent_100%)]"
-                          animate={isSubmitting ? { x: ['0%', '320%'] } : { x: '-160%' }}
-                          transition={isSubmitting ? { duration: 0.9, repeat: Infinity, ease: 'linear' } : { duration: 0.3 }}
-                        />
-                        {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {isSubmitting ? (mode === 'register' ? 'Creating account...' : 'Signing in...') : (mode === 'register' ? 'Create Account' : 'Login')}
-                        {!isSubmitting && <LogIn className="ml-2 h-4 w-4" />}
-                      </Button>
-
-                      <p className="text-center text-sm text-slate-600">
-                        {mode === 'login' ? 'New here?' : 'Already have an account?'}{' '}
-                        <button
-                          type="button"
-                          onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}
-                          className="font-black text-[#5f55ff] underline decoration-indigo-300 underline-offset-4"
-                        >
-                          {mode === 'login' ? 'Sign up' : 'Back to Login'}
-                        </button>
-                      </p>
-                    </motion.form>
-                  </AnimatePresence>
-                </div>
-              </div>
-            </motion.div>
-          </section>
-
-          <section className="group relative min-h-[660px] overflow-hidden rounded-[2rem] bg-white shadow-[0_24px_90px_-54px_rgba(15,23,42,0.42)]">
-            <video
-              className="absolute inset-0 h-full w-full object-cover"
-              src={ANALYTICS_VIDEO_URL}
-              poster="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1400&q=80"
-              autoPlay
-              muted
-              loop
-              playsInline
-              preload="metadata"
-            />
-            <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.16)_0%,rgba(18,78,128,0.52)_48%,rgba(5,31,58,0.72)_100%)]" />
-            <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.2)_0%,rgba(0,0,0,0.28)_100%)]" />
-            <motion.div
-              className="pointer-events-none absolute -inset-y-8 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.34)_50%,transparent_100%)]"
-              animate={{ x: ['0%', '305%'] }}
-              transition={{ duration: 7.5, repeat: Infinity, ease: 'linear' }}
-            />
-
-            <div className="relative z-10 flex h-full min-h-[660px] flex-col justify-between p-7 text-white sm:p-10 lg:p-12">
-              <div>
-                <motion.div
-                  initial={{ opacity: 0, y: 18 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.7 }}
-                  className="mb-9 flex items-center gap-4"
-                >
-                  <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-2xl border border-white/45 bg-white/20 p-2 shadow-[0_18px_50px_-28px_rgba(0,0,0,0.7)] backdrop-blur-md">
-                    <img src="/company-logo.png" alt="Aroha Technologies Company Logo" className="h-full w-full object-contain drop-shadow-[0_10px_24px_rgba(0,0,0,0.24)]" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-black uppercase tracking-[0.28em] text-cyan-50/90">Aroha Intelligent Platform</p>
-                    <p className="mt-2 text-2xl font-black uppercase tracking-[0.12em]">Intelligent Data Assistant</p>
-                  </div>
-                </motion.div>
-
-                <motion.div
-                  initial={{ opacity: 0, x: -18 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.7, delay: 0.15 }}
-                >
-                  <h2 className="max-w-2xl text-4xl font-black uppercase leading-tight tracking-tight sm:text-5xl lg:text-6xl">
-                    Insight-Driven Data Analysis for Modern Teams
-                  </h2>
-                  <p className="mt-5 max-w-xl text-lg font-semibold leading-8 text-white/92">
-                    A unified application for secure data upload, profiling, exploratory analysis, cleaning, forecasting, and model-assisted business insight generation for faster decisions.
-                  </p>
-                </motion.div>
-
-                <div className="mt-8 grid max-w-2xl grid-cols-2 gap-3">
-                  {features.map((feature, index) => {
-                    const Icon = feature.icon;
-                    return (
-                      <motion.div
-                        key={feature.label}
-                        initial={{ opacity: 0, y: 14 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.42, delay: 0.24 + index * 0.08 }}
-                        whileHover={{ y: -3 }}
-                        className="rounded-xl border border-white/30 bg-white/16 p-3 shadow-[0_16px_42px_-30px_rgba(0,0,0,0.58)] backdrop-blur-md"
-                      >
-                        <Icon className="mb-2 h-5 w-5 text-cyan-100" />
-                        <p className="text-sm font-bold">{feature.label}</p>
-                      </motion.div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 18 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, delay: 0.4 }}
-                className="mt-8 rounded-2xl border border-white/36 bg-white/18 p-4 font-bold shadow-[0_18px_48px_-30px_rgba(0,0,0,0.65)] backdrop-blur-md"
-              >
-                <p className="flex items-center gap-2 text-sm sm:text-base">
-                  <MapPin className="h-4 w-4" />
-                  Location: Bangalore
-                </p>
-                <p className="mt-3 flex items-center gap-2 text-sm sm:text-base">
-                  <Mail className="h-4 w-4" />
-                  Contact:
-                  <a href={AROHA_CONTACT_URL} target="_blank" rel="noreferrer" className="font-black underline underline-offset-4 hover:text-cyan-100">
-                    https://aroha.co.in/contact-us/
-                  </a>
-                </p>
-                <p className="mt-3 flex items-center gap-2 text-sm sm:text-base">
-                  <Phone className="h-4 w-4" />
-                  Phone: +91 9886228615
-                </p>
-              </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55, ease: 'easeOut' }}
+            className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/60 bg-white/24 p-8 shadow-[0_34px_110px_-42px_rgba(30,41,59,0.64),inset_0_1px_0_rgba(255,255,255,0.72)] ring-1 ring-white/35 backdrop-blur-[30px]"
+          >
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.74)_0%,rgba(255,255,255,0.24)_46%,rgba(199,210,254,0.26)_100%)]" />
+            <div className="pointer-events-none absolute -left-24 top-24 h-40 w-[140%] rotate-[-14deg] bg-white/35 blur-3xl" />
+            <div className="absolute left-1/2 top-0 flex h-12 w-40 -translate-x-1/2 -translate-y-px items-center justify-center rounded-b-2xl bg-white/86 text-sm font-semibold text-slate-900 shadow-[0_16px_36px_-24px_rgba(15,23,42,0.55)]">
+              {isRegister ? 'Register' : 'Login'}
             </div>
-          </section>
+
+            <div className="relative mt-9 flex items-center gap-4 rounded-2xl border border-white/58 bg-white/30 px-4 py-3 shadow-[0_20px_56px_-36px_rgba(67,56,202,0.46),inset_0_1px_0_rgba(255,255,255,0.74)] backdrop-blur-2xl">
+              <a
+                href="https://aroha.co.in/"
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-16 w-28 shrink-0 items-center justify-center rounded-xl bg-white/76 px-3 shadow-inner shadow-white/70 transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                aria-label="Visit Aroha website"
+              >
+                <img
+                  src="/company-logo.png"
+                  alt="Aroha"
+                  className="max-h-12 w-full object-contain drop-shadow-[0_14px_30px_rgba(67,56,202,0.2)]"
+                />
+              </a>
+              <div className="min-w-0 text-left">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-indigo-500/90">Aroha</p>
+                <p className="mt-1 text-xl font-black leading-tight tracking-normal text-slate-950">
+                  Aroha Intelligent Platform
+                </p>
+              </div>
+            </div>
+
+            <div className="relative mt-5 text-center">
+              <h1 className="mt-3 text-3xl font-semibold tracking-normal text-slate-950">
+                {isRegister ? 'Create Your Account' : 'Welcome Back'}
+              </h1>
+              <p className="mt-3 text-sm leading-6 text-slate-700">
+                {isRegister
+                  ? 'Register to start a secure AI analytics workspace for your business data.'
+                  : 'Sign in to continue your secure analytics workspace and active data workflows.'}
+              </p>
+            </div>
+
+            <form className="relative mt-7 space-y-4" onSubmit={handleSubmit}>
+              {errorMessage ? (
+                <div className="flex gap-2 rounded-2xl border border-red-200/90 bg-red-50/85 px-4 py-3 text-sm text-red-950">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{errorMessage}</span>
+                </div>
+              ) : null}
+
+              {infoMessage ? (
+                <div className="flex gap-2 rounded-2xl border border-indigo-200/90 bg-indigo-50/85 px-4 py-3 text-sm text-indigo-950">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{infoMessage}</span>
+                </div>
+              ) : null}
+
+              {showSuccess ? (
+                <div className="flex gap-2 rounded-2xl border border-emerald-200/90 bg-emerald-50/85 px-4 py-3 text-sm text-emerald-950">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{isRegister ? 'Account created successfully.' : 'Login successful. Opening workspace...'}</span>
+                </div>
+              ) : null}
+
+              {isRegister && (
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-slate-800">Full name</span>
+                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                    <Sparkles className="h-5 w-5 text-indigo-600" />
+                    <input
+                      type="text"
+                      autoComplete="name"
+                      className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                      placeholder="Your name"
+                      value={form.username}
+                      onChange={updateField('username')}
+                      disabled={isSubmitting}
+                      required
+                    />
+                  </span>
+                </label>
+              )}
+
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold text-slate-800">Email</span>
+                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                  <Mail className="h-5 w-5 text-indigo-600" />
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                    placeholder="you@example.com"
+                    value={form.email}
+                    onChange={updateField('email')}
+                    disabled={isSubmitting}
+                    required
+                  />
+                </span>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold text-slate-800">Password</span>
+                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                  <Lock className="h-5 w-5 text-indigo-600" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete={isRegister ? 'new-password' : 'current-password'}
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                    placeholder="Enter your password"
+                    value={form.password}
+                    onChange={updateField('password')}
+                    disabled={isSubmitting}
+                    minLength={8}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((current) => !current)}
+                    className="rounded-lg p-1 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-300/80"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </span>
+              </label>
+
+              {isRegister && (
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-slate-800">Confirm password</span>
+                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                    <Lock className="h-5 w-5 text-indigo-600" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                      placeholder="Confirm your password"
+                      value={form.confirmPassword}
+                      onChange={updateField('confirmPassword')}
+                      disabled={isSubmitting}
+                      minLength={8}
+                      required
+                    />
+                  </span>
+                </label>
+              )}
+
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <label className="flex min-w-0 items-center gap-2 text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 bg-white text-indigo-600 focus:ring-2 focus:ring-indigo-300/60"
+                    checked={isRegister ? form.acceptedTerms : form.remember}
+                    onChange={updateField(isRegister ? 'acceptedTerms' : 'remember')}
+                    disabled={isSubmitting}
+                  />
+                  <span>{isRegister ? 'I agree to continue' : 'Remember me'}</span>
+                </label>
+                {!isRegister && (
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    className="shrink-0 font-semibold text-indigo-700 transition hover:text-indigo-950"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+              </div>
+
+              <motion.button
+                type="submit"
+                whileTap={{ scale: 0.97 }}
+                disabled={isSubmitting}
+                className="flex h-12 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 to-indigo-600 text-sm font-semibold text-white shadow-[0_16px_40px_-18px_rgba(129,140,248,0.9)] transition hover:scale-[1.02] hover:shadow-[0_22px_54px_-18px_rgba(129,140,248,1)] focus:outline-none focus:ring-4 focus:ring-violet-300/35 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:scale-100"
+              >
+                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {isSubmitting ? (isRegister ? 'Creating account...' : 'Signing in...') : isRegister ? 'Create Account' : 'Login'}
+              </motion.button>
+            </form>
+
+            <p className="mt-8 text-center text-sm text-slate-600">
+              {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+              <button
+                type="button"
+                onClick={() => switchMode(isRegister ? 'login' : 'register')}
+                className="font-semibold text-indigo-700 transition hover:text-indigo-950"
+              >
+                {isRegister ? 'Login' : 'Register'}
+              </button>
+            </p>
+          </motion.div>
+        </section>
+
+        <section className="relative h-full min-h-0 w-full flex-1 overflow-hidden bg-slate-950 md:w-[60%]">
+          <video
+            className="absolute inset-0 h-full w-full object-cover"
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="metadata"
+            aria-hidden="true"
+          >
+            <source src="https://videos.pexels.com/video-files/7947451/7947451-hd_1920_1080_30fps.mp4" type="video/mp4" />
+          </video>
+
+          <div className="absolute inset-0 bg-black/60" aria-hidden="true" />
+          <div
+            className="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(99,102,241,0.24),transparent_32%),linear-gradient(90deg,rgba(2,6,23,0.62)_0%,rgba(2,6,23,0.3)_58%,rgba(2,6,23,0.56)_100%)]"
+            aria-hidden="true"
+          />
+
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, ease: 'easeOut', delay: 0.1 }}
+            className="relative z-10 flex h-full min-h-0 flex-col justify-between gap-6 p-8 md:p-10 xl:p-12"
+          >
+            <div className="max-w-3xl space-y-4">
+              <p className="text-xs font-medium uppercase tracking-[0.28em] text-white/60">
+                Aroha Intelligent Platform
+              </p>
+              <p className="max-w-3xl bg-[linear-gradient(135deg,#ffffff_0%,#c7d2fe_42%,#67e8f9_100%)] bg-clip-text text-3xl font-black uppercase leading-tight tracking-normal text-transparent drop-shadow-2xl [font-family:ui-rounded,Inter,ui-sans-serif,system-ui,sans-serif] xl:text-5xl">
+                Intelligent Data Assistant
+              </p>
+              <h1 className="max-w-2xl text-4xl font-black uppercase leading-tight tracking-normal text-white drop-shadow-2xl [font-family:ui-rounded,Inter,ui-sans-serif,system-ui,sans-serif] xl:text-5xl">
+                Turn Data Into Confident Decisions
+              </h1>
+              <p className="max-w-2xl text-base leading-7 text-white/74 xl:text-lg">
+                A secure AI-powered analytics environment for uploading datasets, profiling data quality,
+                generating exploratory insights, preparing models, and forecasting business outcomes from one unified workspace.
+              </p>
+
+              <motion.a
+                href="#"
+                whileTap={{ scale: 0.95 }}
+                className="mt-4 inline-flex h-12 items-center gap-2 rounded-full bg-white px-6 text-sm font-medium text-black shadow-[0_18px_50px_-24px_rgba(255,255,255,0.85)] transition hover:scale-105 hover:bg-indigo-50 hover:shadow-[0_24px_64px_-24px_rgba(199,210,254,0.95)] focus:outline-none focus:ring-4 focus:ring-white/30"
+              >
+                Explore Platform
+                <ArrowRight className="h-4 w-4" />
+              </motion.a>
+            </div>
+
+            <motion.div
+              className="grid max-w-lg grid-cols-2 gap-4"
+              initial="hidden"
+              animate="visible"
+              variants={{
+                hidden: {},
+                visible: {
+                  transition: {
+                    staggerChildren: 0.09,
+                    delayChildren: 0.26,
+                  },
+                },
+              }}
+            >
+              {heroFeatures.map((feature) => {
+                const Icon = feature.icon;
+
+                return (
+                  <motion.div
+                    key={feature.title}
+                    variants={{
+                      hidden: { opacity: 0, y: 14 },
+                      visible: { opacity: 1, y: 0 },
+                    }}
+                    transition={{ duration: 0.45, ease: 'easeOut' }}
+                    className="group rounded-xl border border-white/10 bg-white/10 p-4 shadow-[0_18px_48px_-34px_rgba(255,255,255,0.5)] backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.03] hover:border-white/20 hover:bg-white/14 hover:shadow-[0_22px_56px_-30px_rgba(129,140,248,0.78)]"
+                  >
+                    <Icon className="mb-3 h-5 w-5 text-white/80 transition group-hover:text-white" />
+                    <h3 className="text-sm font-medium text-white">{feature.title}</h3>
+                    <p className="mt-1 text-sm leading-5 text-white/60">{feature.benefit}</p>
+                  </motion.div>
+                );
+              })}
+            </motion.div>
+
+            <div className="flex items-center justify-between gap-4 border-t border-white/10 pt-4 text-sm text-white/70">
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                <MapPin className="h-4 w-4" />
+                <span>Bangalore</span>
+              </div>
+
+              <a
+                href="https://aroha.co.in/contact-us/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 whitespace-nowrap transition hover:text-white"
+              >
+                <LinkIcon className="h-4 w-4" />
+                <span className="underline underline-offset-4">Contact</span>
+              </a>
+
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                <Phone className="h-4 w-4" />
+                <span>+91 9886228615</span>
+              </div>
+            </div>
+          </motion.div>
+        </section>
       </div>
     </main>
-  );
-}
-
-function GlassInput({
-  id,
-  label,
-  icon: Icon,
-  ...props
-}: React.ComponentProps<typeof Input> & {
-  id: string;
-  label: string;
-  icon: React.ElementType;
-}) {
-  return (
-    <div className="space-y-2">
-      <Label htmlFor={id} className="text-sm font-bold text-slate-700">
-        {label}
-      </Label>
-      <div className="group relative overflow-hidden rounded-sm p-[1px]">
-        <motion.span
-          className="pointer-events-none absolute inset-y-[-90%] left-[-45%] w-1/2 rotate-12 bg-[linear-gradient(90deg,transparent_0%,rgba(99,102,241,0.7)_48%,rgba(255,255,255,0.95)_52%,transparent_100%)] opacity-0 blur-sm transition-opacity duration-300 group-hover:opacity-100 group-focus-within:opacity-100"
-          animate={{ x: ['0%', '330%'] }}
-          transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
-        />
-        <div className="relative z-10">
-          <Icon className="pointer-events-none absolute right-4 top-1/2 z-20 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <Input
-            id={id}
-            {...props}
-            className="h-12 rounded-sm border-slate-200 bg-white/78 px-5 pr-12 text-slate-800 shadow-[0_12px_30px_-28px_rgba(15,23,42,0.48),inset_0_1px_0_rgba(255,255,255,0.9)] placeholder:text-slate-500 focus-visible:ring-[#6c63ff]/35"
-          />
-        </div>
-      </div>
-    </div>
   );
 }
