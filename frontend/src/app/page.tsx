@@ -20,7 +20,6 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import {
   Upload,
   Database,
-  Sparkles,
   BarChart3,
   BrainCircuit,
   Target,
@@ -44,6 +43,7 @@ import {
   Mail,
   MapPin,
   Phone,
+  Wrench,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -64,7 +64,7 @@ const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: 'upload', label: 'Data Upload', icon: Upload },
   { id: 'understanding', label: 'Data Understanding', icon: Database },
   { id: 'eda', label: 'Exploratory Data Analysis', icon: BarChart3 },
-  { id: 'cleaning', label: 'Data Cleaning', icon: Sparkles },
+  { id: 'cleaning', label: 'Data Cleaning', icon: Wrench },
   { id: 'forecast_ts', label: 'Time Series Forecast', icon: LineChart },
   { id: 'forecast_ml', label: 'Machine Learning Forecast', icon: LineChart },
   { id: 'loss_forecast', label: 'Loss Forecast', icon: TrendingDown },
@@ -221,7 +221,7 @@ function BrandWordmark({
   return (
     <div className={cn('min-w-0', compact && 'max-w-[168px]')}>
       <h1 className={cn(
-        'font-black tracking-[-0.03em]',
+        'font-black tracking-normal',
         compact ? 'text-[1rem] leading-[1.16] sm:text-[1.08rem]' : 'text-[1.95rem] leading-tight sm:text-[2.35rem]',
         inverted ? 'text-white' : 'text-slate-950'
       )}>
@@ -254,12 +254,12 @@ function CompanyLogo({ compact = false }: { compact?: boolean }) {
 }
 
 function ApplicationLogo({ compact = false }: { compact?: boolean }) {
-  const size = compact ? 42 : 54;
+  const size = compact ? 42 : 58;
 
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-[0_18px_44px_-28px_rgba(31,95,168,0.55)] ring-1 ring-blue-100/70',
+        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/78 bg-white/92 shadow-[0_22px_52px_-30px_rgba(31,95,168,0.65)] ring-1 ring-white/72 backdrop-blur-2xl before:pointer-events-none before:absolute before:inset-x-2 before:top-0 before:h-px before:bg-white/95',
         compact ? 'h-[42px] w-[42px]' : 'h-[54px] w-[54px]'
       )}
     >
@@ -270,7 +270,7 @@ function ApplicationLogo({ compact = false }: { compact?: boolean }) {
         height={Math.round(size * 0.8)}
         priority={false}
         sizes={`${size}px`}
-        className="h-auto w-auto object-contain"
+        className="relative h-auto w-auto object-contain drop-shadow-[0_12px_22px_rgba(31,95,168,0.22)]"
       />
     </div>
   );
@@ -526,25 +526,41 @@ function SidebarContent({
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col overflow-hidden">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-44 bg-[radial-gradient(circle_at_24%_10%,rgba(96,165,250,0.22),transparent_44%),linear-gradient(180deg,rgba(255,255,255,0.58),transparent)] dark:bg-[radial-gradient(circle_at_24%_10%,rgba(96,165,250,0.16),transparent_44%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent)]" />
       {/* Logo */}
-      <div className="px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
-        <div className="group rounded-2xl border border-white/55 bg-white/58 p-3 shadow-[0_18px_48px_-34px_rgba(31,95,168,0.35)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/72 dark:border-white/10 dark:bg-white/8 dark:hover:bg-white/12">
-          <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="flex items-center gap-3">
-            <CompanyLogo compact />
-            <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+      <div className="relative px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
+        <div className="group overflow-hidden rounded-2xl border border-white/70 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(230,240,255,0.64))] p-4 shadow-[0_22px_58px_-34px_rgba(31,95,168,0.42)] ring-1 ring-blue-100/60 backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/86 hover:shadow-[0_26px_68px_-34px_rgba(31,95,168,0.5)] dark:border-white/10 dark:bg-[linear-gradient(145deg,rgba(255,255,255,0.1),rgba(76,184,240,0.08))] dark:ring-white/10">
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,0.44),transparent_46%,rgba(76,184,240,0.12))]" />
+          <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="relative flex items-center gap-3">
+            <span className="flex h-16 w-32 shrink-0 items-center justify-center rounded-xl border border-white/80 bg-white/82 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_34px_-26px_rgba(31,95,168,0.5)] transition group-hover:bg-white">
+              <CompanyLogo compact />
+            </span>
+            <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-white/70 bg-white/58 text-muted-foreground shadow-sm transition-all duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary dark:border-white/10 dark:bg-white/8">
+              <ExternalLink className="h-3.5 w-3.5" />
+            </span>
           </a>
-          <div className="mt-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Aroha</p>
+          <div className="relative mt-4 min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-[#5f7288] dark:text-slate-300">Aroha Intelligent Platform</p>
             <BrandWordmark compact />
+            <div className="mt-3 flex items-center gap-2 rounded-full border border-blue-100/80 bg-white/54 px-3 py-1.5 text-[11px] font-semibold text-[#2f5fa8] shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/8 dark:text-cyan-200">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Secure analytics workspace
+            </div>
           </div>
         </div>
       </div>
-      <Separator className="opacity-50" />
+      <Separator className="relative opacity-45" />
 
       {/* Navigation */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 sm:py-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-        <nav className="flex flex-col gap-1">
+      <div className="relative flex-1 overflow-y-auto px-3 py-3 sm:py-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+        <div className="mb-3 flex items-center justify-between px-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-muted-foreground">Workspace Flow</p>
+          <span className="rounded-full border border-blue-100/80 bg-white/58 px-2 py-0.5 text-[10px] font-semibold text-[#2f5fa8] dark:border-white/10 dark:bg-white/8 dark:text-cyan-200">
+            {hasDatasetContext ? 'Active' : 'Start'}
+          </span>
+        </div>
+        <nav className="flex flex-col gap-1.5">
           {tabs.map((tab, index) => {
             const isActive = activeTab === tab.id;
             const enabled = isTabEnabled(tab.id);
@@ -562,26 +578,27 @@ function SidebarContent({
                     }
                   }}
                   className={cn(
-                    'group relative flex w-full items-center gap-3 overflow-hidden rounded-2xl border px-3 py-3 text-left text-sm font-medium transition-all duration-300',
-                    isActive && enabled && 'border-primary/25 bg-[linear-gradient(135deg,rgba(59,130,246,0.16),rgba(125,211,252,0.08))] text-primary shadow-[0_18px_40px_-24px_rgba(37,99,235,0.5)]',
-                    !isActive && enabled && 'border-transparent bg-transparent text-muted-foreground hover:border-border/70 hover:bg-card/80 hover:text-foreground hover:shadow-[0_14px_36px_-28px_rgba(15,23,42,0.2)]',
-                    !enabled && 'cursor-not-allowed text-muted-foreground/40',
+                    'group relative flex w-full items-center gap-3 overflow-hidden rounded-xl border px-3 py-3 text-left text-sm font-semibold transition-all duration-300',
+                    isActive && enabled && 'border-blue-200/90 bg-[linear-gradient(135deg,rgba(47,95,168,0.18),rgba(76,184,240,0.12))] text-[#234e9e] shadow-[0_18px_44px_-26px_rgba(37,99,235,0.55)] ring-1 ring-blue-100/70 dark:border-white/12 dark:text-cyan-100 dark:ring-white/10',
+                    !isActive && enabled && 'border-transparent bg-white/0 text-muted-foreground hover:border-white/70 hover:bg-white/64 hover:text-foreground hover:shadow-[0_14px_36px_-28px_rgba(15,23,42,0.22)] dark:hover:border-white/10 dark:hover:bg-white/8',
+                    !enabled && 'cursor-not-allowed border-transparent text-muted-foreground/38',
                   )}
                 >
                   <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100" aria-hidden>
-                    <div className="absolute inset-y-0 left-0 w-20 bg-gradient-to-r from-primary/8 to-transparent" />
+                    <div className="absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-primary/10 to-transparent" />
+                    <div className="absolute inset-x-4 top-0 h-px bg-white/70" />
                   </div>
                   {isActive && enabled && (
                     <motion.div
                       layoutId="activeTab"
-                      className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-primary"
+                      className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-[linear-gradient(180deg,#2f5fa8,#4cb8f0)]"
                       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
                     />
                   )}
                   <div className={cn(
-                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-300',
-                    isActive && enabled && 'bg-primary text-primary-foreground shadow-sm shadow-primary/25 ring-4 ring-primary/10',
-                    !isActive && enabled && 'bg-secondary text-secondary-foreground group-hover:scale-105 group-hover:bg-primary/10 group-hover:text-primary',
+                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-all duration-300',
+                    isActive && enabled && 'border-white/70 bg-[linear-gradient(135deg,#2f5fa8,#4cb8f0)] text-white shadow-[0_14px_28px_-18px_rgba(47,95,168,0.72)] ring-4 ring-blue-200/55 dark:border-white/12 dark:ring-cyan-300/10',
+                    !isActive && enabled && 'border-white/70 bg-white/58 text-[#456176] shadow-sm group-hover:scale-105 group-hover:border-blue-100 group-hover:bg-blue-50/80 group-hover:text-[#2f5fa8] dark:border-white/10 dark:bg-white/8 dark:text-slate-300',
                     !enabled && 'bg-muted/50 text-muted-foreground/40',
                   )}>
                     <Icon className="h-4 w-4" />
@@ -589,9 +606,10 @@ function SidebarContent({
                   <div className="min-w-0 flex-1">
                     <span className="truncate">{tab.label}</span>
                   </div>
-                  {isActive && enabled && (
-                    <ChevronRight className="ml-auto h-4 w-4 text-primary" />
-                  )}
+                  <ChevronRight className={cn(
+                    'ml-auto h-4 w-4 transition-all duration-300',
+                    isActive && enabled ? 'translate-x-0 text-[#2f5fa8] opacity-100 dark:text-cyan-200' : 'text-muted-foreground opacity-0 group-hover:translate-x-0.5 group-hover:opacity-70',
+                  )} />
                 </motion.button>
                 {index < tabs.length - 1 && index < 1 && (
                   <div className="flex items-center px-5 py-1">
@@ -869,7 +887,7 @@ export default function HomePage() {
         <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-blue-900/10 blur-3xl" />
       </div>
       {/* Desktop Sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-white/45 bg-sidebar/72 shadow-[0_24px_80px_-30px_rgba(31,95,168,0.22)] backdrop-blur-2xl dark:border-white/10 lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-white/60 bg-[linear-gradient(180deg,rgba(237,241,246,0.92),rgba(225,235,247,0.82))] shadow-[18px_0_70px_-46px_rgba(31,95,168,0.5)] backdrop-blur-2xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(20,36,58,0.94),rgba(15,29,48,0.88))] lg:flex">
         <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} onProfileUpdated={setCurrentUser} />
       </aside>
 
@@ -878,12 +896,12 @@ export default function HomePage() {
         {/* Content */}
         <main className="flex-1 overflow-y-auto overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <div className="mx-auto max-w-7xl px-4 pb-6 pt-3 sm:px-6 sm:pt-4 lg:px-8">
-            <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.9),rgba(237,241,246,0.72))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.9),rgba(18,32,52,0.74))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
+            <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-white/55 bg-[linear-gradient(180deg,rgba(237,241,246,0.92),rgba(237,241,246,0.74))] px-4 py-3 backdrop-blur-2xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.92),rgba(18,32,52,0.76))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
               <div className="mx-auto max-w-7xl">
-                <div className="group relative overflow-hidden rounded-[2rem] border-[8px] border-white/80 bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_56%,#67b3df_100%)] p-4 text-white shadow-[0_30px_100px_-42px_rgba(31,95,168,0.62)] transition-all duration-500 hover:shadow-[0_34px_110px_-42px_rgba(31,95,168,0.74)] dark:border-white/12 dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)] sm:p-5">
+                <div className="group relative overflow-hidden rounded-xl border border-white/70 bg-[linear-gradient(135deg,rgba(47,95,168,0.96)_0%,rgba(78,142,211,0.94)_56%,rgba(103,179,223,0.9)_100%)] p-4 text-white shadow-[0_28px_82px_-44px_rgba(31,95,168,0.72)] ring-1 ring-blue-100/30 backdrop-blur-2xl transition-all duration-500 hover:shadow-[0_32px_92px_-44px_rgba(31,95,168,0.8)] dark:border-white/12 dark:bg-[linear-gradient(135deg,rgba(20,40,74,0.96)_0%,rgba(33,85,140,0.92)_54%,rgba(45,126,178,0.9)_100%)] sm:p-5">
                   <div className="pointer-events-none absolute inset-0 opacity-80">
-                    <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-white/18 blur-3xl transition-transform duration-700 group-hover:scale-125" />
-                    <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-100/18 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
+                    <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-white/16 blur-3xl transition-transform duration-700 group-hover:scale-125" />
+                    <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-100/16 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
                     <div className="absolute inset-y-0 right-[24%] w-px bg-white/12" />
                     <div className="absolute inset-x-0 top-16 h-px bg-gradient-to-r from-transparent via-white/18 to-transparent" />
                     <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
@@ -908,8 +926,8 @@ export default function HomePage() {
                         </Sheet>
                         <div className="min-w-0">
                           <div className="mb-3 flex flex-wrap items-center gap-3">
-                            <span className="text-[11px] font-semibold uppercase tracking-[0.32em] text-white/86">
-                              Aroha Intelligent System
+                            <span className="rounded-full border border-white/14 bg-white/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.26em] text-white/86 backdrop-blur-md">
+                              Client Analytics Workspace
                             </span>
                             <span className="hidden h-1 w-1 rounded-full bg-slate-400/70 sm:inline-block" />
                             <span className="text-xs font-medium text-white/76">
@@ -918,24 +936,24 @@ export default function HomePage() {
                           </div>
                           <div className="flex items-center gap-3">
                             <ApplicationLogo />
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/78">Aroha</p>
+                            <div className="min-w-0 border-l border-white/14 pl-3">
+                              <p className="text-xs font-bold uppercase tracking-[0.22em] text-white/72">Aroha Technologies</p>
                               <BrandWordmark inverted />
                             </div>
                           </div>
-                          <p className="mt-3 max-w-2xl text-sm leading-6 text-white/86">
+                          <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-white/84">
                             Enterprise-ready analytics workspace for dataset intake, understanding, data preparation, and forecasting workflows.
                           </p>
                           <div className="mt-4 flex flex-wrap items-center gap-2">
-                            <Badge variant="outline" className="rounded-full !border-white/15 !bg-white/10 px-3 py-1 !text-white">
+                            <Badge variant="outline" className="rounded-full !border-white/18 !bg-white/12 px-3 py-1 !text-white shadow-sm backdrop-blur-md">
                               {hasWorkspace ? <CheckCircle2 className="mr-2 h-3.5 w-3.5 text-emerald-300" /> : <AlertCircle className="mr-2 h-3.5 w-3.5 text-amber-300" />}
                               {isRestoringWorkspace ? 'Restoring workspace' : hasWorkspace ? 'Workspace in progress' : 'Awaiting dataset'}
                             </Badge>
-                            <Badge variant="outline" className="rounded-full !border-white/15 !bg-white/10 px-3 py-1 !text-white">
+                            <Badge variant="outline" className="rounded-full !border-white/18 !bg-white/12 px-3 py-1 !text-white shadow-sm backdrop-blur-md">
                               <ShieldCheck className="mr-2 h-3.5 w-3.5 text-sky-300" />
                               PostgreSQL activity tracking connected
                             </Badge>
-                            <Badge variant="outline" className="rounded-full !border-white/15 !bg-white/10 px-3 py-1 !text-white">
+                            <Badge variant="outline" className="rounded-full !border-white/18 !bg-white/12 px-3 py-1 !text-white shadow-sm backdrop-blur-md">
                               <RefreshCw className={cn('mr-2 h-3.5 w-3.5 text-cyan-300', isRefreshingActivity && 'animate-spin')} />
                               {sessionContinuity.freshness}
                             </Badge>
@@ -944,7 +962,7 @@ export default function HomePage() {
                       </div>
 
                       <div className="flex flex-col gap-3 xl:max-w-[62%] xl:items-end">
-                        <div className="rounded-xl border border-white/25 bg-white/12 px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.45)] backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/16">
+                        <div className="rounded-xl border border-white/25 bg-white/12 px-4 py-3 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.45)] ring-1 ring-white/8 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/16">
                           <div className="flex items-start justify-between gap-4">
                             <div>
                               <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-300">Workspace Time</p>
@@ -961,15 +979,15 @@ export default function HomePage() {
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                        <Button size="sm" className="h-9 rounded-sm border border-white/10 bg-white px-4 text-slate-950 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
+                        <Button size="sm" className="h-9 rounded-sm border border-white/20 bg-white px-4 text-slate-950 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-100 hover:shadow-lg" onClick={handleResumeWorkspace}>
                           <History className="mr-2 h-4 w-4" />
                           {hasWorkspace ? 'Resume Workspace' : 'Open Workspace'}
                         </Button>
-                        <Button size="sm" className="h-9 rounded-sm border border-sky-100/25 bg-white/14 px-4 text-white shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/20 hover:shadow-lg" onClick={handleAddDataset}>
+                        <Button size="sm" className="h-9 rounded-sm border border-sky-100/25 bg-white/14 px-4 text-white shadow-sm backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/20 hover:shadow-lg" onClick={handleAddDataset}>
                           <Upload className="mr-2 h-4 w-4" />
                           Add Dataset
                         </Button>
-                        <Button size="sm" variant="outline" className="h-9 rounded-sm border-white/24 bg-white/8 px-4 text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/14 hover:text-white" onClick={handleFreshStart}>
+                        <Button size="sm" variant="outline" className="h-9 rounded-sm border-white/24 bg-white/8 px-4 text-white backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/14 hover:text-white" onClick={handleFreshStart}>
                           <RotateCcw className="mr-2 h-4 w-4" />
                           Fresh Start
                         </Button>
@@ -991,10 +1009,10 @@ export default function HomePage() {
                   <UploadTab />
                 </div>
               )}
-              <div className="glass-panel rounded-[2rem] border-[8px] border-white/80 px-3 py-4 shadow-[0_30px_90px_-42px_rgba(31,95,168,0.34)] dark:border-white/10 sm:px-5 sm:py-5">
-                <div className="mb-5 flex flex-col gap-3 rounded-xl border border-white/68 bg-white/66 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(31,95,168,0.28)] backdrop-blur-sm transition-all duration-300 hover:bg-white/78 dark:border-white/10 dark:bg-white/8 lg:flex-row lg:items-center lg:justify-between">
+              <div className="glass-panel rounded-xl border border-white/78 px-3 py-4 shadow-[0_26px_76px_-42px_rgba(31,95,168,0.36)] ring-1 ring-white/58 dark:border-white/10 dark:ring-white/8 sm:px-5 sm:py-5">
+                <div className="mb-5 flex flex-col gap-3 rounded-xl border border-white/72 bg-white/70 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(31,95,168,0.28)] ring-1 ring-white/54 backdrop-blur-xl transition-all duration-300 hover:bg-white/82 dark:border-white/10 dark:bg-white/8 dark:ring-white/8 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Active Dataset</p>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Active Dataset</p>
                     <p className="mt-1 truncate text-base font-semibold text-foreground">
                       {displayFileName ?? 'No dataset selected'}
                     </p>
@@ -1006,7 +1024,7 @@ export default function HomePage() {
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <Select value={activeDatasetKey ?? undefined} onValueChange={selectDataset} disabled={!hasDatasetLibrary}>
-                      <SelectTrigger className="w-full min-w-[260px] rounded-sm border-border/70 bg-card/80 sm:w-[320px]">
+                      <SelectTrigger className="w-full min-w-[260px] rounded-sm border-border/70 bg-card/90 shadow-sm sm:w-[320px]">
                         <SelectValue placeholder="Choose a dataset" />
                       </SelectTrigger>
                       <SelectContent>
@@ -1022,7 +1040,7 @@ export default function HomePage() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button type="button" variant="outline" className="rounded-sm" onClick={handleAddDataset}>
+                    <Button type="button" variant="outline" className="rounded-sm bg-white/80 shadow-sm dark:bg-white/8" onClick={handleAddDataset}>
                       <Upload className="mr-2 h-4 w-4" />
                       Upload Another
                     </Button>
@@ -1038,20 +1056,8 @@ export default function HomePage() {
         {/* Footer */}
         <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.94),rgba(18,32,52,0.88))] sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="grid gap-4 overflow-hidden rounded-xl border border-white/75 bg-white/72 px-5 py-4 text-[#1f3340] shadow-[0_18px_56px_-38px_rgba(31,95,168,0.3)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_22px_66px_-40px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-              <div className="flex min-w-0 flex-col gap-3 text-left sm:flex-row sm:items-center">
-                <ApplicationLogo compact />
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Aroha Intelligent Platform</p>
-                  <p className="bg-[linear-gradient(135deg,#234e9e_0%,#2f5fa8_48%,#4cb8f0_100%)] bg-clip-text text-base font-bold text-transparent dark:bg-[linear-gradient(135deg,#ffffff_0%,#d7f9ff_42%,#67e8f9_100%)]">
-                    Intelligent Data Assistant
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-muted-foreground">
-                    AI-guided dataset understanding, analysis, and predictive modeling.
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-semibold text-muted-foreground xl:justify-end">
+            <div className="grid gap-4 overflow-hidden rounded-xl border border-white/75 bg-white/78 px-5 py-4 text-[#1f3340] shadow-[0_18px_56px_-38px_rgba(31,95,168,0.3)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_22px_66px_-40px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100 xl:grid-cols-[auto_minmax(320px,1fr)] xl:items-center">
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-semibold text-muted-foreground">
                 <span className="inline-flex items-center gap-2 whitespace-nowrap">
                   <MapPin className="h-4 w-4 text-[#2f5fa8] dark:text-cyan-300" />
                   Bangalore
@@ -1064,10 +1070,27 @@ export default function HomePage() {
                   <Phone className="h-4 w-4" />
                   +91 9886228615
                 </a>
-                <a className="inline-flex items-center gap-2 whitespace-nowrap text-xs uppercase tracking-[0.18em] text-muted-foreground transition-colors hover:text-foreground" href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer">
-                  Aroha Technologies
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </a>
+              </div>
+
+              <div className="relative min-w-0 overflow-hidden rounded-lg border border-[#cad5e4]/80 bg-[linear-gradient(90deg,rgba(255,255,255,0.7),rgba(241,247,255,0.86))] py-2 dark:border-white/10 dark:bg-white/6">
+                <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(90deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
+                <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(270deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
+                <div className="footer-info-marquee flex w-max items-center gap-8 whitespace-nowrap px-4 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  {Array.from({ length: 2 }).map((_, index) => (
+                    <div key={index} className="flex items-center gap-8">
+                      <span>Aroha Technologies</span>
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
+                      <span>Intelligent Data Assistant</span>
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
+                      <span>AI-guided dataset understanding, analysis, and predictive modeling</span>
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
+                      <a className="inline-flex items-center gap-2 text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer">
+                        Aroha Intelligent Platform
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

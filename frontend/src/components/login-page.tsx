@@ -10,9 +10,12 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  LinkIcon,
   Loader2,
   Lock,
   Mail,
+  MapPin,
+  Phone,
   ShieldCheck,
   Sparkles,
   UploadCloud,
@@ -162,7 +165,10 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       }}
     >
       <div className="flex h-full min-h-0 w-full flex-col overflow-hidden md:flex-row">
-        <section className="relative flex min-h-0 w-full items-center justify-center overflow-hidden border-b border-white/20 bg-[radial-gradient(circle_at_18%_16%,rgba(255,255,255,0.62),transparent_30%),radial-gradient(circle_at_78%_72%,rgba(129,140,248,0.22),transparent_34%),linear-gradient(135deg,#ede9fe_0%,#dbeafe_48%,#eef2ff_100%)] px-6 py-8 md:h-full md:w-[40%] md:border-b-0 md:border-r">
+        <section className="relative flex min-h-0 w-full items-center justify-center overflow-hidden border-b border-white/30 bg-[radial-gradient(circle_at_16%_12%,rgba(255,255,255,0.82),transparent_30%),radial-gradient(circle_at_84%_74%,rgba(99,102,241,0.28),transparent_36%),linear-gradient(135deg,#f8fbff_0%,#dbeafe_46%,#eef2ff_100%)] px-6 py-8 md:h-full md:w-[40%] md:border-b-0 md:border-r">
+          <div className="pointer-events-none absolute left-[-7rem] top-[-5rem] h-64 w-64 rounded-full bg-white/70 blur-3xl" />
+          <div className="pointer-events-none absolute bottom-[-7rem] right-[-6rem] h-72 w-72 rounded-full bg-indigo-300/30 blur-3xl" />
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,0.34)_0%,rgba(255,255,255,0.08)_42%,rgba(255,255,255,0.24)_100%)]" />
           <motion.div
             aria-hidden="true"
             className="absolute right-[16%] top-[18%] text-indigo-400/55"
@@ -176,20 +182,21 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.55, ease: 'easeOut' }}
-            className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/60 bg-white/24 p-8 shadow-[0_34px_110px_-42px_rgba(30,41,59,0.64),inset_0_1px_0_rgba(255,255,255,0.72)] ring-1 ring-white/35 backdrop-blur-[30px]"
+            className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/70 bg-white/22 p-8 shadow-[0_34px_110px_-42px_rgba(30,41,59,0.62),inset_0_1px_0_rgba(255,255,255,0.75)] ring-1 ring-white/45 backdrop-blur-[34px]"
           >
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.74)_0%,rgba(255,255,255,0.24)_46%,rgba(199,210,254,0.26)_100%)]" />
-            <div className="pointer-events-none absolute -left-24 top-24 h-40 w-[140%] rotate-[-14deg] bg-white/35 blur-3xl" />
-            <div className="absolute left-1/2 top-0 flex h-12 w-40 -translate-x-1/2 -translate-y-px items-center justify-center rounded-b-2xl bg-white/86 text-sm font-semibold text-slate-900 shadow-[0_16px_36px_-24px_rgba(15,23,42,0.55)]">
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.82)_0%,rgba(255,255,255,0.28)_46%,rgba(199,210,254,0.3)_100%)]" />
+            <div className="pointer-events-none absolute -left-24 top-24 h-40 w-[140%] rotate-[-14deg] bg-white/42 blur-3xl" />
+            <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-white/90" />
+            <div className="absolute left-1/2 top-0 flex h-12 w-40 -translate-x-1/2 -translate-y-px items-center justify-center rounded-b-2xl border-x border-b border-white/70 bg-white/82 text-sm font-semibold text-slate-900 shadow-[0_16px_36px_-24px_rgba(15,23,42,0.55)] backdrop-blur-2xl">
               {isRegister ? 'Register' : 'Login'}
             </div>
 
-            <div className="relative mt-9 flex items-center gap-4 rounded-2xl border border-white/58 bg-white/30 px-4 py-3 shadow-[0_20px_56px_-36px_rgba(67,56,202,0.46),inset_0_1px_0_rgba(255,255,255,0.74)] backdrop-blur-2xl">
+            <div className="relative mt-9 flex items-center gap-4 rounded-2xl border border-white/72 bg-white/36 px-4 py-3 shadow-[0_20px_56px_-36px_rgba(67,56,202,0.46),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl">
               <a
                 href="https://aroha.co.in/"
                 target="_blank"
                 rel="noreferrer"
-                className="flex h-16 w-28 shrink-0 items-center justify-center rounded-xl bg-white/76 px-3 shadow-inner shadow-white/70 transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                  className="flex h-16 w-28 shrink-0 items-center justify-center rounded-xl border border-white/72 bg-white/72 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.78),0_18px_44px_-32px_rgba(67,56,202,0.58)] transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
                 aria-label="Visit Aroha website"
               >
                 <img
@@ -242,7 +249,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               {isRegister && (
                 <label className="block">
                   <span className="mb-2 block text-sm font-semibold text-slate-800">Full name</span>
-                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
                     <Sparkles className="h-5 w-5 text-indigo-600" />
                     <input
                       type="text"
@@ -260,7 +267,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
               <label className="block">
                 <span className="mb-2 block text-sm font-semibold text-slate-800">Email</span>
-                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
                   <Mail className="h-5 w-5 text-indigo-600" />
                   <input
                     type="email"
@@ -277,7 +284,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
               <label className="block">
                 <span className="mb-2 block text-sm font-semibold text-slate-800">Password</span>
-                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
                   <Lock className="h-5 w-5 text-indigo-600" />
                   <input
                     type={showPassword ? 'text' : 'password'}
@@ -304,7 +311,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               {isRegister && (
                 <label className="block">
                   <span className="mb-2 block text-sm font-semibold text-slate-800">Confirm password</span>
-                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/60 bg-white/32 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/48 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
                     <Lock className="h-5 w-5 text-indigo-600" />
                     <input
                       type={showPassword ? 'text' : 'password'}
@@ -451,6 +458,29 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 );
               })}
             </motion.div>
+
+            <div className="grid max-w-3xl gap-3 border-t border-white/10 pt-4 text-sm text-white/76 sm:grid-cols-3">
+              <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/8 px-3 py-2 backdrop-blur-md">
+                <MapPin className="h-4 w-4 shrink-0 text-cyan-200" />
+                <span className="font-medium">Bangalore</span>
+              </div>
+              <a
+                href="https://aroha.co.in/contact-us/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/8 px-3 py-2 font-medium text-white/82 backdrop-blur-md transition hover:border-white/20 hover:bg-white/12 hover:text-white"
+              >
+                <LinkIcon className="h-4 w-4 shrink-0 text-cyan-200" />
+                <span className="truncate">Contact Aroha</span>
+              </a>
+              <a
+                href="tel:+919886228615"
+                className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/8 px-3 py-2 font-medium text-white/82 backdrop-blur-md transition hover:border-white/20 hover:bg-white/12 hover:text-white"
+              >
+                <Phone className="h-4 w-4 shrink-0 text-cyan-200" />
+                <span className="whitespace-nowrap">+91 9886228615</span>
+              </a>
+            </div>
           </motion.div>
         </section>
       </div>
