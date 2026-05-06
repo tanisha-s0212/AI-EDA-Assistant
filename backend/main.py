@@ -56,6 +56,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from dtype_inference import LARGE_COL_CUTOFF, RANDOM_STATE, SAMPLE_SIZE, dtype_review_flags, dtype_summary_report, infer_universal_dtypes
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / 'models'
@@ -1349,6 +1350,13 @@ class ParquetCleaningRequest(BaseModel):
     handle_missing: bool = True
     convert_dates: bool = True
     standardize_names: bool = True
+    infer_dtypes: bool = True
+
+
+class DtypeInferenceRequest(BaseModel):
+    data: list[dict[str, Any]] = Field(default_factory=list)
+    dataset_id: str | None = None
+    persist: bool = False
 
 
 class ColumnInfo(BaseModel):
@@ -1630,6 +1638,35 @@ def normalize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
         if normalized[column].dtype == 'object':
             normalized[column] = normalized[column].replace(r'^\s*$', np.nan, regex=True)
     return normalized
+
+
+def persist_inferred_dataset_frame(dataset_id: str, source_entry: dict[str, Any], frame: pd.DataFrame) -> Path:
+    cached_path = write_cached_frame(dataset_id, frame)
+    duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
+    DATASET_CACHE[dataset_id] = {
+        'frame_path': str(cached_path),
+        'filename': source_entry.get('filename') or 'dataset',
+        'row_count': int(len(frame)),
+        'column_count': int(len(frame.columns)),
+        'columns': list(frame.columns),
+        'duplicate_count': duplicate_rows,
+    }
+    return cached_path
+
+
+def build_dtype_inference_payload(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    inferred_frame, cast_log = infer_universal_dtypes(normalize_dataframe(pd.DataFrame(frame)))
+    summary = dtype_summary_report(cast_log)
+    review_flags = dtype_review_flags(cast_log)
+    memory_saved = int(pd.DataFrame(cast_log)['memory_delta_bytes'].sum()) if cast_log else 0
+    payload = {
+        'memorySavedBytes': memory_saved,
+        'memorySavedKb': float(memory_saved / 1024.0),
+        'report': safe_serialize(summary.to_dict(orient='records')),
+        'audit': safe_serialize(cast_log),
+        'reviewFlags': safe_serialize(review_flags.to_dict(orient='records')),
+    }
+    return inferred_frame, payload
 
 
 def load_dataset_frame(dataset_id: str | None, data: list[dict[str, Any]], required_columns: list[str]) -> pd.DataFrame:
@@ -4167,7 +4204,13 @@ def build_column_info_from_frame(frame: pd.DataFrame) -> list[dict[str, Any]]:
         series = frame[column]
         non_null = int(series.notna().sum())
         null_count = int(total_rows - non_null)
-        unique_count = int(series.nunique(dropna=True))
+        if total_rows > LARGE_COL_CUTOFF:
+            sample = series.dropna()
+            if len(sample) > SAMPLE_SIZE:
+                sample = sample.sample(n=SAMPLE_SIZE, random_state=RANDOM_STATE)
+            unique_count = int(sample.nunique(dropna=True))
+        else:
+            unique_count = int(series.nunique(dropna=True))
         role = 'categorical'
         if pd.api.types.is_bool_dtype(series):
             role = 'boolean'
@@ -4309,23 +4352,18 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                     'timestamp': datetime.utcnow().isoformat(),
                 })
 
-        updated_dataset_path = write_cached_frame(request.dataset_id, frame)
-        duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
-        updated_entry = {
-            'frame_path': str(updated_dataset_path),
-            'filename': dataset_entry['filename'],
-            'row_count': int(len(frame)),
-            'column_count': int(len(frame.columns)),
-            'columns': list(frame.columns),
-            'duplicate_count': duplicate_rows,
-        }
-        if dataset_entry.get('csv_path'):
-            updated_entry['csv_path'] = dataset_entry['csv_path']
-        if dataset_entry.get('excel_path'):
-            updated_entry['excel_path'] = dataset_entry['excel_path']
-        if dataset_entry.get('parquet_path'):
-            updated_entry['parquet_path'] = dataset_entry['parquet_path']
-        DATASET_CACHE[request.dataset_id] = updated_entry
+        dtype_payload: dict[str, Any] | None = None
+        if request.infer_dtypes:
+            frame, dtype_payload = build_dtype_inference_payload(frame)
+            accepted_count = int(sum(1 for item in dtype_payload['audit'] if bool(item.get('accepted'))))
+            logs.append({
+                'action': 'Inferred Data Types',
+                'detail': f'Applied universal dtype inference across {len(frame.columns)} column(s); {accepted_count} column decision(s) accepted.',
+                'timestamp': datetime.utcnow().isoformat(),
+            })
+
+        updated_dataset_path = persist_inferred_dataset_frame(request.dataset_id, dataset_entry, frame)
+        duplicate_rows = int(DATASET_CACHE[request.dataset_id].get('duplicate_count') or 0)
         memory_size = updated_dataset_path.stat().st_size
         preview_frame = frame.head(DATASET_PREVIEW_ROW_LIMIT)
         return {
@@ -4339,6 +4377,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             'duplicates': duplicate_rows,
             'memoryUsage': f'{memory_size / (1024 * 1024):.2f} MB',
             'logs': logs,
+            'dtypeInference': dtype_payload,
         }
 
     if not dataset_entry.get('parquet_path'):
@@ -4427,6 +4466,33 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 'detail': f'Converted {len(converted_columns)} date-like column(s).',
                 'timestamp': datetime.utcnow().isoformat(),
             })
+
+    if request.infer_dtypes:
+        pandas_frame = normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False))
+        inferred_frame, dtype_payload = build_dtype_inference_payload(pandas_frame)
+        updated_dataset_path = persist_inferred_dataset_frame(request.dataset_id, dataset_entry, inferred_frame)
+        duplicate_rows = int(DATASET_CACHE[request.dataset_id].get('duplicate_count') or 0)
+        memory_size = updated_dataset_path.stat().st_size
+        accepted_count = int(sum(1 for item in dtype_payload['audit'] if bool(item.get('accepted'))))
+        logs.append({
+            'action': 'Inferred Data Types',
+            'detail': f'Applied universal dtype inference across {len(inferred_frame.columns)} column(s); {accepted_count} column decision(s) accepted.',
+            'timestamp': datetime.utcnow().isoformat(),
+        })
+        preview_frame = inferred_frame.head(DATASET_PREVIEW_ROW_LIMIT)
+        return {
+            'datasetId': request.dataset_id,
+            'data': safe_serialize(preview_frame.to_dict(orient='records')),
+            'columns': build_column_info_from_frame(inferred_frame),
+            'rowCount': int(len(inferred_frame)),
+            'originalRowCount': original_row_count,
+            'loadedRowCount': int(len(preview_frame)),
+            'previewLoaded': len(inferred_frame) > len(preview_frame),
+            'duplicates': duplicate_rows,
+            'memoryUsage': f'{memory_size / (1024 * 1024):.2f} MB',
+            'logs': logs,
+            'dtypeInference': dtype_payload,
+        }
 
     parquet_buffer = io.BytesIO()
     frame.write_parquet(parquet_buffer)
@@ -6093,6 +6159,64 @@ def get_dataset_preview(
         },
     )
     return JSONResponse(content=response)
+
+
+@router.post('/infer-dtypes')
+def infer_dtypes(request: DtypeInferenceRequest, http_request: Request) -> JSONResponse:
+    if request.dataset_id:
+        dataset_entry = DATASET_CACHE.get(request.dataset_id)
+        if dataset_entry is None:
+            raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
+        frame = load_full_dataset_frame(request.dataset_id, request.data)
+        filename = str(dataset_entry.get('filename') or 'dataset')
+    else:
+        if not request.data:
+            raise HTTPException(status_code=400, detail='Dataset rows are required.')
+        dataset_entry = {'filename': 'inline dataset'}
+        frame = normalize_dataframe(pd.DataFrame(request.data))
+        filename = 'inline dataset'
+
+    try:
+        inferred_frame, dtype_payload = build_dtype_inference_payload(frame)
+        dataset_id = request.dataset_id
+        memory_size = int(inferred_frame.memory_usage(deep=True).sum())
+        if request.persist:
+            if not dataset_id:
+                dataset_id = str(uuid.uuid4())[:8]
+            cached_path = persist_inferred_dataset_frame(dataset_id, dataset_entry, inferred_frame)
+            memory_size = int(cached_path.stat().st_size)
+
+        preview_frame = inferred_frame.head(DATASET_PREVIEW_ROW_LIMIT)
+        response = {
+            'datasetId': dataset_id,
+            'data': safe_serialize(preview_frame.to_dict(orient='records')),
+            'columns': build_column_info_from_frame(inferred_frame),
+            'rowCount': int(len(inferred_frame)),
+            'loadedRowCount': int(len(preview_frame)),
+            'previewLoaded': len(inferred_frame) > len(preview_frame),
+            'memoryUsage': f'{memory_size / (1024 * 1024):.2f} MB',
+            'dtypeInference': dtype_payload,
+        }
+        record_activity(
+            request=http_request,
+            action='infer_dtypes',
+            status='success',
+            dataset_id=dataset_id,
+            file_name=filename,
+            detail='Inferred dataset dtypes and produced a column-level audit.',
+            metadata={
+                'row_count': int(len(inferred_frame)),
+                'column_count': int(len(inferred_frame.columns)),
+                'memory_saved_bytes': dtype_payload['memorySavedBytes'],
+                'persisted': bool(request.persist),
+            },
+        )
+        return JSONResponse(content=safe_serialize(response))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Dtype inference failed dataset_id=%s', request.dataset_id)
+        raise HTTPException(status_code=400, detail=f'Dtype inference failed: {error}') from error
 
 
 async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)) -> JSONResponse:
