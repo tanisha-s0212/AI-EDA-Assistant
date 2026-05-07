@@ -254,23 +254,23 @@ function CompanyLogo({ compact = false }: { compact?: boolean }) {
 }
 
 function ApplicationLogo({ compact = false }: { compact?: boolean }) {
-  const size = compact ? 42 : 58;
+  const size = compact ? 44 : 62;
 
   return (
     <div
       className={cn(
-        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/78 bg-white/92 shadow-[0_22px_52px_-30px_rgba(31,95,168,0.65)] ring-1 ring-white/72 backdrop-blur-2xl before:pointer-events-none before:absolute before:inset-x-2 before:top-0 before:h-px before:bg-white/95',
-        compact ? 'h-[42px] w-[42px]' : 'h-[54px] w-[54px]'
+        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/78 bg-white/94 shadow-[0_22px_52px_-30px_rgba(31,95,168,0.65)] ring-1 ring-white/72 backdrop-blur-2xl before:pointer-events-none before:absolute before:inset-x-2 before:top-0 before:h-px before:bg-white/95',
+        compact ? 'h-11 w-11' : 'h-[58px] w-[58px]'
       )}
     >
       <Image
         src="/app-logo.svg"
         alt="Intelligent Data Assistant logo"
-        width={Math.round(size * 0.8)}
-        height={Math.round(size * 0.8)}
+        width={size}
+        height={size}
         priority={false}
         sizes={`${size}px`}
-        className="relative h-auto w-auto object-contain drop-shadow-[0_12px_22px_rgba(31,95,168,0.22)]"
+        className="relative h-full w-full object-contain p-1.5 drop-shadow-[0_12px_22px_rgba(31,95,168,0.22)]"
       />
     </div>
   );
@@ -1056,7 +1056,7 @@ export default function HomePage() {
         {/* Footer */}
         <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.94),rgba(18,32,52,0.88))] sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="grid gap-4 overflow-hidden rounded-xl border border-white/75 bg-white/78 px-5 py-4 text-[#1f3340] shadow-[0_18px_56px_-38px_rgba(31,95,168,0.3)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_22px_66px_-40px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100 xl:grid-cols-[auto_minmax(320px,1fr)] xl:items-center">
+            <div className="overflow-hidden rounded-xl border border-white/75 bg-white/78 px-5 py-4 text-[#1f3340] shadow-[0_18px_56px_-38px_rgba(31,95,168,0.3)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_22px_66px_-40px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100">
               <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-semibold text-muted-foreground">
                 <span className="inline-flex items-center gap-2 whitespace-nowrap">
                   <MapPin className="h-4 w-4 text-[#2f5fa8] dark:text-cyan-300" />
@@ -1071,30 +1071,33 @@ export default function HomePage() {
                   +91 9886228615
                 </a>
               </div>
-
-              <div className="relative min-w-0 overflow-hidden rounded-lg border border-[#cad5e4]/80 bg-[linear-gradient(90deg,rgba(255,255,255,0.7),rgba(241,247,255,0.86))] py-2 dark:border-white/10 dark:bg-white/6">
-                <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(90deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
-                <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(270deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
-                <div className="footer-info-marquee flex w-max items-center gap-8 whitespace-nowrap px-4 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  {Array.from({ length: 2 }).map((_, index) => (
-                    <div key={index} className="flex items-center gap-8">
-                      <span>Aroha Technologies</span>
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
-                      <span>Intelligent Data Assistant</span>
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
-                      <span>AI-guided dataset understanding, analysis, and predictive modeling</span>
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
-                      <a className="inline-flex items-center gap-2 text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer">
-                        Aroha Intelligent Platform
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           </div>
         </footer>
+        <div className="border-t border-white/45 bg-[linear-gradient(180deg,rgba(225,235,247,0.96),rgba(214,228,244,0.94))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(14,26,44,0.94),rgba(13,24,40,0.92))] sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <div className="relative min-w-0 overflow-hidden rounded-lg border border-[#cad5e4]/80 bg-[linear-gradient(90deg,rgba(255,255,255,0.72),rgba(241,247,255,0.88))] py-2 shadow-[0_14px_46px_-34px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/6">
+              <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(90deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
+              <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(270deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
+              <div className="footer-info-marquee flex w-max items-center gap-8 whitespace-nowrap px-4 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                {Array.from({ length: 2 }).map((_, index) => (
+                  <div key={index} className="flex items-center gap-8">
+                    <span>Aroha Technologies</span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
+                    <span>Intelligent Data Assistant</span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
+                    <span>AI-guided dataset understanding, analysis, and predictive modeling</span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
+                    <a className="inline-flex items-center gap-2 text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href={AROHA_WEBSITE_URL} target="_blank" rel="noopener noreferrer">
+                      Aroha Intelligent Platform
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

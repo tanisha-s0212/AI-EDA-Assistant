@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Sparkles,
   UploadCloud,
+  UserRound,
 } from 'lucide-react';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import type { AuthenticatedUser } from '@/lib/store';
@@ -159,10 +160,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
   return (
     <main
-      className="relative h-screen max-h-screen w-screen overflow-hidden bg-background text-foreground"
-      style={{
-        fontFamily: "'Satoshi', 'Clash Display', 'General Sans', Inter, ui-sans-serif, system-ui, sans-serif",
-      }}
+      className="login-page-shell relative h-screen max-h-screen w-screen overflow-hidden bg-background text-foreground"
     >
       <div className="flex h-full min-h-0 w-full flex-col overflow-hidden md:flex-row">
         <section className="relative flex min-h-0 w-full items-center justify-center overflow-hidden border-b border-white/30 bg-[radial-gradient(circle_at_16%_12%,rgba(255,255,255,0.82),transparent_30%),radial-gradient(circle_at_84%_74%,rgba(99,102,241,0.28),transparent_36%),linear-gradient(135deg,#f8fbff_0%,#dbeafe_46%,#eef2ff_100%)] px-6 py-8 md:h-full md:w-[40%] md:border-b-0 md:border-r">
@@ -195,8 +193,8 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               <a
                 href="https://aroha.co.in/"
                 target="_blank"
-                rel="noreferrer"
-                  className="flex h-16 w-28 shrink-0 items-center justify-center rounded-xl border border-white/72 bg-white/72 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.78),0_18px_44px_-32px_rgba(67,56,202,0.58)] transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                rel="noopener noreferrer"
+                className="flex h-16 w-28 shrink-0 items-center justify-center rounded-xl border border-white/72 bg-white/72 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.78),0_18px_44px_-32px_rgba(67,56,202,0.58)] transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
                 aria-label="Visit Aroha website"
               >
                 <img
@@ -250,7 +248,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 <label className="block">
                   <span className="mb-2 block text-sm font-semibold text-slate-800">Full name</span>
                   <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
-                    <Sparkles className="h-5 w-5 text-indigo-600" />
+                    <UserRound className="h-5 w-5 text-indigo-600" />
                     <input
                       type="text"
                       autoComplete="name"

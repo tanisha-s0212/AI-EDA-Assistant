@@ -167,6 +167,10 @@
     animation-play-state: paused;
   }
 
+  .login-page-shell {
+    font-family: 'Satoshi', 'Clash Display', 'General Sans', Inter, ui-sans-serif, system-ui, sans-serif;
+  }
+
   @keyframes footer-info-marquee {
     from {
       transform: translateX(-50%);

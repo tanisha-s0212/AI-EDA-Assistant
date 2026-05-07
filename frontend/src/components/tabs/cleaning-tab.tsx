@@ -752,9 +752,9 @@ export default function CleaningTab() {
             (op.id === 'standardizeNames' && needsStandardizing);
 
           return (
-            <motion.div key={op.id} variants={itemVariants}>
+            <motion.div key={op.id} variants={itemVariants} className="h-full">
               <Card
-                className={`relative overflow-hidden transition-all duration-300 ${
+                className={`relative flex h-full min-h-[250px] overflow-hidden transition-all duration-300 ${
                   op.enabled
                     ? 'border-primary/30 shadow-sm shadow-primary/10'
                     : 'border-border/50 opacity-80'
@@ -790,8 +790,8 @@ export default function CleaningTab() {
                           }`}
                         />
                       </div>
-                      <div>
-                        <CardTitle className="text-sm font-semibold">{op.title}</CardTitle>
+                      <div className="min-h-10 min-w-0">
+                        <CardTitle className="text-sm font-semibold leading-5">{op.title}</CardTitle>
                       </div>
                     </div>
                     <Switch
@@ -801,7 +801,7 @@ export default function CleaningTab() {
                     />
                   </div>
                 </CardHeader>
-                <CardContent className="pt-0 space-y-3">
+                <CardContent className="flex flex-1 flex-col justify-between gap-3 pt-0">
                   <p className="text-xs text-muted-foreground leading-relaxed">
                     {op.description}
                   </p>
