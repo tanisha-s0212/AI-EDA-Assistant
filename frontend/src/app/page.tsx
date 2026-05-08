@@ -349,6 +349,15 @@ function UserProfileDialog({
       });
       return;
     }
+    if (file.size > 1_500_000) {
+      toast({
+        title: 'Image too large',
+        description: 'Profile images must be 1.5 MB or smaller.',
+        variant: 'destructive',
+      });
+      event.target.value = '';
+      return;
+    }
     setSelectedFile(file);
   };
 
@@ -386,26 +395,33 @@ function UserProfileDialog({
     username: name || currentUser.username,
     profileImageDataUrl: previewUrl ?? currentUser.profileImageDataUrl,
   };
+  const displayName = name.trim() || currentUser.username;
+  const displayEmail = email.trim() || currentUser.email;
+  const hasProfileImage = Boolean(previewUrl || currentUser.profileImageDataUrl);
+  const hasChanges =
+    name.trim() !== currentUser.username ||
+    email.trim() !== currentUser.email ||
+    Boolean(selectedFile);
+  const profileStatus = hasProfileImage ? 'Complete' : 'Needs photo';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden rounded-[2rem] border-[8px] border-white/80 bg-[#edf1f6] p-0 shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#122034] sm:max-w-2xl">
-        <div className="relative bg-[linear-gradient(135deg,#2f5fa8_0%,#4e8ed3_55%,#67b3df_100%)] px-6 py-6 text-white dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)]">
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(130deg,rgba(255,255,255,0.16)_0%,rgba(255,255,255,0.04)_44%,rgba(0,0,0,0.16)_100%)]" />
-          <DialogHeader className="relative gap-2 text-left">
-            <DialogTitle className="flex items-center gap-3 text-2xl font-bold">
-              <UserAvatar user={avatarPreviewUser} className="size-12" />
-              User Profile
-            </DialogTitle>
-            <DialogDescription className="text-white/82">
-              Manage your profile information for the Intelligent Data Assistant workspace.
+      <DialogContent className="overflow-hidden rounded-xl border border-white/80 bg-[#f5f8fc] p-0 shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#101b2c] sm:max-w-3xl">
+        <div className="relative overflow-hidden bg-[linear-gradient(135deg,#17427c_0%,#2f72bb_58%,#5ab6dc_100%)] px-7 py-7 text-white dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)]">
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(130deg,rgba(255,255,255,0.18)_0%,rgba(255,255,255,0.05)_42%,rgba(0,0,0,0.18)_100%)]" />
+          <div className="pointer-events-none absolute -right-12 -top-16 h-44 w-44 rounded-full border border-white/18" />
+          <div className="pointer-events-none absolute -bottom-24 left-20 h-52 w-52 rounded-full bg-cyan-200/12 blur-2xl" />
+          <DialogHeader className="relative max-w-[29rem] gap-2 text-left">
+            <DialogTitle className="text-2xl font-semibold tracking-normal">User Profile</DialogTitle>
+            <DialogDescription className="text-sm leading-6 text-white/82">
+              Account identity, contact details, and workspace profile image.
             </DialogDescription>
           </DialogHeader>
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="absolute right-14 top-6 rounded-full border-white/28 bg-white/14 px-4 text-white hover:bg-white/22 hover:text-white"
+            className="absolute right-14 top-7 h-9 rounded-lg border-white/28 bg-white/14 px-4 text-white shadow-[0_14px_34px_-24px_rgba(255,255,255,0.95)] hover:bg-white/22 hover:text-white"
             onClick={() => setIsEditing((current) => !current)}
           >
             <Pencil className="mr-2 h-4 w-4" />
@@ -414,41 +430,67 @@ function UserProfileDialog({
         </div>
 
         <form onSubmit={handleSaveProfile} className="space-y-5 p-6">
-          <div className="flex flex-col gap-5 rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_20px_56px_-36px_rgba(31,95,168,0.32)] backdrop-blur-xl dark:border-white/10 dark:bg-white/8 sm:flex-row sm:items-center">
-            <div className="relative">
-              <UserAvatar user={avatarPreviewUser} className="size-24" />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!isEditing}
-                className={cn(
-                  'absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full border border-white/80 bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white shadow-[0_14px_32px_-18px_rgba(34,139,64,0.65)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105',
-                  !isEditing && 'cursor-not-allowed opacity-55 hover:translate-y-0 hover:brightness-100'
-                )}
-                aria-label="Upload profile image"
-              >
-                <Camera className="h-4 w-4" />
-              </button>
-              <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={handleFileChange} aria-label="Upload profile image" />
+          <section className="grid gap-5 rounded-lg border border-slate-200/90 bg-white p-5 shadow-[0_20px_56px_-42px_rgba(31,95,168,0.42)] dark:border-white/10 dark:bg-white/8 md:grid-cols-[14rem_1fr]">
+            <div className="flex flex-col items-center justify-center rounded-lg border border-slate-200/80 bg-slate-50/80 p-5 dark:border-white/10 dark:bg-white/5">
+              <div className="relative">
+                <UserAvatar user={avatarPreviewUser} className="size-28 border-4 border-white shadow-[0_22px_48px_-28px_rgba(15,23,42,0.72)]" />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!isEditing}
+                  className={cn(
+                    'absolute -bottom-1 -right-1 flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-[linear-gradient(135deg,#1f6fb8_0%,#45b3e7_100%)] text-white shadow-[0_16px_34px_-18px_rgba(31,111,184,0.8)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105',
+                    !isEditing && 'cursor-not-allowed opacity-55 hover:translate-y-0 hover:brightness-100'
+                  )}
+                  aria-label="Upload profile image"
+                >
+                  <Camera className="h-4 w-4" />
+                </button>
+                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={handleFileChange} aria-label="Upload profile image" />
+              </div>
+              <Badge className="mt-4 rounded-md border border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-50 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-100">
+                {profileStatus}
+              </Badge>
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Profile Picture</p>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                {isEditing
-                  ? 'Upload a square image for best results. PNG, JPEG, WEBP, and GIF files up to 1.5 MB are stored with your account.'
-                  : 'Use Edit Profile to update your display name, email, or profile picture.'}
-              </p>
-              <Button type="button" variant="outline" className="mt-3 rounded-sm" onClick={() => fileInputRef.current?.click()} disabled={!isEditing}>
+
+            <div className="min-w-0 space-y-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Workspace Account</p>
+                <h3 className="mt-2 truncate text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{displayName}</h3>
+                <div className="mt-2 flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+                  <Mail className="h-4 w-4 shrink-0 text-blue-600" />
+                  <span className="truncate">{displayEmail}</span>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Access</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    Secure workspace
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Mode</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                    <CheckCircle2 className="h-4 w-4 text-blue-600" />
+                    {isEditing ? 'Editing profile' : 'View only'}
+                  </p>
+                </div>
+              </div>
+
+              <Button type="button" variant="outline" className="h-10 rounded-lg" onClick={() => fileInputRef.current?.click()} disabled={!isEditing}>
                 <Upload className="mr-2 h-4 w-4" />
                 Choose Image
               </Button>
             </div>
-          </div>
+          </section>
 
-          <div className="grid gap-4 rounded-2xl border border-white/70 bg-white/70 p-5 shadow-[0_20px_56px_-36px_rgba(31,95,168,0.28)] backdrop-blur-xl dark:border-white/10 dark:bg-white/8 sm:grid-cols-2">
+          <section className="grid gap-4 rounded-lg border border-slate-200/90 bg-white p-5 shadow-[0_20px_56px_-42px_rgba(31,95,168,0.32)] dark:border-white/10 dark:bg-white/8 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="profile-name">Name</Label>
-              <Input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={3} maxLength={80} required disabled={!isEditing} className="rounded-sm" />
+              <Input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={3} maxLength={80} required disabled={!isEditing} className="h-11 rounded-lg bg-slate-50 disabled:opacity-100 dark:bg-white/5" />
             </div>
             <div className="space-y-2">
               <Label htmlFor="profile-email">Email ID</Label>
@@ -459,13 +501,13 @@ function UserProfileDialog({
                 onChange={(event) => setEmail(event.target.value)}
                 required
                 disabled={!isEditing}
-                className="rounded-sm"
+                className="h-11 rounded-lg bg-slate-50 disabled:opacity-100 dark:bg-white/5"
               />
             </div>
-          </div>
+          </section>
 
-          <DialogFooter className="items-center justify-between gap-3 sm:flex-row">
-            <Button type="button" variant="ghost" className="rounded-sm text-muted-foreground" onClick={onLogout}>
+          <DialogFooter className="items-center justify-between gap-3 border-t border-slate-200 pt-5 dark:border-white/10 sm:flex-row">
+            <Button type="button" variant="ghost" className="h-10 rounded-lg text-muted-foreground hover:text-red-600" onClick={onLogout}>
               <LogOut className="mr-2 h-4 w-4" />
               Logout
             </Button>
@@ -474,7 +516,7 @@ function UserProfileDialog({
                 <Button
                   type="button"
                   variant="outline"
-                  className="rounded-sm"
+                  className="h-10 rounded-lg"
                   onClick={() => {
                     setName(currentUser.username);
                     setEmail(currentUser.email);
@@ -485,13 +527,13 @@ function UserProfileDialog({
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={isSaving} className="rounded-sm bg-[linear-gradient(135deg,#36a74b_0%,#49b653_100%)] text-white">
+                <Button type="submit" disabled={isSaving || !hasChanges} className="h-10 rounded-lg bg-[linear-gradient(135deg,#1f6fb8_0%,#45b3e7_100%)] text-white">
                   <Save className="mr-2 h-4 w-4" />
                   {isSaving ? 'Saving...' : 'Save Profile'}
                 </Button>
               </div>
             ) : (
-              <Button type="button" className="rounded-sm bg-[linear-gradient(135deg,#2f5fa8_0%,#4cb8f0_100%)] text-white" onClick={() => setIsEditing(true)}>
+              <Button type="button" className="h-10 rounded-lg bg-[linear-gradient(135deg,#1f6fb8_0%,#45b3e7_100%)] text-white" onClick={() => setIsEditing(true)}>
                 <Pencil className="mr-2 h-4 w-4" />
                 Edit Profile
               </Button>
@@ -627,16 +669,18 @@ function SidebarContent({
         <button
           type="button"
           onClick={() => setProfileOpen(true)}
-          className="group flex w-full items-center gap-3 rounded-2xl border border-white/60 bg-[linear-gradient(135deg,rgba(255,255,255,0.74),rgba(226,239,255,0.66))] p-3 text-left shadow-[0_18px_50px_-32px_rgba(31,95,168,0.32)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-white/80 hover:shadow-[0_22px_58px_-32px_rgba(31,95,168,0.42)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.1),rgba(76,184,240,0.08))]"
+          className="group flex w-full items-center gap-3 rounded-lg border border-white/70 bg-white/72 p-3 text-left shadow-[0_18px_50px_-34px_rgba(31,95,168,0.36)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-100 hover:bg-white/88 hover:shadow-[0_22px_58px_-34px_rgba(31,95,168,0.46)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-white/8 dark:hover:bg-white/12"
         >
-          <UserAvatar user={currentUser} className="size-11" />
+          <UserAvatar user={currentUser} className="size-12" />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-foreground">
+            <p className="truncate text-sm font-semibold leading-5 text-foreground">
               {currentUser?.username ?? 'Workspace User'}
             </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">View profile</p>
+            <p className="truncate text-xs text-muted-foreground">{currentUser?.email ?? 'View profile'}</p>
           </div>
-          <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform duration-300 group-hover:translate-x-1" />
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 text-blue-700 transition-all duration-300 group-hover:translate-x-0.5 group-hover:bg-blue-100 dark:border-white/10 dark:bg-white/8 dark:text-cyan-100">
+            <ChevronRight className="h-4 w-4" />
+          </div>
         </button>
         {currentUser && (
           <UserProfileDialog

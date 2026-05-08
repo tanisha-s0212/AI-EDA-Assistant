@@ -751,7 +751,19 @@ def ensure_session_state(session_id: str) -> dict[str, Any]:
 
 
 def normalize_column_name(name: str) -> str:
-    return ''.join(ch.lower() if ch.isalnum() else '_' for ch in name).strip('_').replace('__', '_')
+    normalized = ''.join(ch.lower() if ch.isalnum() else '_' for ch in name)
+    return re.sub(r'_+', '_', normalized).strip('_')
+
+
+def make_unique_column_names(columns: list[Any]) -> list[str]:
+    seen: dict[str, int] = {}
+    unique_columns: list[str] = []
+    for index, column in enumerate(columns):
+        base_name = normalize_column_name(str(column)) or f'column_{index + 1}'
+        next_count = seen.get(base_name, 0) + 1
+        seen[base_name] = next_count
+        unique_columns.append(base_name if next_count == 1 else f'{base_name}_{next_count}')
+    return unique_columns
 
 
 def dataset_file_path(dataset_id: str, suffix: str = '.parquet') -> Path:
@@ -1554,6 +1566,12 @@ def safe_serialize(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)
+    if value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (np.datetime64,)):
+        if np.isnat(value):
+            return None
+        return str(value)
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating,)):
@@ -3585,8 +3603,12 @@ LOSS_COLUMN_PATTERNS = {
     'waste': re.compile(r'waste|spoil|damage|scrap', re.IGNORECASE),
     'stockout': re.compile(r'stockout|missed_revenue|lost_sale', re.IGNORECASE),
     'quantity': re.compile(r'quantity|qty|units', re.IGNORECASE),
-    'unit_cost': re.compile(r'unit_cost|cost_per_unit|cogs|cost', re.IGNORECASE),
-    'operating_cost': re.compile(r'operating_cost|opex|expense|overhead', re.IGNORECASE),
+    'unit_cost': re.compile(r'unit_cost|cost_per_unit|unit_cogs|cost_each', re.IGNORECASE),
+    'cost': re.compile(r'\bcogs\b|cost_of_goods|total_cost|direct_cost|cost_amount|purchase_cost|material_cost|cost\b', re.IGNORECASE),
+    'operating_cost': re.compile(r'operating_cost|operating_expense|opex|expense|overhead|admin_cost|fixed_cost', re.IGNORECASE),
+    'gross_profit': re.compile(r'gross_profit|gross_margin_value|gross_income', re.IGNORECASE),
+    'net_profit': re.compile(r'net_profit|profit_after|net_income|earnings', re.IGNORECASE),
+    'margin_pct': re.compile(r'gross_margin_pct|gross_margin_percent|margin_pct|margin_percent|margin_rate', re.IGNORECASE),
     'category': re.compile(r'category|product|segment|sku|item', re.IGNORECASE),
     'region': re.compile(r'region|market|territory|location|state|city', re.IGNORECASE),
     'revenue': re.compile(r'revenue|sales|amount|total|net_sales', re.IGNORECASE),
@@ -3595,11 +3617,15 @@ LOSS_COLUMN_PATTERNS = {
 }
 
 
+def column_matches_pattern(column_name: str | None, pattern: re.Pattern[str]) -> bool:
+    return bool(column_name and pattern.search(str(column_name)))
+
+
 def first_matching_column(frame: pd.DataFrame, pattern: re.Pattern[str], numeric: bool | None = None) -> str | None:
     for column in frame.columns:
         if not pattern.search(str(column)):
             continue
-        if numeric is True and not pd.api.types.is_numeric_dtype(pd.to_numeric(frame[column], errors='coerce')):
+        if numeric is True:
             converted = pd.to_numeric(frame[column], errors='coerce')
             if converted.notna().sum() == 0:
                 continue
@@ -3607,10 +3633,70 @@ def first_matching_column(frame: pd.DataFrame, pattern: re.Pattern[str], numeric
     return None
 
 
+def bounded_ratio(value: float, fallback: float, lower: float = 0.08, upper: float = 0.92) -> float:
+    if not np.isfinite(value) or value <= 0:
+        return fallback
+    return min(upper, max(lower, float(value)))
+
+
 def numeric_series(frame: pd.DataFrame, column: str | None, default: float = 0.0) -> pd.Series:
     if not column or column not in frame.columns:
         return pd.Series(default, index=frame.index, dtype='float64')
     return pd.to_numeric(frame[column], errors='coerce').fillna(default).astype(float)
+
+
+def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) -> tuple[pd.Series, str, float]:
+    revenue = numeric_series(frame, revenue_column, 0.0).clip(lower=0)
+    quantity_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
+    unit_cost_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
+    cost_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['cost'], numeric=True)
+    gross_profit_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['gross_profit'], numeric=True)
+    margin_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['margin_pct'], numeric=True)
+
+    if cost_column:
+        cogs = numeric_series(frame, cost_column, 0.0).clip(lower=0)
+        ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
+        return cogs, f'mapped cost column "{cost_column}"', ratio
+
+    if quantity_column and unit_cost_column:
+        cogs = (numeric_series(frame, quantity_column, 0.0).clip(lower=0) * numeric_series(frame, unit_cost_column, 0.0).clip(lower=0)).clip(lower=0)
+        if float(cogs.sum()) > 0:
+            ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
+            return cogs, f'quantity "{quantity_column}" x unit cost "{unit_cost_column}"', ratio
+
+    if revenue_column and gross_profit_column:
+        cogs = (revenue - numeric_series(frame, gross_profit_column, 0.0)).clip(lower=0)
+        if float(cogs.sum()) > 0:
+            ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
+            return cogs, f'revenue minus gross profit "{gross_profit_column}"', ratio
+
+    if revenue_column and margin_column:
+        margin = numeric_series(frame, margin_column, 0.0)
+        margin_ratio = margin.where(margin <= 1, margin / 100).clip(lower=0, upper=0.95)
+        cogs = (revenue * (1 - margin_ratio)).clip(lower=0)
+        if float(cogs.sum()) > 0:
+            ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
+            return cogs, f'gross margin column "{margin_column}"', ratio
+
+    return (revenue * 0.58).clip(lower=0), 'standard 58% revenue-to-COGS assumption', 0.58
+
+
+def resolve_operating_expense_series(frame: pd.DataFrame, revenue_column: str | None, gross_profit: pd.Series | None = None) -> tuple[pd.Series, str, float]:
+    revenue = numeric_series(frame, revenue_column, 0.0).clip(lower=0)
+    operating_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
+    if operating_column:
+        opex = numeric_series(frame, operating_column, 0.0).clip(lower=0)
+        ratio = bounded_ratio(float(opex.sum() / max(revenue.sum(), 1.0)), 0.12, lower=0.03, upper=0.45)
+        return opex, f'mapped operating expense column "{operating_column}"', ratio
+
+    net_profit_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['net_profit'], numeric=True)
+    if net_profit_column is not None and gross_profit is not None:
+        opex = (gross_profit - numeric_series(frame, net_profit_column, 0.0)).clip(lower=0)
+        if float(opex.sum()) > 0:
+            ratio = bounded_ratio(float(opex.sum() / max(revenue.sum(), 1.0)), 0.12, lower=0.03, upper=0.45)
+            return opex, f'gross profit minus net profit "{net_profit_column}"', ratio
+
+    return (revenue * 0.12).clip(lower=0), 'standard 12% operating expense assumption', 0.12
 
 
 def normalize_period_value(value: Any) -> date:
@@ -3681,15 +3767,27 @@ def fetch_upstream_forecasts(session_id: str) -> tuple[pd.DataFrame, dict[str, A
 
     clean_frame = get_cached_clean_frame(session_id).fillna(0)
     ts_future = forecast_periods_to_frame(ts_result.get('future_forecast', []), 'forecasted_revenue')
-    ml_future = forecast_periods_to_frame(ml_result.get('future_forecast', []), 'forecasted_cogs')
+    ml_future = forecast_periods_to_frame(ml_result.get('future_forecast', []), 'ml_forecast_value')
     if ts_future.empty or ml_future.empty:
         raise HTTPException(status_code=422, detail='Upstream forecast results do not contain future periods. Rerun the TS and ML forecast tabs.')
 
     merged = pd.merge(ts_future, ml_future, on='period', how='outer').sort_values('period').fillna(0)
-    if 'forecasted_cogs' in merged:
-        median_cogs = float(merged['forecasted_cogs'].replace(0, np.nan).median() or 0)
-        if median_cogs > float(merged['forecasted_revenue'].replace(0, np.nan).median() or 0) * 1.4:
-            merged['forecasted_cogs'] = merged['forecasted_cogs'] * 0.58
+    revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
+    cogs_series, cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
+    ml_target_column = str(ml_result.get('target_column') or '')
+    if column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['cost']) or column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['unit_cost']):
+        merged['forecasted_cogs'] = merged['ml_forecast_value'].clip(lower=0)
+        cogs_source = f'ML forecast target "{ml_target_column}"'
+    else:
+        merged['forecasted_cogs'] = merged['forecasted_revenue'].clip(lower=0) * cogs_ratio
+    median_cogs = float(merged['forecasted_cogs'].replace(0, np.nan).median() or 0)
+    median_revenue = float(merged['forecasted_revenue'].replace(0, np.nan).median() or 0)
+    if median_revenue > 0 and median_cogs > median_revenue * 1.4:
+        merged['forecasted_cogs'] = merged['forecasted_revenue'].clip(lower=0) * cogs_ratio
+    merged.attrs['cogs_source'] = cogs_source
+    merged.attrs['cogs_ratio'] = cogs_ratio
+    merged.attrs['historical_cogs_total'] = float(cogs_series.sum())
+    merged = merged.drop(columns=['ml_forecast_value'], errors='ignore')
     return merged, ts_result, ml_result, clean_frame
 
 
@@ -3701,14 +3799,11 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
 
     date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
     revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
-    cost_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
     missing = []
     if not date_column:
         missing.append('date / period')
     if not revenue_column:
         missing.append('revenue / sales amount')
-    if not cost_column:
-        missing.append('cost / COGS')
     if missing:
         raise HTTPException(
             status_code=422,
@@ -3721,7 +3816,6 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     stockout_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['stockout'], numeric=True)
     quantity_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
     unit_cost_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
-    operating_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
     category_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['category'])
     region_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['region'])
     price_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['price'], numeric=True)
@@ -3737,13 +3831,9 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
 
     revenue = numeric_series(work, revenue_column)
     quantity = numeric_series(work, quantity_column, 1.0).clip(lower=0)
-    unit_cost = numeric_series(work, unit_cost_column, 0.0).clip(lower=0)
-    actual_cost = numeric_series(work, cost_column, 0.0).clip(lower=0)
-    if quantity_column and unit_cost_column and actual_cost.sum() == unit_cost.sum():
-        actual_cost = quantity * unit_cost
-    operating_cost = numeric_series(work, operating_column, 0.0).clip(lower=0)
-    if operating_cost.sum() == 0:
-        operating_cost = actual_cost * 0.12
+    actual_cost, cogs_source, cogs_ratio = resolve_cogs_series(work, revenue_column)
+    gross_profit = (revenue - actual_cost).clip(lower=0)
+    operating_cost, operating_source, operating_ratio = resolve_operating_expense_series(work, revenue_column, gross_profit)
     returns = numeric_series(work, returns_column, 0.0).clip(lower=0)
     discounts = numeric_series(work, discount_column, 0.0).clip(lower=0)
     waste = numeric_series(work, waste_column, 0.0).clip(lower=0)
@@ -3755,6 +3845,11 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
 
     discount_pct = discounts.where(discounts <= 1, discounts / 100).clip(lower=0, upper=0.95)
     baseline_cost = operating_cost.rolling(7, min_periods=1).mean() * 1.2
+    inferred_unit_cost = actual_cost / quantity.replace(0, np.nan)
+    inferred_unit_cost = inferred_unit_cost.replace([np.inf, -np.inf], np.nan).fillna(0)
+    unit_cost = numeric_series(work, unit_cost_column, 0.0).clip(lower=0) if unit_cost_column else inferred_unit_cost
+    if float(unit_cost.sum()) == 0:
+        unit_cost = inferred_unit_cost
     work['_actual_revenue'] = revenue
     work['_operational_loss'] = (operating_cost - baseline_cost).clip(lower=0)
     work['_inventory_loss'] = (waste * unit_cost) + (stockout * price)
@@ -3778,6 +3873,8 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     }
     total_driver = sum(driver_totals.values()) or 1.0
     driver_weights = {key: value / total_driver for key, value in driver_totals.items()}
+    driver_weights['COGS Basis'] = cogs_ratio
+    driver_weights['Operating Expense Basis'] = operating_ratio
 
     rows: list[dict[str, Any]] = []
     for index, item in forecast_frame.reset_index(drop=True).iterrows():
@@ -3809,6 +3906,9 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
             'segment': 'All Business',
             'created_at': utc_now_iso(),
         })
+
+    for row in rows:
+        row['basis_note'] = f'COGS: {cogs_source}; OpEx: {operating_source}'
 
     segments: list[dict[str, Any]] = []
     for column, segment_type in [(category_column, 'category'), (region_column, 'region')]:
@@ -3910,14 +4010,11 @@ def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str,
 
     loss_by_period = {normalize_period_value(row['period']): float(row.get('total_loss') or 0) for row in loss_rows}
     forecast_frame = forecast_frame.head(forecast_periods).copy()
-    operating_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
     revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
-    operating_expense_ratio = 0.12
-    if operating_column and revenue_column:
-        revenue_total = float(numeric_series(clean_frame, revenue_column).sum() or 0)
-        opex_total = float(numeric_series(clean_frame, operating_column).sum() or 0)
-        if revenue_total > 0 and opex_total > 0:
-            operating_expense_ratio = min(0.45, max(0.04, opex_total / revenue_total))
+    cogs_series, _cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
+    revenue_series = numeric_series(clean_frame, revenue_column, 0.0).clip(lower=0)
+    gross_profit_series = (revenue_series - cogs_series).clip(lower=0)
+    _opex_series, _opex_source, operating_expense_ratio = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
 
     scenario_config = {
         'optimistic': {'revenue': 1.10, 'cogs': 0.97, 'loss': 0.80},
@@ -3931,8 +4028,10 @@ def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str,
             period = normalize_period_value(item['period'])
             revenue = max(float(item.get('forecasted_revenue') or 0) * multipliers['revenue'], 0.0)
             cogs = max(float(item.get('forecasted_cogs') or revenue * 0.58) * multipliers['cogs'], 0.0)
+            if cogs <= 0 and revenue > 0:
+                cogs = revenue * cogs_ratio
             if cogs > revenue * 0.92:
-                cogs = revenue * 0.62
+                cogs = revenue * min(0.72, max(0.42, cogs_ratio))
             losses = max(loss_by_period.get(period, 0.0) * multipliers['loss'], 0.0)
             operating_expenses = revenue * operating_expense_ratio
             gross_profit = revenue - cogs
@@ -4220,6 +4319,7 @@ def build_column_info_from_frame(frame: pd.DataFrame) -> list[dict[str, Any]]:
             role = 'datetime'
         elif unique_count == total_rows and total_rows > 0:
             role = 'identifier'
+        sample_values = series.dropna().head(5).map(str).tolist()
         info.append({
             'name': str(column),
             'dtype': str(series.dtype),
@@ -4227,6 +4327,7 @@ def build_column_info_from_frame(frame: pd.DataFrame) -> list[dict[str, Any]]:
             'nullCount': null_count,
             'uniqueCount': unique_count,
             'role': role,
+            'sample': sample_values,
         })
     return info
 
@@ -4249,6 +4350,7 @@ def build_column_info_from_polars_frame(frame: pl.DataFrame) -> list[dict[str, A
             role = 'datetime'
         elif unique_count == total_rows and total_rows > 0:
             role = 'identifier'
+        sample_values = [str(value) for value in series.drop_nulls().head(5).to_list()]
         info.append({
             'name': str(column),
             'dtype': str(dtype),
@@ -4256,6 +4358,7 @@ def build_column_info_from_polars_frame(frame: pl.DataFrame) -> list[dict[str, A
             'nullCount': null_count,
             'uniqueCount': unique_count,
             'role': role,
+            'sample': sample_values,
         })
     return info
 
@@ -4295,7 +4398,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         logs: list[dict[str, Any]] = []
 
         if request.standardize_names:
-            renamed_columns = [normalize_column_name(str(column)) or f'column_{index + 1}' for index, column in enumerate(frame.columns)]
+            renamed_columns = make_unique_column_names(list(frame.columns))
             if renamed_columns != list(frame.columns):
                 frame.columns = renamed_columns
                 logs.append({
@@ -4388,7 +4491,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
     logs: list[dict[str, Any]] = []
 
     if request.standardize_names:
-        renamed_columns = [normalize_column_name(str(column)) or f'column_{index + 1}' for index, column in enumerate(frame.columns)]
+        renamed_columns = make_unique_column_names(list(frame.columns))
         if renamed_columns != list(frame.columns):
             frame.columns = renamed_columns
             logs.append({
@@ -4622,6 +4725,14 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         leading=10,
         textColor=colors.HexColor('#0f766e'),
     )
+    table_header_style = ParagraphStyle(
+        'ReportTableHeader',
+        parent=styles['BodyText'],
+        fontName='Helvetica-Bold',
+        fontSize=8,
+        leading=10,
+        textColor=colors.white,
+    )
     card_value_style = ParagraphStyle(
         'CardValue',
         parent=styles['BodyText'],
@@ -4667,7 +4778,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
             return
         normalized: list[list[Any]] = []
         for row_index, row in enumerate(rows):
-            style = card_label_style if row_index == 0 else body_style
+            style = table_header_style if row_index == 0 else body_style
             normalized.append([as_paragraph(cell, style) for cell in row])
         table = Table(normalized, colWidths=widths, repeatRows=1)
         table.setStyle(TableStyle([
@@ -4714,14 +4825,14 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         canvas.restoreState()
 
     workflow_rows = [
-        ['Step', 'Tab', 'Included Details'],
-        ['1', 'Upload', f'File {payload.fileName}, {payload.totalRows} rows, {len(payload.columns)} columns, memory {payload.memoryUsage}'],
-        ['2', 'Understanding', 'Dataset quality, preview context, and upload profiling details'],
-        ['3', 'Cleaning', f'{len(payload.cleaningLogs)} logged operations and cleaned row count {payload.cleanedRowCount}'],
-        ['4', 'EDA', f'{len(payload.edaStats.numericColumns)} numeric columns, {len(payload.edaStats.categoricalColumns)} categorical columns, schema, statistics, and correlations'],
-        ['5', 'Sales Forecast', 'Time-series training split, backtest metrics, backtest samples, and future forecast' if payload.salesForecastResult else 'No sales forecast run captured'],
-        ['6', 'ML', f"Model {payload.selectedModel or 'Not trained'}, problem type {payload.problemType}, metrics and feature importance"],
-        ['7', 'Prediction', 'Latest prediction, model context, probabilities, and recent prediction history' if payload.predictionResult is not None else 'No prediction captured'],
+        ['Workflow Area', 'Included Details'],
+        ['Upload', f'File {payload.fileName}, {payload.totalRows} rows, {len(payload.columns)} columns, memory {payload.memoryUsage}'],
+        ['Understanding', 'Dataset quality, preview context, and upload profiling details'],
+        ['Cleaning', f'{len(payload.cleaningLogs)} logged operations and cleaned row count {payload.cleanedRowCount}'],
+        ['EDA', f'{len(payload.edaStats.numericColumns)} numeric columns, {len(payload.edaStats.categoricalColumns)} categorical columns, schema, statistics, and correlations'],
+        ['Sales Forecast', 'Time-series training split, backtest metrics, backtest samples, and future forecast' if payload.salesForecastResult else 'No sales forecast run captured'],
+        ['ML', f"Model {payload.selectedModel or 'Not trained'}, problem type {payload.problemType}, metrics and feature importance"],
+        ['Prediction', 'Latest prediction, model context, probabilities, and recent prediction history' if payload.predictionResult is not None else 'No prediction captured'],
     ]
 
     generated_on = datetime.now().strftime('%d %b %Y, %I:%M %p')
@@ -4773,10 +4884,10 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
     elements.append(Spacer(1, 12))
 
     add_section('Workflow Coverage', 'This overview mirrors the product tabs so the report reads like the same journey your team followed in the app.')
-    add_table(workflow_rows, [35, 90, 415])
+    add_table(workflow_rows, [125, 415])
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 1: Data Upload', 'Initial dataset intake, scale, and storage footprint at the moment the workflow began.')
+    add_section('Data Upload', 'Initial dataset intake, scale, and storage footprint at the moment the workflow began.')
     add_stat_cards([
         ('Rows', f'{payload.totalRows:,}'),
         ('Columns', len(payload.columns)),
@@ -4790,7 +4901,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
     ], [240, 140, 160], header_bg='#115e59')
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 2: Data Understanding', 'This step captures dataset identity, quality checks, preview context, and the initial profiling needed before cleaning and deeper EDA.')
+    add_section('Data Understanding', 'This step captures dataset identity, quality checks, preview context, and the initial profiling needed before cleaning and deeper EDA.')
     column_rows = [['Column', 'Type', 'Role', 'Non-null', 'Nulls', 'Unique']]
     for column in payload.columns[:18]:
         column_rows.append([column.name, column.dtype, column.role, str(column.nonNull), str(column.nullCount), str(column.uniqueCount)])
@@ -4799,7 +4910,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         add_paragraph(f'Showing the first 18 columns out of {len(payload.columns)} total columns.', small_style)
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 3: Data Cleaning', 'This section records the applied transformations so the report preserves not just the outcome, but also the reasoning trail.')
+    add_section('Data Cleaning', 'This section records the applied transformations so the report preserves not just the outcome, but also the reasoning trail.')
     add_paragraph(f"Cleaning completed: {'Yes' if payload.cleaningDone else 'No'}. Cleaned row count: {payload.cleanedRowCount}.")
     if payload.cleaningLogs:
         cleaning_rows = [['Action', 'Detail', 'Timestamp']]
@@ -4810,7 +4921,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         add_paragraph('No cleaning steps were recorded for this run.', small_style)
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 4: Exploratory Data Analysis', 'EDA summarizes the dataset schema, descriptive statistics, and strongest numeric relationships for downstream decisions.')
+    add_section('Exploratory Data Analysis', 'EDA summarizes the dataset schema, descriptive statistics, and strongest numeric relationships for downstream decisions.')
     add_stat_cards([
         ('Numeric Columns', len(payload.edaStats.numericColumns)),
         ('Categorical Columns', len(payload.edaStats.categoricalColumns)),
@@ -4844,7 +4955,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         elements.append(insight_box)
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 5: Sales Forecast', 'Sales forecasting fits best after EDA because it depends on cleaned, time-aware historical patterns rather than the generic supervised ML pipeline.')
+    add_section('Sales Forecast', 'Sales forecasting fits best after EDA because it depends on cleaned, time-aware historical patterns rather than the generic supervised ML pipeline.')
     if payload.salesForecastResult is not None:
         forecast = payload.salesForecastResult
         add_stat_cards([
@@ -4883,7 +4994,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         add_paragraph('No sales forecasting run was available for this report.', small_style)
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 6: Machine Learning', 'General machine learning follows forecasting in the workflow because it is a broader predictive branch for supervised models and downstream prediction serving.')
+    add_section('Machine Learning', 'General machine learning follows forecasting in the workflow because it is a broader predictive branch for supervised models and downstream prediction serving.')
     add_stat_cards([
         ('Target', payload.targetColumn or 'Not selected'),
         ('Problem Type', payload.problemType.title()),
@@ -4908,7 +5019,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         add_table(importance_rows, [50, 360, 130], header_bg='#134e4a')
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 7: Prediction', 'The report closes with the latest scoring output, supporting model context, and recent prediction history when available.')
+    add_section('Prediction', 'The report closes with the latest scoring output, supporting model context, and recent prediction history when available.')
     if payload.uploadedModel is not None:
         add_table([
             ['Prediction Model', 'Type', 'Target', 'Problem', 'Trained At'],
@@ -5055,6 +5166,7 @@ def build_eda_pdf(payload: EdaPdfPayload) -> bytes:
     body_style = ParagraphStyle('EDA_Body', parent=styles['BodyText'], fontName='Helvetica', fontSize=9.2, leading=13, textColor=colors.HexColor('#334155'))
     small_style = ParagraphStyle('EDA_Small', parent=body_style, fontSize=8.2, leading=11, textColor=colors.HexColor('#64748b'))
     label_style = ParagraphStyle('EDA_Label', parent=body_style, fontName='Helvetica-Bold', fontSize=8.2, leading=10, textColor=colors.HexColor('#0f766e'))
+    table_header_style = ParagraphStyle('EDA_TableHeader', parent=body_style, fontName='Helvetica-Bold', fontSize=8.2, leading=10, textColor=colors.white)
     value_style = ParagraphStyle('EDA_Value', parent=body_style, fontName='Helvetica-Bold', fontSize=13, leading=16, textColor=colors.HexColor('#0f172a'))
     elements: list[Any] = []
     page_width = landscape(letter)[0]
@@ -5066,7 +5178,7 @@ def build_eda_pdf(payload: EdaPdfPayload) -> bytes:
     def add_table(rows: list[list[Any]], widths: list[float], header_bg: str = '#0f766e') -> None:
         normalized = []
         for row_index, row in enumerate(rows):
-            row_style = label_style if row_index == 0 else body_style
+            row_style = table_header_style if row_index == 0 else body_style
             normalized.append([paragraph(cell, row_style) for cell in row])
         table = Table(normalized, colWidths=widths, repeatRows=1)
         table.setStyle(TableStyle([
@@ -5154,9 +5266,9 @@ def build_eda_pdf(payload: EdaPdfPayload) -> bytes:
     ))
     elements.append(Spacer(1, 12))
 
-    add_section('EDA Tab Functional Coverage', 'This PDF mirrors the EDA tab itself: schema review, numeric profiling, correlation discovery, advanced charts, and automated statistical recommendations.')
+    add_section('EDA Functional Coverage', 'This PDF mirrors the EDA workflow itself: schema review, numeric profiling, correlation discovery, advanced charts, and automated statistical recommendations.')
     add_table([
-        ['Feature Area', 'What The EDA Tab Does'],
+        ['Feature Area', 'What The EDA Workflow Does'],
         ['Dataset Schema', 'Profiles column type, completeness, uniqueness, and inferred role for each field.'],
         ['Statistical Summary', 'Computes count, mean, spread, quartiles, and extrema for numeric columns.'],
         ['Relationships', 'Highlights the strongest positive and negative numeric correlations.'],
@@ -5281,6 +5393,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     body_style = ParagraphStyle('IDA_Body', parent=styles['BodyText'], fontName='Helvetica', fontSize=9.2, leading=13.5, textColor=colors.HexColor('#334155'))
     small_style = ParagraphStyle('IDA_Small', parent=body_style, fontSize=8.1, leading=11, textColor=colors.HexColor('#64748b'))
     label_style = ParagraphStyle('IDA_Label', parent=body_style, fontName='Helvetica-Bold', fontSize=8.2, leading=10, textColor=colors.HexColor('#0369a1'))
+    table_header_style = ParagraphStyle('IDA_TableHeader', parent=body_style, fontName='Helvetica-Bold', fontSize=8.2, leading=10, textColor=colors.white)
     value_style = ParagraphStyle('IDA_Value', parent=body_style, fontName='Helvetica-Bold', fontSize=14, leading=17, textColor=colors.HexColor('#0f172a'))
     section_label_style = ParagraphStyle('IDA_SectionLabel', parent=styles['BodyText'], fontName='Helvetica-Bold', fontSize=8.5, leading=10, textColor=colors.HexColor('#0284c7'))
     section_blurb_style = ParagraphStyle('IDA_SectionBlurb', parent=body_style, fontSize=9.4, leading=14, textColor=colors.HexColor('#475569'))
@@ -5295,7 +5408,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     def add_table(rows: list[list[Any]], widths: list[int], header_bg: str = '#0f766e') -> None:
         normalized: list[list[Any]] = []
         for row_index, row in enumerate(rows):
-            style = label_style if row_index == 0 else body_style
+            style = table_header_style if row_index == 0 else body_style
             normalized.append([as_paragraph(cell, style) for cell in row])
         table = Table(normalized, colWidths=widths, repeatRows=1)
         table.setStyle(TableStyle([
@@ -5402,19 +5515,19 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         canvas.restoreState()
 
     workflow_rows = [
-        ['Step', 'Tab', 'Status', 'Coverage'],
-        ['1', 'Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.fileName} with {payload.totalRows:,} rows, {len(payload.columns)} columns, and {"preview-backed caching" if preview_mode else "full workspace loading"}'],
-        ['2', 'Understanding', 'Completed' if payload.columns else 'Pending', f'Role inference, null counts, unique counts, and schema profiling across {len(payload.columns)} columns'],
-        ['3', 'EDA', 'Completed' if payload.columns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric and {len(payload.edaStats.categoricalColumns)} categorical columns summarized with {len(payload.edaStats.correlations)} sampled correlation signals'],
-        ['4', 'Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} logged operations and {payload.cleanedRowCount:,} cleaned rows retained'],
-        ['5', 'Forecast TS', 'Completed' if ts_result else 'Skipped', 'Time-driven forecasting, backtest metrics, horizon outputs, and interval-aware charting'],
-        ['6', 'Forecast ML', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting, SHAP importance, generated features, and projected horizon'],
-        ['7', 'Loss Forecast', 'Completed' if loss_forecast_result else 'Skipped', 'Revenue, operational, inventory, and discount-loss projections with risk scoring'],
-        ['8', 'Profit Forecast', 'Completed' if selected_profit_result else 'Skipped', 'Scenario-based P&L projection, margins, net profit, and break-even analysis'],
-        ['9', 'ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'Model selection, target setup, {len(payload.selectedFeatures)} features, and training metrics'],
-        ['10', 'Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction history entries and latest scoring output'],
+        ['Workflow Area', 'Status', 'Coverage'],
+        ['Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.fileName} with {payload.totalRows:,} rows, {len(payload.columns)} columns, and {"preview-backed caching" if preview_mode else "full workspace loading"}'],
+        ['Understanding', 'Completed' if payload.columns else 'Pending', f'Role inference, null counts, unique counts, and schema profiling across {len(payload.columns)} columns'],
+        ['EDA', 'Completed' if payload.columns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric and {len(payload.edaStats.categoricalColumns)} categorical columns summarized with {len(payload.edaStats.correlations)} sampled correlation signals'],
+        ['Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} logged operations and {payload.cleanedRowCount:,} cleaned rows retained'],
+        ['Time Series Forecast', 'Completed' if ts_result else 'Skipped', 'Time-driven forecasting, backtest metrics, horizon outputs, and interval-aware charting'],
+        ['Machine Learning Forecast', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting, SHAP importance, generated features, and projected horizon'],
+        ['Loss Forecast', 'Completed' if loss_forecast_result else 'Skipped', 'Revenue, operational, inventory, and discount-loss projections with risk scoring'],
+        ['Profit Forecast', 'Completed' if selected_profit_result else 'Skipped', 'Scenario-based P&L projection, margins, net profit, and break-even analysis'],
+        ['ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'Model selection, target setup, {len(payload.selectedFeatures)} features, and training metrics'],
+        ['Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction history entries and latest scoring output'],
     ]
-    workflow_status = f"{sum(1 for row in workflow_rows[1:] if row[2] == 'Completed')}/10 core tabs completed"
+    workflow_status = f"{sum(1 for row in workflow_rows[1:] if row[1] == 'Completed')}/10 workflow areas completed"
     forecast_status = ', '.join(name for name, present in [('TS', bool(ts_result)), ('ML', bool(ml_forecast_result)), ('Loss', bool(loss_forecast_result)), ('Profit', bool(selected_profit_result))] if present) or 'None'
 
     generated_on = datetime.now().strftime('%d %b %Y, %I:%M %p')
@@ -5471,11 +5584,11 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     ], [220, 280], header_bg='#115e59')
     elements.append(PageBreak())
 
-    add_section('Workflow Coverage Map', 'The report follows the same tab sequence used in the application so the exported file reads like a presentation replay of the full workflow.')
-    add_table(workflow_rows, [35, 110, 90, content_width - 235], header_bg='#0f766e')
+    add_section('Workflow Coverage Map', 'The report follows the same professional workflow sequence used in the application so the exported file reads like a presentation replay of the full analysis.')
+    add_table(workflow_rows, [145, 90, content_width - 235], header_bg='#0f766e')
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 1: Data Upload', 'The upload stage establishes dataset identity, scale, and storage footprint before any cleaning or modeling decisions are made.')
+    add_section('Data Upload', 'The upload stage establishes dataset identity, scale, and storage footprint before any cleaning or modeling decisions are made.')
     add_stat_cards([
         ('Dataset ID', payload.datasetId or 'Session only'),
         ('Rows Loaded', f'{payload.totalRows:,}'),
@@ -5489,7 +5602,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     )
     elements.append(Spacer(1, 10))
 
-    add_section('Tab 2: Data Understanding', 'Profiling converts raw columns into usable metadata by estimating types, inferring roles, and quantifying completeness before transformation.')
+    add_section('Data Understanding', 'Profiling converts raw columns into usable metadata by estimating types, inferring roles, and quantifying completeness before transformation.')
     add_stat_cards([
         ('Numeric', role_count('numeric')),
         ('Categorical', role_count('categorical')),
@@ -5505,7 +5618,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         add_paragraph(f'Showing the first 20 columns out of {len(payload.columns)} profiled columns.', small_style)
     elements.append(PageBreak())
 
-    add_section('Tab 3: Exploratory Data Analysis', 'EDA summarizes the dataset structure, descriptive behavior, and strongest relationships so later cleaning and modeling choices have context.')
+    add_section('Exploratory Data Analysis', 'EDA summarizes the dataset structure, descriptive behavior, and strongest relationships so later cleaning and modeling choices have context.')
     add_stat_cards([
         ('Numeric Fields', len(payload.edaStats.numericColumns)),
         ('Categorical Fields', len(payload.edaStats.categoricalColumns)),
@@ -5540,7 +5653,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         add_callout('AI Insight Summary', str(payload.aiInsights), tone='#eff6ff', border='#93c5fd')
     elements.append(PageBreak())
 
-    add_section('Tab 4: Data Cleaning', 'Cleaning follows exploratory analysis and prepares the stable analysis layer used by forecasting, ML training, and final prediction.')
+    add_section('Data Cleaning', 'Cleaning follows exploratory analysis and prepares the stable analysis layer used by forecasting, ML training, and final prediction.')
     add_stat_cards([
         ('Cleaning Done', 'Yes' if payload.cleaningDone else 'No'),
         ('Logged Actions', len(payload.cleaningLogs)),
@@ -5558,7 +5671,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     if ts_result:
         elements.append(PageBreak())
-        add_section('Tab 5: Forecast TS', 'The time-series forecasting tab models chronology directly and is appropriate when the temporal sequence itself carries the predictive signal.')
+        add_section('Time Series Forecast', 'The time-series forecasting tab models chronology directly and is appropriate when the temporal sequence itself carries the predictive signal.')
         ts_training = ts_result.get('training_summary', {}) or {}
         ts_metrics = ts_result.get('metrics', {}) or {}
         ts_profile = ts_result.get('dataset_profile', {}) or {}
@@ -5593,7 +5706,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     if ml_forecast_result:
         elements.append(PageBreak())
-        add_section('Tab 6: Forecast ML', 'The ML forecasting path transforms time into engineered features, then trains a general-purpose learner to project future periods.')
+        add_section('Machine Learning Forecast', 'The ML forecasting path transforms time into engineered features, then trains a general-purpose learner to project future periods.')
         ml_training = ml_forecast_result.get('training_summary', {}) or {}
         ml_metrics = ml_forecast_result.get('metrics', {}) or {}
         ml_profile = ml_forecast_result.get('dataset_profile', {}) or {}
@@ -5636,7 +5749,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     if payload.reportConfig.includeLoss and loss_forecast_result:
         elements.append(PageBreak())
-        add_section('Tab 7: Loss Forecast Analysis', 'Loss forecasting quantifies future value erosion across revenue, operational, inventory, and discount drivers.')
+        add_section('Loss Forecast Analysis', 'Loss forecasting quantifies future value erosion across revenue, operational, inventory, and discount drivers.')
         total_loss = sum(float(row.get('total_loss') or 0) for row in loss_forecast_result)
         peak_row = max(loss_forecast_result, key=lambda row: float(row.get('total_loss') or 0))
         avg_risk = sum(float(row.get('loss_risk_score') or 0) for row in loss_forecast_result) / max(1, len(loss_forecast_result))
@@ -5703,7 +5816,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     if payload.reportConfig.includeProfit and selected_profit_result:
         elements.append(PageBreak())
-        add_section('Tab 8: Profit Forecast & P&L Projection', 'Profit forecasting combines revenue, cost, operating expense, and forecasted losses into scenario-based P&L projections.')
+        add_section('Profit Forecast & P&L Projection', 'Profit forecasting combines revenue, cost, operating expense, and forecasted losses into scenario-based P&L projections.')
         scenario_names = ['optimistic', 'baseline', 'pessimistic']
         scenario_summary_rows = [['Scenario', 'Total Revenue', 'Total COGS', 'Gross Profit', 'Total Losses', 'Net Profit', 'Net Margin']]
         for scenario_name in scenario_names:
@@ -5765,7 +5878,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         )
 
     elements.append(PageBreak())
-    add_section('Tab 9: ML Assistant', 'This section summarizes the supervised learning branch, including selected target, modeling objective, chosen algorithm, feature set, and performance evidence.')
+    add_section('ML Assistant', 'This section summarizes the supervised learning branch, including selected target, modeling objective, chosen algorithm, feature set, and performance evidence.')
     add_stat_cards([
         ('Target', payload.targetColumn or 'N/A'),
         ('Problem Type', str(payload.problemType).title()),
@@ -5790,7 +5903,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         add_table(importance_rows, [60, content_width * 0.62, content_width * 0.22], header_bg='#115e59')
 
     elements.append(PageBreak())
-    add_section('Tab 10: Prediction', 'The final tab captures the application outcome by storing the latest inference result, probability breakdowns when available, and recent prediction history.')
+    add_section('Prediction', 'The final workflow stage captures the application outcome by storing the latest inference result, probability breakdowns when available, and recent prediction history.')
     if payload.uploadedModel:
         add_table([
             ['Model Name', 'Type', 'Target', 'Problem', 'Trained At'],
@@ -5871,14 +5984,14 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
     loaded_row_count = payload.loadedRowCount or payload.totalRows
     preview_mode = payload.previewLoaded and payload.totalRows > loaded_row_count
     workflow_rows = [
-        ['1', 'Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.totalRows:,} total rows; {loaded_row_count:,} browser rows'],
-        ['2', 'Understanding', 'Completed' if payload.columns else 'Pending', f'{len(payload.columns)} columns profiled'],
-        ['3', 'EDA', 'Completed' if payload.columns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric, {len(payload.edaStats.categoricalColumns)} categorical, {len(payload.edaStats.correlations)} correlations'],
-        ['4', 'Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} actions, {payload.cleanedRowCount:,} rows retained'],
-        ['5', 'Forecast TS', 'Completed' if ts_result else 'Skipped', 'Chronology-first forecasting branch'],
-        ['6', 'Forecast ML', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting branch'],
-        ['7', 'ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'{len(payload.selectedFeatures)} selected features'],
-        ['8', 'Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction records'],
+        ['Upload', 'Completed' if payload.totalRows > 0 else 'Pending', f'{payload.totalRows:,} total rows; {loaded_row_count:,} browser rows'],
+        ['Understanding', 'Completed' if payload.columns else 'Pending', f'{len(payload.columns)} columns profiled'],
+        ['EDA', 'Completed' if payload.columns else 'Pending', f'{len(payload.edaStats.numericColumns)} numeric, {len(payload.edaStats.categoricalColumns)} categorical, {len(payload.edaStats.correlations)} correlations'],
+        ['Cleaning', 'Completed' if payload.cleaningDone else 'Pending', f'{len(payload.cleaningLogs)} actions, {payload.cleanedRowCount:,} rows retained'],
+        ['Time Series Forecast', 'Completed' if ts_result else 'Skipped', 'Chronology-first forecasting branch'],
+        ['Machine Learning Forecast', 'Completed' if ml_forecast_result else 'Skipped', 'Feature-engineered forecasting branch'],
+        ['ML Assistant', 'Completed' if payload.modelMetrics else 'Pending', f'{len(payload.selectedFeatures)} selected features'],
+        ['Prediction', 'Completed' if payload.predictionResult is not None else 'Pending', f'{len(payload.predictionHistory)} prediction records'],
     ]
 
     workflow_status = 'Complete workflow captured' if payload.predictionResult is not None else 'Workflow summary generated'
@@ -5995,7 +6108,7 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
     <div class="section">
       <div class="section-label">Coverage</div>
       <h2>Workflow Coverage Map</h2>
-      {html_table(['Step', 'Tab', 'Status', 'Coverage'], workflow_rows).replace('<table>', '<table class="data">')}
+      {html_table(['Workflow Area', 'Status', 'Coverage'], workflow_rows).replace('<table>', '<table class="data">')}
       <h3>Upload and Understanding</h3>
       <table class="metric-grid">
         <tr>

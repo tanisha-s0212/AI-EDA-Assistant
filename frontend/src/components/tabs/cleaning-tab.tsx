@@ -144,6 +144,23 @@ const inferRole = (dtype: ColumnInfo['dtype'], name: string, uniqueCount: number
   return 'categorical';
 };
 
+const normalizeColumnName = (name: string) =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+
+const makeUniqueColumnNames = (names: string[]) => {
+  const seen = new Map<string, number>();
+
+  return names.map((name, index) => {
+    const baseName = normalizeColumnName(name) || `column_${index + 1}`;
+    const count = (seen.get(baseName) ?? 0) + 1;
+    seen.set(baseName, count);
+    return count === 1 ? baseName : `${baseName}_${count}`;
+  });
+};
+
 const buildColumnInfo = (data: DataRow[]): ColumnInfo[] => {
   if (!data.length) return [];
   const columnNames = Object.keys(data[0]);
@@ -217,7 +234,7 @@ const convertDates = (
   columns: ColumnInfo[]
 ): { cleaned: DataRow[]; log: CleaningLog } => {
   const dateCols = columns.filter(
-    (c) => c.role === 'datetime' || (c.dtype === 'string' && c.sample.length > 0)
+    (c) => c.role === 'datetime' || (c.dtype === 'string' && (c.sample?.length ?? 0) > 0)
   );
   const converted: string[] = [];
 
@@ -246,15 +263,15 @@ const standardizeNames = (
   columns: ColumnInfo[]
 ): { cleaned: DataRow[]; log: CleaningLog } => {
   const nameMap: Record<string, string> = {};
+  const uniqueNames = makeUniqueColumnNames(columns.map((column) => column.name));
+  columns.forEach((column, index) => {
+    nameMap[column.name] = uniqueNames[index];
+  });
+
   const cleaned = data.map((row) => {
     const newRow: DataRow = {};
     Object.keys(row).forEach((key) => {
-      const newKey = key
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_|_$/g, '');
-      nameMap[key] = newKey;
-      newRow[newKey] = row[key];
+      newRow[nameMap[key] ?? normalizeColumnName(key)] = row[key];
     });
     return newRow;
   });
@@ -349,7 +366,7 @@ export default function CleaningTab() {
   const dateColumnsDetected = useMemo(() => {
     return columns.filter(
       (c) =>
-        (c.dtype === 'string' && c.sample.length > 0 && !isNaN(Date.parse(c.sample[0]))) ||
+        (c.dtype === 'string' && (c.sample?.length ?? 0) > 0 && !isNaN(Date.parse(c.sample[0]))) ||
         c.role === 'datetime'
     );
   }, [columns]);
@@ -460,7 +477,10 @@ export default function CleaningTab() {
         useAppStore.setState({
           rawData: result.data,
           cleanedData: result.data,
-          columns: result.columns,
+          columns: result.columns.map((column) => ({
+            ...column,
+            sample: Array.isArray(column.sample) ? column.sample : [],
+          })),
           cleaningLogs: result.logs,
           cleaningDone: true,
           cleanedRowCount: result.rowCount,

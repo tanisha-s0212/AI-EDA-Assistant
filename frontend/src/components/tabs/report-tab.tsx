@@ -191,7 +191,7 @@ export default function ReportTab() {
       status: lossForecast?.length ? 'Completed' : 'Skipped',
       detail: lossForecast?.length
         ? `${lossForecast.length} future periods were evaluated for revenue, operational, inventory, and discount loss pressure.`
-        : 'Loss forecasting is optional and appears in the report after tab 7 has been executed.',
+        : 'Loss forecasting is optional and appears in the report after the Loss Forecast workflow has been executed.',
     },
     {
       step: 8,
@@ -200,7 +200,7 @@ export default function ReportTab() {
       status: scenarios?.baseline?.length ? 'Completed' : 'Skipped',
       detail: scenarios?.baseline?.length
         ? `Optimistic, baseline, and pessimistic P&L scenarios were generated with break-even period ${breakevenPeriod ?? 'not reached'}.`
-        : 'Profit forecasting is optional and appears in the report after tab 8 has been executed.',
+        : 'Profit forecasting is optional and appears in the report after the Profit Forecast workflow has been executed.',
     },
     {
       step: 9,
@@ -240,10 +240,10 @@ export default function ReportTab() {
         : 'Forecasting sections will be omitted because no forecast results are currently available.',
       lossForecast?.length
         ? 'Loss forecast results can be included as a dedicated risk and value-erosion section.'
-        : 'Loss forecast results are not available yet; run tab 7 to include loss risk analysis.',
+        : 'Loss forecast results are not available yet; run Loss Forecast to include loss risk analysis.',
       scenarios?.baseline?.length
         ? 'Profit forecast scenarios can be included with the selected scenario emphasized in the report.'
-        : 'Profit forecast scenarios are not available yet; run tab 8 to include P&L projections.',
+        : 'Profit forecast scenarios are not available yet; run Profit Forecast to include P&L projections.',
       predictionResult !== null
         ? 'The report will close with the final prediction result and supporting model context.'
         : 'The report will still generate without a prediction, but the final outcome section will be lighter.',

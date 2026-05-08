@@ -492,7 +492,7 @@ function ModelStatusCard() {
             </div>
             <div className="flex-1">
               <p className="text-sm font-medium">No Model Loaded</p>
-              <p className="text-xs text-muted-foreground">Train a model in the ML tab to get started</p>
+              <p className="text-xs text-muted-foreground">Train a model in the ML Assistant workflow to get started</p>
             </div>
             <Button
               variant="outline"
@@ -501,7 +501,7 @@ function ModelStatusCard() {
               onClick={() => setActiveTab('ml')}
             >
               <ArrowRight className="mr-1 h-3.5 w-3.5" />
-              ML Tab
+              Open ML Assistant
             </Button>
           </CardContent>
         </Card>

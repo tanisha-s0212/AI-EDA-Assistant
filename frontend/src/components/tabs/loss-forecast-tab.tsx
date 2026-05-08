@@ -174,7 +174,7 @@ export default function LossForecastTab() {
       <Card className="overflow-hidden border-red-200/70 bg-gradient-to-br from-red-50 via-background to-amber-50">
         <CardContent className="flex flex-col gap-5 p-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <Badge className="border-red-200 bg-red-100 text-red-700">Tab 7</Badge>
+            <Badge className="border-red-200 bg-red-100 text-red-700">Risk Forecast</Badge>
             <h2 className="mt-3 text-2xl font-bold tracking-tight">Loss Forecast</h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Identify and quantify future value erosion across your business.</p>
           </div>

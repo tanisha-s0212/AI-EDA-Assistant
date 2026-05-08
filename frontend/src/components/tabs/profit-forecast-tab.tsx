@@ -165,7 +165,7 @@ export default function ProfitForecastTab() {
           <div>
             <h2 className="text-xl font-bold">Run Loss Forecast first</h2>
             <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-              Profit Forecast uses total losses from tab 7, plus the upstream revenue and cost forecasts, to build scenario-based P&L projections.
+              Profit Forecast uses total losses from the Loss Forecast workflow, plus upstream revenue and cost projections, to build scenario-based P&L views.
             </p>
           </div>
           <Button onClick={() => setActiveTab('loss_forecast')}>
@@ -182,7 +182,7 @@ export default function ProfitForecastTab() {
       <Card className="overflow-hidden border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-background to-blue-50">
         <CardContent className="flex flex-col gap-5 p-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <Badge className="border-emerald-200 bg-emerald-100 text-emerald-700">Tab 8</Badge>
+            <Badge className="border-emerald-200 bg-emerald-100 text-emerald-700">Financial Projection</Badge>
             <h2 className="mt-3 text-2xl font-bold tracking-tight">Profit Forecast</h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Project your net financial performance across scenarios.</p>
           </div>
