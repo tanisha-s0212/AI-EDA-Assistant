@@ -7,58 +7,149 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
+    <main class="workspace-shell">
       <aside class="sidebar">
-        <div>
-          <p class="eyebrow">Workspace Companion</p>
-          <h1>Agentic Layer</h1>
-          <p class="subtle">Ask about the application workflow, project files, forecasts, reports, and implementation plans from one focused workspace.</p>
-        </div>
+        <section class="sidebar-hero">
+          <p class="eyebrow">Agentic Workspace</p>
+          <h1>Application Intelligence</h1>
+          <p class="subtle">A focused assistant for understanding workflows, mapping code, preparing plans, and reviewing implementation paths.</p>
+        </section>
 
-        <section class="control-group" aria-label="Mode">
-          <label>Focus</label>
+        <section class="panel-section" aria-label="Agent focus">
+          <div class="section-heading">
+            <label>Focus Mode</label>
+            <span id="active-mode-label">Ask</span>
+          </div>
           <div class="mode-grid" role="radiogroup" aria-label="Agent mode">
-            <button class="mode-button active" data-mode="ask" type="button">Ask</button>
-            <button class="mode-button" data-mode="plan" type="button">Plan</button>
-            <button class="mode-button" data-mode="review" type="button">Review</button>
-            <button class="mode-button" data-mode="explain" type="button">Explain</button>
-            <button class="mode-button" data-mode="search" type="button">Search</button>
+            <button class="mode-button active" data-mode="ask" type="button">
+              <span>Ask</span>
+              <small>General workspace Q&amp;A</small>
+            </button>
+            <button class="mode-button" data-mode="plan" type="button">
+              <span>Plan</span>
+              <small>Implementation strategy</small>
+            </button>
+            <button class="mode-button" data-mode="review" type="button">
+              <span>Review</span>
+              <small>Risk and quality scan</small>
+            </button>
+            <button class="mode-button" data-mode="explain" type="button">
+              <span>Explain</span>
+              <small>Files, modules, flow</small>
+            </button>
+            <button class="mode-button wide" data-mode="search" type="button">
+              <span>Search</span>
+              <small>Find related files and references</small>
+            </button>
           </div>
         </section>
 
-        <section class="quick-prompts" aria-label="Quick prompts">
-          <label>Try Asking</label>
-          <button type="button" data-prompt="Explain the full application workflow from login to report.">Application workflow</button>
-          <button type="button" data-prompt="Explain the forecast tabs and how they depend on each other.">Forecast tabs</button>
-          <button type="button" data-prompt="Find the files responsible for report generation.">Report generation</button>
+        <section class="panel-section" aria-label="Quick prompts">
+          <div class="section-heading">
+            <label>Prompt Library</label>
+            <span>Ready</span>
+          </div>
+          <div class="quick-prompts">
+            <button type="button" data-mode="explain" data-prompt="Explain the full application workflow from login to report.">
+              <strong>Map workflow</strong>
+              <span>Login, upload, EDA, forecasts, prediction, report</span>
+            </button>
+            <button type="button" data-mode="explain" data-prompt="Explain the forecast tabs and how they depend on each other.">
+              <strong>Forecast architecture</strong>
+              <span>Time series, ML, loss, profit dependencies</span>
+            </button>
+            <button type="button" data-mode="search" data-prompt="Find the files responsible for report generation.">
+              <strong>Trace report files</strong>
+              <span>Frontend and backend report paths</span>
+            </button>
+            <button type="button" data-mode="review" data-prompt="Review the forecast workflow for risks, dependencies, and missing checks.">
+              <strong>Workflow review</strong>
+              <span>Dependency and quality assessment</span>
+            </button>
+          </div>
         </section>
-
-        <div class="status" id="status">Workspace assistant ready</div>
       </aside>
 
-      <section class="chat-panel" aria-label="Agent chat">
-        <div class="chat-header">
+      <section class="main-stage" aria-label="Agentic chat workspace">
+        <header class="topbar">
           <div>
-            <p class="eyebrow">Assistant</p>
-            <h2>Application Intelligence Workspace</h2>
+            <p class="eyebrow">Assistant Console</p>
+            <h2>Agentic Development Workspace</h2>
           </div>
-          <span class="pill">Agentic</span>
-        </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" id="copy-last" type="button">Copy Last</button>
+            <button class="ghost-button" id="clear-chat" type="button">New Session</button>
+          </div>
+        </header>
 
-        <div class="messages" id="messages" aria-live="polite">
-          <article class="message assistant">
-            <div class="avatar">AI</div>
-            <div class="bubble">
-              <p>I can help explain the workspace, map application workflows, find relevant files, and prepare implementation plans.</p>
+        <section class="conversation-card">
+          <div class="conversation-header">
+            <div>
+              <strong>Workspace Thread</strong>
+              <span id="session-summary">No questions yet</span>
             </div>
-          </article>
-        </div>
+            <span class="session-pill" id="session-pill">Session 01</span>
+          </div>
 
-        <form class="composer" id="chat-form">
-          <textarea id="message-input" rows="3" placeholder="Ask about login, upload, EDA, forecasting, reports, or any project file..." required></textarea>
-          <button id="send-button" type="submit">Send</button>
-        </form>
+          <div class="messages" id="messages" aria-live="polite">
+            <article class="message assistant">
+              <div class="avatar">AI</div>
+              <div class="bubble">
+                <p>Tell me what you want to understand or plan. I can map workflows, locate implementation files, summarize modules, review risks, and produce structured next steps.</p>
+              </div>
+            </article>
+          </div>
+
+          <form class="composer" id="chat-form">
+            <div class="composer-bar">
+              <textarea id="message-input" rows="3" placeholder="Ask about the workflow, forecast tabs, report generation, APIs, state, or implementation strategy..." required></textarea>
+              <div class="composer-actions">
+                <button class="secondary-button" id="insert-context" type="button">Use Workflow Context</button>
+                <button id="send-button" type="submit">Send</button>
+              </div>
+            </div>
+            <div class="composer-hint">
+              <span>Ctrl + Enter to send</span>
+              <span id="draft-count">0 characters</span>
+            </div>
+          </form>
+        </section>
       </section>
+
+      <aside class="activity-panel" aria-label="Agent activity">
+        <section class="panel-section compact" aria-label="Workspace health">
+          <div class="section-heading">
+            <label>Status</label>
+            <span id="status-dot" class="status-dot"></span>
+          </div>
+          <div class="status-card" id="status">Connecting to workspace assistant...</div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <label>Agent Activity</label>
+            <span id="activity-count">0</span>
+          </div>
+          <ol class="activity-feed" id="activity-feed">
+            <li>
+              <strong>Initialized</strong>
+              <span>Workspace assistant loaded</span>
+            </li>
+          </ol>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <label>Suggested Next</label>
+            <span>Actions</span>
+          </div>
+          <div class="next-actions">
+            <button type="button" data-mode="plan" data-prompt="Create a professional plan for improving the forecasting workflow UX.">Plan UX improvements</button>
+            <button type="button" data-mode="search" data-prompt="Find the state variables and API calls used by the forecast tabs.">Trace forecast state</button>
+            <button type="button" data-mode="review" data-prompt="Review report generation for possible edge cases and missing validation.">Review reports</button>
+          </div>
+        </section>
+      </aside>
     </main>
 
     <script src="/app.js"></script>

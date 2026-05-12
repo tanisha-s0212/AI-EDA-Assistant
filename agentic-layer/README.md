@@ -6,12 +6,14 @@ This layer is intentionally separate from the existing application flow. It runs
 
 ## What It Does
 
-- Provides a local chat interface.
+- Provides a professional multi-panel agent workspace.
 - Uses Gemini as the primary LLM provider.
 - Uses Groq as the fallback provider.
 - Reads the workspace structure for context.
 - Searches project text for relevant files and snippets.
 - Helps with explanation, planning, review, and navigation.
+- Includes focus modes for Ask, Plan, Review, Explain, and Search workflows.
+- Includes prompt shortcuts, activity feed, session reset, answer copy, and workflow-context insertion.
 
 ## What It Does Not Do Yet
 
@@ -86,6 +88,15 @@ If Gemini fails or reaches quota, the server tries Groq. If both providers are u
 - `Review`: code review style risk analysis.
 - `Explain`: file or module explanation.
 - `Search`: project search and navigation.
+
+## Interface Features
+
+- Assistant console with a professional workspace layout.
+- Focus mode selector for task intent.
+- Prompt library for workflow, forecast, report, and review tasks.
+- Workspace context panel for frontend, backend, and workflow knowledge areas.
+- Activity timeline showing request and response events.
+- Composer tools for inserting workflow context, copying the latest answer, and starting a new session.
 
 ## Boundary
 
