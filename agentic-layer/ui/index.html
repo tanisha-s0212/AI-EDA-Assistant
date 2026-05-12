@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentic Layer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">Workspace Companion</p>
+          <h1>Agentic Layer</h1>
+          <p class="subtle">Ask about the application workflow, project files, forecasts, reports, and implementation plans from one focused workspace.</p>
+        </div>
+
+        <section class="control-group" aria-label="Mode">
+          <label>Focus</label>
+          <div class="mode-grid" role="radiogroup" aria-label="Agent mode">
+            <button class="mode-button active" data-mode="ask" type="button">Ask</button>
+            <button class="mode-button" data-mode="plan" type="button">Plan</button>
+            <button class="mode-button" data-mode="review" type="button">Review</button>
+            <button class="mode-button" data-mode="explain" type="button">Explain</button>
+            <button class="mode-button" data-mode="search" type="button">Search</button>
+          </div>
+        </section>
+
+        <section class="quick-prompts" aria-label="Quick prompts">
+          <label>Try Asking</label>
+          <button type="button" data-prompt="Explain the full application workflow from login to report.">Application workflow</button>
+          <button type="button" data-prompt="Explain the forecast tabs and how they depend on each other.">Forecast tabs</button>
+          <button type="button" data-prompt="Find the files responsible for report generation.">Report generation</button>
+        </section>
+
+        <div class="status" id="status">Workspace assistant ready</div>
+      </aside>
+
+      <section class="chat-panel" aria-label="Agent chat">
+        <div class="chat-header">
+          <div>
+            <p class="eyebrow">Assistant</p>
+            <h2>Application Intelligence Workspace</h2>
+          </div>
+          <span class="pill">Agentic</span>
+        </div>
+
+        <div class="messages" id="messages" aria-live="polite">
+          <article class="message assistant">
+            <div class="avatar">AI</div>
+            <div class="bubble">
+              <p>I can help explain the workspace, map application workflows, find relevant files, and prepare implementation plans.</p>
+            </div>
+          </article>
+        </div>
+
+        <form class="composer" id="chat-form">
+          <textarea id="message-input" rows="3" placeholder="Ask about login, upload, EDA, forecasting, reports, or any project file..." required></textarea>
+          <button id="send-button" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
