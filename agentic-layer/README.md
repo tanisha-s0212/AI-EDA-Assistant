@@ -1,12 +1,12 @@
-# Agentic Layer
+# IDA Agentic Core
 
-Standalone local assistant layer for the AI EDA Assistant workspace.
+Standalone local agentic assistant core for the AI EDA Assistant workspace.
 
 This layer is intentionally separate from the existing application flow. It runs as its own local browser page and does not modify the current backend, frontend, infrastructure, routes, or workflow.
 
 ## What It Does
 
-- Provides a professional multi-panel agent workspace.
+- Provides the IDA Agentic Core multi-panel workspace.
 - Uses Gemini as the primary LLM provider.
 - Uses Groq as the fallback provider.
 - Reads the workspace structure for context.
@@ -91,7 +91,7 @@ If Gemini fails or reaches quota, the server tries Groq. If both providers are u
 
 ## Interface Features
 
-- Assistant console with a professional workspace layout.
+- IDA Agentic Core console with a professional workspace layout.
 - Focus mode selector for task intent.
 - Prompt library for workflow, forecast, report, and review tasks.
 - Workspace context panel for frontend, backend, and workflow knowledge areas.

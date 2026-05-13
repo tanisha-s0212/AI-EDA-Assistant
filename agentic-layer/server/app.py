@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +20,7 @@ else:
 
 
 UI_ROOT = AGENTIC_ROOT / "ui"
+ACTIVITY_LOG = AGENTIC_ROOT / "logs" / "activity.jsonl"
 
 
 class AgenticRequestHandler(BaseHTTPRequestHandler):
@@ -49,6 +51,19 @@ class AgenticRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _record_activity(self, payload: dict) -> None:
+        ACTIVITY_LOG.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": str(payload.get("type", "ui_event"))[:80],
+            "title": str(payload.get("title", ""))[:160],
+            "detail": str(payload.get("detail", ""))[:500],
+            "session": str(payload.get("session", ""))[:80],
+            "mode": str(payload.get("mode", ""))[:40],
+        }
+        with ACTIVITY_LOG.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(event, ensure_ascii=True) + "\n")
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
 
@@ -75,6 +90,18 @@ class AgenticRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/activity":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                self._record_activity(payload)
+                self._send_json({"status": "stored"})
+            except json.JSONDecodeError:
+                self._send_json({"error": "Invalid JSON body."}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
         if parsed.path != "/api/chat":
             self.send_error(HTTPStatus.NOT_FOUND, "Unknown API endpoint")
             return
@@ -107,7 +134,7 @@ class AgenticRequestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     server = ThreadingHTTPServer((Settings.host, Settings.port), AgenticRequestHandler)
-    print(f"Agentic Layer running at http://{Settings.host}:{Settings.port}")
+    print(f"IDA Agentic Core running at http://{Settings.host}:{Settings.port}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
