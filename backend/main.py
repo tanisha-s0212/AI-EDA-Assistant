@@ -6916,6 +6916,11 @@ def root() -> dict[str, Any]:
     return {'service': 'AI-Assisted EDA & ML Backend', 'docs': '/docs', 'api': '/api'}
 
 
+# AGENTIC LAYER START
+from agentic.agentic_adapter import agentic_router
+
+app.include_router(agentic_router)
+# AGENTIC LAYER END
 app.include_router(router)
 
 
