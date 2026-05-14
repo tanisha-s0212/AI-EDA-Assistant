@@ -21,7 +21,7 @@ export default function RootLayout({
           {children}
           <Toaster />
         </ThemeProvider>
-        <Script src="http://127.0.0.1:5055/launcher.js" strategy="afterInteractive" />
+        <Script src="http://192.168.1.87:5055/launcher.js" strategy="afterInteractive" />
       </body>
     </html>
   );
