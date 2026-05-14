@@ -30,7 +30,11 @@ PIPELINE_STEPS = [
     'Report Generation',
 ]
 
-AGENTIC_STEP_STATE: dict[str, dict[str, Any]] = {}
+# AGENTIC LAYER START
+_sessions: dict[str, dict[str, Any]] = {}
+_step_executions: dict[str, list[dict[str, Any]]] = {}
+_decisions: dict[str, list[dict[str, Any]]] = {}
+# AGENTIC LAYER END
 
 
 class SuggestNextStepsRequest(BaseModel):
@@ -49,6 +53,22 @@ def agentic_enabled() -> bool:
 
 def disabled_response() -> JSONResponse:
     return JSONResponse(content={'error': 'agentic layer disabled', 'status': 503}, status_code=503)
+
+
+# AGENTIC LAYER START
+def is_db_connected() -> bool:
+    try:
+        backend = get_backend_module()
+        with backend.get_activity_connection() as connection:
+            connection.execute('SELECT 1')
+        return True
+    except Exception:
+        try:
+            backend.logger.warning('Agentic database unavailable; using in-memory fallback store.', exc_info=True)
+        except Exception:
+            pass
+        return False
+# AGENTIC LAYER END
 
 
 def get_backend_module() -> Any:
@@ -159,15 +179,15 @@ def build_recommendations(profile: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def ensure_session(session_id: str) -> dict[str, Any]:
-    if session_id not in AGENTIC_STEP_STATE:
-        AGENTIC_STEP_STATE[session_id] = {
+    if session_id not in _sessions:
+        _sessions[session_id] = {
             'steps': {step: 'pending' for step in PIPELINE_STEPS},
             'events': [],
             'recommendations': [],
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat(),
         }
-    return AGENTIC_STEP_STATE[session_id]
+    return _sessions[session_id]
 
 
 def summarize_response(response: Any) -> str:
@@ -184,9 +204,20 @@ def summarize_response(response: Any) -> str:
 
 
 def record_agentic_execution(session_id: str, step_name: str, status: str, output_summary: str | None, error_message: str | None) -> None:
+    execution = {
+        'session_id': session_id,
+        'step_name': step_name,
+        'status': status,
+        'started_at': datetime.utcnow().isoformat(),
+        'completed_at': datetime.utcnow().isoformat(),
+        'output_summary': output_summary,
+        'error_message': error_message,
+    }
     backend = get_backend_module()
     if not getattr(backend, 'ACTIVITY_DB_AVAILABLE', False):
+        _step_executions.setdefault(session_id, []).append(execution)
         return
+    # AGENTIC LAYER START
     try:
         with backend.get_activity_connection() as connection:
             connection.execute(
@@ -199,14 +230,21 @@ def record_agentic_execution(session_id: str, step_name: str, status: str, outpu
                     session_id,
                     step_name,
                     status,
-                    datetime.utcnow(),
-                    datetime.utcnow(),
+                    execution['started_at'],
+                    execution['completed_at'],
                     output_summary,
                     error_message,
                 ),
             )
     except Exception:
-        backend.logger.exception('Failed to persist agentic execution event for session_id=%s step=%s', session_id, step_name)
+        backend.logger.warning(
+            'Failed to persist agentic execution event for session_id=%s step=%s; using in-memory fallback.',
+            session_id,
+            step_name,
+            exc_info=True,
+        )
+        _step_executions.setdefault(session_id, []).append(execution)
+    # AGENTIC LAYER END
 
 
 def execute_loss_forecast(session_id: str, request: Request) -> Any:
@@ -233,6 +271,19 @@ STEP_HANDLERS: dict[str, Callable[[str, Request], Any] | str] = {
     'Prediction': 'not_yet_wired',
     'Report Generation': 'not_yet_wired',
 }
+
+
+@agentic_router.get('/health')
+def agentic_health() -> JSONResponse:
+    enabled = agentic_enabled()
+    db_connected = is_db_connected() if enabled else False
+    return JSONResponse(
+        content={
+            'agentic_enabled': enabled,
+            'db_connected': db_connected,
+            'db_fallback_active': enabled and not db_connected,
+        }
+    )
 
 
 def prepare_next_recommendation(session_id: str, completed_step: str) -> None:
