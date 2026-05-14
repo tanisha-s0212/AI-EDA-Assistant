@@ -5,6 +5,16 @@ import type { LossForecastResult, LossForecastSummary, ProfitForecastResult, Sce
 
 export type TabId = 'upload' | 'understanding' | 'cleaning' | 'eda' | 'forecast_ts' | 'forecast_ml' | 'loss_forecast' | 'profit_forecast' | 'ml' | 'prediction' | 'report';
 
+// # AGENTIC LAYER START
+export type AgenticStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+
+export interface Recommendation {
+  step: string;
+  reason: string;
+  findings: string[];
+}
+// # AGENTIC LAYER END
+
 export interface ColumnInfo {
   name: string;
   dtype: string;
@@ -192,6 +202,17 @@ export interface AppState extends DatasetWorkspaceState {
   uploadPickerSourceTab: TabId | null;
   currentUser: AuthenticatedUser | null;
   isAuthenticated: boolean;
+  // # AGENTIC LAYER START
+  agenticSessionId: string | null;
+  agenticStepStatuses: Record<string, AgenticStepStatus>;
+  agenticRecommendations: Recommendation[];
+  agenticLastSyncedAt: number | null;
+  agenticEnabled: boolean;
+  setAgenticSessionId: (sessionId: string | null) => void;
+  setAgenticStepStatus: (step: string, status: AgenticStepStatus) => void;
+  setAgenticRecommendations: (recommendations: Recommendation[]) => void;
+  setAgenticLastSyncedAt: (value: number | null) => void;
+  // # AGENTIC LAYER END
   setActiveTab: (tab: TabId) => void;
   requestUploadPicker: (sourceTab?: TabId) => void;
   resetWorkspace: () => void;
@@ -225,11 +246,22 @@ type PersistedAppSlice = Pick<
   | 'datasets'
   | 'datasetOrder'
   | 'activeDatasetKey'
+  // # AGENTIC LAYER START
+  | 'agenticSessionId'
+  | 'agenticStepStatuses'
+  | 'agenticRecommendations'
+  | 'agenticLastSyncedAt'
+  | 'agenticEnabled'
+  // # AGENTIC LAYER END
   | keyof DatasetWorkspaceState
 >;
 
 const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
-const STORE_PERSIST_VERSION = 3;
+const STORE_PERSIST_VERSION = 4;
+
+// # AGENTIC LAYER START
+const AGENTIC_ENABLED = process.env.NEXT_PUBLIC_AGENTIC_ENABLED === 'true';
+// # AGENTIC LAYER END
 
 function createEmptyDatasetState(): DatasetWorkspaceState {
   return {
@@ -367,6 +399,13 @@ const initialPersistedState: PersistedAppSlice = {
   datasets: {},
   datasetOrder: [],
   activeDatasetKey: null,
+  // # AGENTIC LAYER START
+  agenticSessionId: null,
+  agenticStepStatuses: {},
+  agenticRecommendations: [],
+  agenticLastSyncedAt: null,
+  agenticEnabled: AGENTIC_ENABLED,
+  // # AGENTIC LAYER END
   ...createEmptyDatasetState(),
 };
 
@@ -376,6 +415,23 @@ const store = create<AppState>()(
       ...initialPersistedState,
       uploadPickerRequestId: 0,
       uploadPickerSourceTab: null,
+      // # AGENTIC LAYER START
+      setAgenticSessionId: (sessionId) => set({ agenticSessionId: sessionId }),
+      setAgenticStepStatus: (step, status) =>
+        set((state) => ({
+          agenticStepStatuses: {
+            ...state.agenticStepStatuses,
+            [step]: status,
+          },
+          agenticLastSyncedAt: Date.now(),
+        })),
+      setAgenticRecommendations: (recommendations) =>
+        set({
+          agenticRecommendations: recommendations,
+          agenticLastSyncedAt: Date.now(),
+        }),
+      setAgenticLastSyncedAt: (value) => set({ agenticLastSyncedAt: value }),
+      // # AGENTIC LAYER END
       setActiveTab: (tab) => set({ activeTab: tab }),
       requestUploadPicker: (sourceTab) =>
         set((state) => ({
@@ -522,6 +578,13 @@ const store = create<AppState>()(
         ),
         datasetOrder: state.datasetOrder,
         activeDatasetKey: state.activeDatasetKey,
+        // # AGENTIC LAYER START
+        agenticSessionId: state.agenticSessionId,
+        agenticStepStatuses: state.agenticStepStatuses,
+        agenticRecommendations: state.agenticRecommendations,
+        agenticLastSyncedAt: state.agenticLastSyncedAt,
+        agenticEnabled: AGENTIC_ENABLED,
+        // # AGENTIC LAYER END
         ...buildDatasetStatePatch(stripTransientDatasetState(getDatasetSnapshot(state))),
       }),
       version: STORE_PERSIST_VERSION,
@@ -542,6 +605,13 @@ const store = create<AppState>()(
               }),
             ])
           ),
+          // # AGENTIC LAYER START
+          agenticSessionId: state.agenticSessionId ?? null,
+          agenticStepStatuses: state.agenticStepStatuses ?? {},
+          agenticRecommendations: state.agenticRecommendations ?? [],
+          agenticLastSyncedAt: state.agenticLastSyncedAt ?? null,
+          agenticEnabled: AGENTIC_ENABLED,
+          // # AGENTIC LAYER END
           ...buildDatasetStatePatch(
             stripTransientDatasetState({
               ...createEmptyDatasetState(),
