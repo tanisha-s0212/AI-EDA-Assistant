@@ -117,15 +117,22 @@ def _profile_csv(path: Path, max_rows: int = 500) -> DatasetProfile:
     )
 
 
-def _default_profile(dataset_name: str) -> DatasetProfile:
+def _default_profile(
+    dataset_name: str,
+    rows_sampled: int = 0,
+    columns: list[str] | None = None,
+    numeric_columns: list[str] | None = None,
+) -> DatasetProfile:
+    safe_columns = [str(column) for column in (columns or []) if str(column).strip()]
+    safe_numeric_columns = [str(column) for column in (numeric_columns or []) if str(column).strip()]
     return DatasetProfile(
         file_name=dataset_name or "uploaded dataset",
-        rows_sampled=0,
-        columns=[],
-        numeric_columns=[],
-        missing_counts={},
+        rows_sampled=max(0, rows_sampled),
+        columns=safe_columns,
+        numeric_columns=safe_numeric_columns,
+        missing_counts={column: 0 for column in safe_columns},
         notes=[
-            "Dataset content was not directly available to the agentic layer.",
+            "Dataset metadata was received from the main Intelligent Data Assistant application.",
             "Suggestions are based on the confirmed Intelligent Data Assistant workflow.",
         ],
     )
@@ -189,6 +196,10 @@ def _suggestions(profile: DatasetProfile) -> list[dict]:
 def create_run(payload: dict) -> dict:
     dataset_path = str(payload.get("dataset_path", "")).strip()
     dataset_name = str(payload.get("dataset_name", "")).strip()
+    dataset_id = str(payload.get("dataset_id", "")).strip()
+    columns = payload.get("dataset_columns", [])
+    numeric_columns = payload.get("numeric_columns", [])
+    rows_sampled = int(payload.get("row_count") or payload.get("loaded_row_count") or 0)
     profile: DatasetProfile
 
     if dataset_path:
@@ -199,7 +210,14 @@ def create_run(payload: dict) -> dict:
             profile = _default_profile(safe_path.name)
             profile.notes.append("Only CSV files are profiled directly in this local scaffold.")
     else:
-        profile = _default_profile(dataset_name)
+        profile = _default_profile(
+            dataset_name or dataset_id,
+            rows_sampled=rows_sampled,
+            columns=columns if isinstance(columns, list) else [],
+            numeric_columns=numeric_columns if isinstance(numeric_columns, list) else [],
+        )
+        if dataset_id:
+            profile.notes.append(f"Main application dataset id: {dataset_id}")
 
     run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{_safe_id(profile.file_name)}-{uuid.uuid4().hex[:6]}"
     run_root = RUNS_ROOT / run_id

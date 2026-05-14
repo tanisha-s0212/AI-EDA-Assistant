@@ -28,6 +28,7 @@ let sessionTitle = "Untitled analysis";
 let sessionHistory = loadSessionHistory();
 let sessionMessages = loadSessionMessages();
 let activeRun = null;
+let launchDatasetContext = readLaunchDatasetContext();
 
 const starterMessage =
   "Ask about workflow, forecast logic, report generation, APIs, state, or implementation strategy. I will use local workspace context and the configured provider order.";
@@ -333,6 +334,30 @@ function resolveReturnUrl() {
   return params.get("returnUrl") || localStorage.getItem("idaMainApplicationUrl") || "";
 }
 
+function readLaunchDatasetContext() {
+  const params = new URLSearchParams(window.location.search);
+  const datasetName = params.get("datasetName") || "";
+  const datasetId = params.get("datasetId") || "";
+  const columns = (params.get("columns") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const numericColumns = (params.get("numericColumns") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const totalRows = Number(params.get("totalRows") || "0");
+  const loadedRows = Number(params.get("loadedRows") || "0");
+
+  if (!datasetName && !datasetId && !columns.length) {
+    return null;
+  }
+
+  return {
+    datasetName: datasetName || datasetId || "uploaded dataset",
+    datasetId,
+    columns,
+    numericColumns,
+    totalRows: Number.isFinite(totalRows) ? totalRows : 0,
+    loadedRows: Number.isFinite(loadedRows) ? loadedRows : 0,
+    autoSuggest: params.get("autoSuggest") === "1",
+  };
+}
+
 function goBackToApplication() {
   const returnUrl = resolveReturnUrl();
   recordActivity("navigate_back", "Back to application", returnUrl || "Browser history");
@@ -406,6 +431,16 @@ copyLastButton.addEventListener("click", async () => {
 clearChatButton.addEventListener("click", resetConversation);
 backToAppButton?.addEventListener("click", goBackToApplication);
 
+if (launchDatasetContext && datasetNameInput) {
+  datasetNameInput.value = launchDatasetContext.datasetName;
+  runStatus.textContent = `Detected ${launchDatasetContext.datasetName} from the main application`;
+  if (launchDatasetContext.autoSuggest) {
+    window.setTimeout(() => {
+      createAutomationRun();
+    }, 250);
+  }
+}
+
 function renderSuggestions() {
   if (!suggestionList || !runStatus) {
     return;
@@ -443,15 +478,26 @@ async function createAutomationRun() {
   }
 
   const value = datasetNameInput.value.trim();
+  const context = launchDatasetContext;
   createRunButton.disabled = true;
   runStatus.textContent = "Creating secure run folder...";
 
   try {
     const isCsvPath = /\.csv$/i.test(value) && /[\\/]/.test(value);
+    const payload = isCsvPath
+      ? { dataset_path: value }
+      : {
+          dataset_name: value || context?.datasetName || "uploaded dataset",
+          dataset_id: context?.datasetId || "",
+          row_count: context?.totalRows || 0,
+          loaded_row_count: context?.loadedRows || 0,
+          dataset_columns: context?.columns || [],
+          numeric_columns: context?.numericColumns || [],
+        };
     const response = await fetch("/api/workflow/suggest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(isCsvPath ? { dataset_path: value } : { dataset_name: value || "uploaded dataset" }),
+      body: JSON.stringify(payload),
     });
     const data = await response.json();
     if (!response.ok) {

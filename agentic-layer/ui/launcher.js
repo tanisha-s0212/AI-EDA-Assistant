@@ -4,7 +4,44 @@
     return;
   }
 
-  const agentUrl = window.IDA_AGENTIC_CORE_URL || "http://127.0.0.1:5055";
+  const scriptOrigin = document.currentScript?.src ? new URL(document.currentScript.src).origin : "";
+  const agentUrl = window.IDA_AGENTIC_CORE_URL || scriptOrigin || "http://127.0.0.1:5055";
+
+  function getActiveDatasetContext() {
+    try {
+      const stored = JSON.parse(localStorage.getItem("ai-eda-workspace-v2") || "{}");
+      const state = stored?.state || {};
+      const activeDataset = state.activeDatasetKey && state.datasets ? state.datasets[state.activeDatasetKey] : null;
+      const dataset = activeDataset || state;
+      const fileName = dataset.fileName || "";
+      const datasetId = dataset.datasetId || "";
+      const columns = Array.isArray(dataset.columns) ? dataset.columns : [];
+      if (!fileName && !datasetId && !columns.length) {
+        return null;
+      }
+
+      const columnNames = columns
+        .map((column) => column?.name)
+        .filter(Boolean)
+        .slice(0, 60);
+      const numericColumns = columns
+        .filter((column) => column?.role === "numeric" || String(column?.dtype || "").toLowerCase().includes("float") || String(column?.dtype || "").toLowerCase().includes("int"))
+        .map((column) => column.name)
+        .filter(Boolean)
+        .slice(0, 40);
+
+      return {
+        fileName,
+        datasetId,
+        totalRows: dataset.totalRows || 0,
+        loadedRows: dataset.loadedRowCount || 0,
+        columns: columnNames.join(","),
+        numericColumns: numericColumns.join(","),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
   const style = document.createElement("style");
   style.textContent = `
     [data-ida-agentic-launcher] {
@@ -50,8 +87,18 @@
   button.setAttribute("aria-label", "Open IDA Agentic Core");
   button.innerHTML = "<span>IDA</span><span>Agentic Core</span>";
   button.addEventListener("click", () => {
-    const returnUrl = encodeURIComponent(window.location.href);
-    window.location.assign(`${agentUrl}/?returnUrl=${returnUrl}`);
+    const params = new URLSearchParams({ returnUrl: window.location.href });
+    const dataset = getActiveDatasetContext();
+    if (dataset) {
+      params.set("datasetName", dataset.fileName || dataset.datasetId || "uploaded dataset");
+      if (dataset.datasetId) params.set("datasetId", dataset.datasetId);
+      if (dataset.totalRows) params.set("totalRows", String(dataset.totalRows));
+      if (dataset.loadedRows) params.set("loadedRows", String(dataset.loadedRows));
+      if (dataset.columns) params.set("columns", dataset.columns);
+      if (dataset.numericColumns) params.set("numericColumns", dataset.numericColumns);
+      params.set("autoSuggest", "1");
+    }
+    window.location.assign(`${agentUrl}/?${params.toString()}`);
   });
 
   document.head.appendChild(style);
