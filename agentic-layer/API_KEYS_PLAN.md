@@ -1,12 +1,27 @@
 # API Key Plan
 
-The agentic layer uses Gemini as the primary provider and Groq as a fallback provider.
+The agentic layer uses LongCat as the primary provider, Gemini as the second priority, and Groq as the final hosted fallback provider.
 
 ## Provider Priority
 
 ```env
-LLM_PRIMARY_PROVIDER=gemini
-LLM_FALLBACK_PROVIDER=groq
+LLM_PRIMARY_PROVIDER=longcat
+LLM_FALLBACK_PROVIDERS=gemini,groq
+```
+
+Auto mode uses:
+
+```text
+LongCat -> Gemini -> Groq -> local workspace context
+```
+
+## LongCat Models
+
+```env
+LONGCAT_BASE_URL=https://api.longcat.chat/openai/v1
+LONGCAT_FAST_MODEL=LongCat-Flash-Chat
+LONGCAT_BALANCED_MODEL=LongCat-Flash-Chat
+LONGCAT_DEEP_MODEL=LongCat-Flash-Thinking
 ```
 
 ## Gemini Models

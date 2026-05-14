@@ -2,8 +2,6 @@ const form = document.querySelector("#chat-form");
 const input = document.querySelector("#message-input");
 const messages = document.querySelector("#messages");
 const sendButton = document.querySelector("#send-button");
-const statusEl = document.querySelector("#status");
-const statusDot = document.querySelector("#status-dot");
 const sessionSummary = document.querySelector("#session-summary");
 const draftCount = document.querySelector("#draft-count");
 const historyList = document.querySelector("#history-list");
@@ -11,6 +9,13 @@ const historyCount = document.querySelector("#history-count");
 const copyLastButton = document.querySelector("#copy-last");
 const clearChatButton = document.querySelector("#clear-chat");
 const insertContextButton = document.querySelector("#insert-context");
+const backToAppButton = document.querySelector("#back-to-app");
+const datasetNameInput = document.querySelector("#dataset-name");
+const createRunButton = document.querySelector("#create-run");
+const runStatus = document.querySelector("#run-status");
+const suggestionList = document.querySelector("#suggestion-list");
+const viewTabs = [...document.querySelectorAll(".view-tab")];
+const centerViews = [...document.querySelectorAll("[data-center-view]")];
 const modeButtons = [...document.querySelectorAll(".mode-button")];
 const promptButtons = [...document.querySelectorAll("[data-prompt]")];
 
@@ -22,12 +27,15 @@ let lastAssistantAnswer = "";
 let sessionTitle = "Untitled analysis";
 let sessionHistory = loadSessionHistory();
 let sessionMessages = loadSessionMessages();
+let activeRun = null;
 
 const starterMessage =
-  "Ask about workflow, forecast logic, report generation, APIs, state, or implementation strategy. I will use the local workspace context and keep the thread focused.";
+  "Ask about workflow, forecast logic, report generation, APIs, state, or implementation strategy. I will use local workspace context and the configured provider order.";
 
 const workflowContextPrompt =
   "Use the confirmed application workflow context while answering: login, data upload, data understanding, EDA, data cleaning, time series forecast, machine learning forecast, loss forecast, profit forecast, ML assistant, prediction, and report.";
+const automationPrompt =
+  "A dataset has been uploaded in the Intelligent Data Assistant. Suggest secure next steps for understanding, EDA, cleaning, forecasts, prediction, and report generation. Use professional action labels: Accept and Continue, or Skip.";
 const sendIcon =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.4 19.4 20.9 12 4.4 4.6 4 10.4l9.1 1.6L4 13.6l.4 5.8Z"/></svg>';
 const botIcon =
@@ -137,6 +145,17 @@ function setMode(mode) {
   activeMode = mode || "ask";
   modeButtons.forEach((item) => item.classList.toggle("active", item.dataset.mode === activeMode));
   recordActivity("mode_changed", "Mode changed", formatModeLabel(activeMode));
+}
+
+function setCenterView(view) {
+  const selected = view || "agent";
+  viewTabs.forEach((item) => {
+    const isActive = item.dataset.view === selected;
+    item.classList.toggle("active", isActive);
+    item.setAttribute("aria-selected", String(isActive));
+  });
+  centerViews.forEach((item) => item.classList.toggle("active", item.dataset.centerView === selected));
+  recordActivity("workspace_view_changed", "Workspace view changed", selected);
 }
 
 async function recordActivity(type, title, detail = "") {
@@ -303,15 +322,26 @@ function resetConversation() {
 
 async function loadHealth() {
   try {
-    const response = await fetch("/api/health");
-    await response.json();
-    statusEl.textContent = "Assistant ready";
-    statusEl.classList.remove("error");
-    statusDot.style.background = "var(--success)";
+    await fetch("/api/health");
   } catch (error) {
-    statusEl.textContent = "Assistant offline";
-    statusEl.classList.add("error");
-    statusDot.style.background = "var(--danger)";
+    console.warn("Assistant health check unavailable", error);
+  }
+}
+
+function resolveReturnUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("returnUrl") || localStorage.getItem("idaMainApplicationUrl") || "";
+}
+
+function goBackToApplication() {
+  const returnUrl = resolveReturnUrl();
+  recordActivity("navigate_back", "Back to application", returnUrl || "Browser history");
+  if (returnUrl) {
+    window.location.assign(returnUrl);
+    return;
+  }
+  if (window.history.length > 1) {
+    window.history.back();
   }
 }
 
@@ -337,6 +367,10 @@ modeButtons.forEach((button) => {
 
 promptButtons.forEach((button) => {
   button.addEventListener("click", () => setPromptFromButton(button));
+});
+
+viewTabs.forEach((button) => {
+  button.addEventListener("click", () => setCenterView(button.dataset.view));
 });
 
 historyList?.addEventListener("click", (event) => {
@@ -370,6 +404,108 @@ copyLastButton.addEventListener("click", async () => {
 });
 
 clearChatButton.addEventListener("click", resetConversation);
+backToAppButton?.addEventListener("click", goBackToApplication);
+
+function renderSuggestions() {
+  if (!suggestionList || !runStatus) {
+    return;
+  }
+
+  if (!activeRun) {
+    suggestionList.innerHTML = "";
+    runStatus.textContent = "No automation run yet";
+    return;
+  }
+
+  runStatus.textContent = `Run ${activeRun.run_id}`;
+  suggestionList.innerHTML = activeRun.suggestions
+    .map(
+      (item) => `
+        <article class="suggestion-item" data-step-id="${escapeHtml(item.id)}">
+          <div class="suggestion-topline">
+            <strong>${escapeHtml(item.title)}</strong>
+            <em>${escapeHtml(item.recommended_action || "Review")}</em>
+          </div>
+          <span>${escapeHtml(item.reason)}</span>
+          <div class="suggestion-actions">
+            <button type="button" data-decision="accept">Accept and Continue</button>
+            <button type="button" data-decision="skip">Skip</button>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
+async function createAutomationRun() {
+  if (!createRunButton || !datasetNameInput) {
+    return;
+  }
+
+  const value = datasetNameInput.value.trim();
+  createRunButton.disabled = true;
+  runStatus.textContent = "Creating secure run folder...";
+
+  try {
+    const isCsvPath = /\.csv$/i.test(value) && /[\\/]/.test(value);
+    const response = await fetch("/api/workflow/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(isCsvPath ? { dataset_path: value } : { dataset_name: value || "uploaded dataset" }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to create automation run.");
+    }
+    activeRun = data;
+    renderSuggestions();
+    setCenterView("agent");
+    addMessage(
+      "assistant",
+      `${automationPrompt}\n\nCreated automation run \`${data.run_id}\`. I found ${data.dataset.columns.length} columns in the current profile and prepared recommended next steps for approval.`,
+      "Automation suggestion"
+    );
+    recordActivity("automation_run_created", "Automation run created", data.run_id);
+  } catch (error) {
+    runStatus.textContent = error.message || "Automation run failed";
+  } finally {
+    createRunButton.disabled = false;
+  }
+}
+
+async function submitDecision(stepId, decision) {
+  if (!activeRun) {
+    return;
+  }
+  const response = await fetch("/api/workflow/decision", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      run_id: activeRun.run_id,
+      step_id: stepId,
+      decision,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    runStatus.textContent = data.error || "Decision could not be stored";
+    return;
+  }
+  const label = decision === "accept" ? "Accepted and queued" : "Skipped";
+  runStatus.textContent = `${label}: ${stepId}`;
+  addMessage("assistant", `${label} \`${stepId}\` for run \`${activeRun.run_id}\`. The decision and step artifact were stored under the run folder.`, "Automation decision");
+  recordActivity("automation_decision", label, stepId);
+}
+
+createRunButton?.addEventListener("click", createAutomationRun);
+suggestionList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-decision]");
+  const item = event.target.closest("[data-step-id]");
+  if (!button || !item) {
+    return;
+  }
+  submitDecision(item.dataset.stepId, button.dataset.decision);
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -379,6 +515,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   addMessage("user", message);
+  setCenterView("chat");
   questionCount += 1;
   updateSessionSummary();
   upsertCurrentSession(message);

@@ -29,6 +29,14 @@ def _gemini_model_candidates(mode: str) -> list[str]:
     return _unique([Settings.gemini_fast_model, Settings.gemini_balanced_model])
 
 
+def _longcat_model_candidates(mode: str) -> list[str]:
+    if mode == "deep":
+        return _unique([Settings.longcat_deep_model, Settings.longcat_balanced_model, Settings.longcat_fast_model])
+    if mode == "balanced":
+        return _unique([Settings.longcat_balanced_model, Settings.longcat_fast_model, Settings.longcat_deep_model])
+    return _unique([Settings.longcat_fast_model, Settings.longcat_balanced_model])
+
+
 def _groq_model_candidates(mode: str) -> list[str]:
     if mode == "fast":
         return _unique([Settings.groq_fast_model, Settings.groq_fallback_model])
@@ -88,28 +96,62 @@ def call_gemini(messages: list[dict[str, str]], mode: str) -> str:
     raise ProviderError("Gemini model attempts failed. " + " | ".join(errors))
 
 
-def _call_groq_model(messages: list[dict[str, str]], model: str) -> str:
-    url = "https://api.groq.com/openai/v1/chat/completions"
+def _call_openai_compatible_model(
+    base_url: str,
+    api_key: str,
+    messages: list[dict[str, str]],
+    model: str,
+    provider_name: str,
+    max_tokens_field: str = "max_tokens",
+) -> str:
+    url = f"{base_url}/chat/completions"
     payload = {
         "model": model,
         "messages": messages,
         "temperature": Settings.temperature,
-        "max_completion_tokens": Settings.max_output_tokens,
+        max_tokens_field: Settings.max_output_tokens,
     }
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {Settings.groq_api_key}",
+        "Authorization": f"Bearer {api_key}",
     }
 
     data = _post_json(url, payload, headers, Settings.timeout_seconds)
     choices = data.get("choices") or []
     if not choices:
-        raise ProviderError("Groq returned no choices.")
+        raise ProviderError(f"{provider_name} returned no choices.")
 
     text = choices[0].get("message", {}).get("content", "").strip()
     if not text:
-        raise ProviderError("Groq returned an empty response.")
+        raise ProviderError(f"{provider_name} returned an empty response.")
     return text
+
+
+def call_longcat(messages: list[dict[str, str]], mode: str) -> str:
+    errors: list[str] = []
+    for model in _longcat_model_candidates(mode):
+        try:
+            return _call_openai_compatible_model(
+                Settings.longcat_base_url,
+                Settings.longcat_api_key,
+                messages,
+                model,
+                "LongCat",
+            )
+        except ProviderError as exc:
+            errors.append(f"{model}: {exc}")
+    raise ProviderError("LongCat model attempts failed. " + " | ".join(errors))
+
+
+def _call_groq_model(messages: list[dict[str, str]], model: str) -> str:
+    return _call_openai_compatible_model(
+        "https://api.groq.com/openai/v1",
+        Settings.groq_api_key,
+        messages,
+        model,
+        "Groq",
+        "max_completion_tokens",
+    )
 
 
 def call_groq(messages: list[dict[str, str]], mode: str) -> str:
@@ -123,6 +165,11 @@ def call_groq(messages: list[dict[str, str]], mode: str) -> str:
 
 
 def call_provider(provider: str, messages: list[dict[str, str]], mode: str) -> str:
+    if provider == "longcat":
+        if not Settings.provider_configured("longcat"):
+            raise ProviderError("LongCat API key is not configured.")
+        return call_longcat(messages, mode)
+
     if provider == "gemini":
         if not Settings.provider_configured("gemini"):
             raise ProviderError("Gemini API key is not configured.")

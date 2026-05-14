@@ -32,9 +32,19 @@ class Settings:
     port = int(os.getenv("AGENTIC_PORT", "5055"))
     log_level = os.getenv("AGENTIC_LOG_LEVEL", "info")
 
-    primary_provider = os.getenv("LLM_PRIMARY_PROVIDER", "gemini").lower()
-    fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "groq").lower()
+    primary_provider = os.getenv("LLM_PRIMARY_PROVIDER", "longcat").lower()
+    fallback_providers = [
+        provider.strip().lower()
+        for provider in os.getenv("LLM_FALLBACK_PROVIDERS", "gemini,groq").split(",")
+        if provider.strip()
+    ]
     default_mode = os.getenv("LLM_DEFAULT_MODE", "fast").lower()
+
+    longcat_api_key = os.getenv("LONGCAT_API_KEY", "")
+    longcat_base_url = os.getenv("LONGCAT_BASE_URL", "https://api.longcat.chat/openai/v1").rstrip("/")
+    longcat_fast_model = os.getenv("LONGCAT_FAST_MODEL", "LongCat-Flash-Chat")
+    longcat_balanced_model = os.getenv("LONGCAT_BALANCED_MODEL", "LongCat-Flash-Chat")
+    longcat_deep_model = os.getenv("LONGCAT_DEEP_MODEL", "LongCat-Flash-Thinking")
 
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
     gemini_fast_model = os.getenv("GEMINI_FAST_MODEL", "gemini-2.5-flash-lite")
@@ -51,11 +61,21 @@ class Settings:
 
     @classmethod
     def provider_configured(cls, provider: str) -> bool:
+        if provider == "longcat":
+            return bool(cls.longcat_api_key and not cls.longcat_api_key.startswith("your_"))
         if provider == "gemini":
             return bool(cls.gemini_api_key and not cls.gemini_api_key.startswith("your_"))
         if provider == "groq":
             return bool(cls.groq_api_key and not cls.groq_api_key.startswith("your_"))
         return False
+
+    @classmethod
+    def longcat_model_for_mode(cls, mode: str) -> str:
+        if mode == "deep":
+            return cls.longcat_deep_model
+        if mode == "balanced":
+            return cls.longcat_balanced_model
+        return cls.longcat_fast_model
 
     @classmethod
     def gemini_model_for_mode(cls, mode: str) -> str:

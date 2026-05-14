@@ -7,20 +7,19 @@ This layer is intentionally separate from the existing application flow. It runs
 ## What It Does
 
 - Provides the IDA Agentic Core multi-panel workspace.
-- Uses Gemini as the primary LLM provider.
-- Uses Groq as the fallback provider.
+- Uses LongCat as the primary LLM provider, then Gemini, then Groq.
 - Reads the workspace structure for context.
 - Searches project text for relevant files and snippets.
+- Suggests secure next steps after dataset upload and stores accepted/skipped automation decisions under `agentic-layer/runs/`.
 - Helps with explanation, planning, review, and navigation.
 - Includes focus modes for Ask, Plan, Review, Explain, and Search workflows.
 - Includes prompt shortcuts, activity feed, session reset, answer copy, and workflow-context insertion.
 
 ## What It Does Not Do Yet
 
-- It does not edit application files.
-- It does not apply patches.
-- It does not add buttons or panels inside the existing application UI.
+- It does not edit application files outside `agentic-layer/`.
 - It does not change the existing login-to-report workflow.
+- It provides `ui/launcher.js` for a bottom-right main-application launcher when the main app is ready to include it.
 
 ## Run Locally
 
@@ -51,9 +50,14 @@ AGENTIC_HOST=127.0.0.1
 AGENTIC_PORT=5055
 AGENTIC_LOG_LEVEL=info
 
-LLM_PRIMARY_PROVIDER=gemini
-LLM_FALLBACK_PROVIDER=groq
+LLM_PRIMARY_PROVIDER=longcat
+LLM_FALLBACK_PROVIDERS=gemini,groq
 LLM_DEFAULT_MODE=fast
+
+LONGCAT_BASE_URL=https://api.longcat.chat/openai/v1
+LONGCAT_FAST_MODEL=LongCat-Flash-Chat
+LONGCAT_BALANCED_MODEL=LongCat-Flash-Chat
+LONGCAT_DEEP_MODEL=LongCat-Flash-Thinking
 
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_FAST_MODEL=gemini-2.5-flash-lite
@@ -76,10 +80,43 @@ The `.env` file is ignored by Git.
 Default provider mode is `Auto`.
 
 ```text
-Gemini -> Groq -> local workspace context
+LongCat -> Gemini -> Groq -> local workspace context
 ```
 
-If Gemini fails or reaches quota, the server tries Groq. If both providers are unavailable, the layer still returns local workspace tree/search context.
+If LongCat fails or is unavailable, the server tries Gemini, then Groq. If all hosted providers are unavailable, the layer still returns local workspace tree/search context.
+
+## Main App Launcher
+
+The agentic layer stays separate from the main Intelligent Data Assistant flow. When you are ready to attach the bottom-right launcher to the main app, include this script from the running agentic server:
+
+```html
+<script src="http://127.0.0.1:5055/launcher.js"></script>
+```
+
+The launcher opens the IDA Agentic Core workspace with a return URL. The workspace includes a `Back to Application` button that navigates back without changing the main workflow.
+
+## Automation API
+
+The agentic layer exposes local endpoints for upload-aware orchestration:
+
+```text
+POST /api/workflow/suggest
+POST /api/workflow/decision
+```
+
+Suggestions use the confirmed flow:
+
+```text
+login -> data upload -> understanding -> EDA -> cleaning -> time series forecast -> ML forecast -> loss forecast -> profit forecast -> ML assistant -> prediction -> report
+```
+
+Accepted or skipped steps are stored under:
+
+```text
+agentic-layer/runs/<run-id>/
+```
+
+Each run has separate `models`, `performance`, `results`, `reports`, and `decisions` folders so generated artifacts can be consumed by the main application later without exposing API keys.
 
 ## Modes
 
@@ -96,6 +133,7 @@ If Gemini fails or reaches quota, the server tries Groq. If both providers are u
 - Prompt library for workflow, forecast, report, and review tasks.
 - Workspace context panel for frontend, backend, and workflow knowledge areas.
 - Activity timeline showing request and response events.
+- Dataset automation panel with `Accept and Continue` and `Skip` decisions.
 - Composer tools for inserting workflow context, copying the latest answer, and starting a new session.
 
 ## Boundary
@@ -109,5 +147,5 @@ agentic-layer/
 The current application workflow remains separate:
 
 ```text
-login -> data upload -> data understanding -> EDA -> data cleaning -> forecasts -> ML assistant -> prediction -> report
+login -> data upload -> understanding -> EDA -> cleaning -> time series forecast -> ML forecast -> loss forecast -> profit forecast -> ML assistant -> prediction -> report
 ```

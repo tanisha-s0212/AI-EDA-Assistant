@@ -16,6 +16,7 @@ from .workspace import (
 
 
 SUPPORTED_MODES = {"ask", "plan", "review", "explain", "search", "fast", "balanced", "deep"}
+SUPPORTED_PROVIDERS = {"longcat", "gemini", "groq"}
 
 
 @dataclass
@@ -101,6 +102,8 @@ Rules:
 - You may read and summarize the existing application files to answer questions.
 - You are read-only for code changes: do not claim that you changed application files.
 - Help the user understand, plan, review, and navigate the existing project.
+- The main application workflow is: login, data upload, understanding, EDA, cleaning, time series forecast, ML forecast, loss forecast, profit forecast, ML assistant, prediction, report.
+- For dataset-driven automation, recommend secure, auditable next steps with Accept and Continue or Skip decisions.
 - Keep recommendations compatible with the existing workflow unless the user explicitly asks for a future integration plan.
 - When referencing files, include concise relative paths and line hints when available.
 - Never reveal or ask for API keys.
@@ -130,10 +133,16 @@ def respond(message: str, ui_mode: str = "ask", provider: str = "auto") -> Agent
     ]
 
     providers: list[str]
-    if provider in {"gemini", "groq"}:
+    if provider in SUPPORTED_PROVIDERS:
         providers = [provider]
     else:
-        providers = [Settings.primary_provider, Settings.fallback_provider]
+        providers = [
+            Settings.primary_provider,
+            *Settings.fallback_providers,
+            "longcat",
+            "gemini",
+            "groq",
+        ]
 
     errors: list[str] = []
     for index, current_provider in enumerate(dict.fromkeys(providers)):
