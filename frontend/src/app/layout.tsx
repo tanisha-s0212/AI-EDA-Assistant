@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/lib/theme-context";
@@ -15,17 +16,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body
-        className="antialiased bg-background text-foreground min-h-screen"
-        style={{
-          ['--font-geist-sans' as string]: 'ui-sans-serif, system-ui, sans-serif',
-          ['--font-geist-mono' as string]: 'ui-monospace, SFMono-Regular, monospace',
-        }}
-      >
+      <body className="antialiased bg-background text-foreground min-h-screen">
         <ThemeProvider>
           {children}
           <Toaster />
         </ThemeProvider>
+        <Script src="http://127.0.0.1:5055/launcher.js" strategy="afterInteractive" />
       </body>
     </html>
   );

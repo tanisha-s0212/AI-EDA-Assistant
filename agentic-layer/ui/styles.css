@@ -60,14 +60,14 @@ button {
 }
 
 .hidden-scrollbar,
-.pipeline-pane,
+.pipeline-list,
 .history-list {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 
 .hidden-scrollbar::-webkit-scrollbar,
-.pipeline-pane::-webkit-scrollbar,
+.pipeline-list::-webkit-scrollbar,
 .history-list::-webkit-scrollbar {
   display: none;
 }
@@ -189,7 +189,7 @@ button {
 .pipeline-pane {
   gap: 12px;
   border-right: 1px solid var(--border);
-  overflow-y: auto;
+  overflow: hidden;
   padding: 14px;
 }
 
@@ -213,7 +213,13 @@ button {
   display: flex;
   align-items: center;
   gap: 11px;
+  flex: 0 0 auto;
+  min-width: 0;
   padding: 13px;
+}
+
+.brand-panel > div {
+  min-width: 0;
 }
 
 .project-mark {
@@ -285,6 +291,10 @@ label,
   padding: 13px;
 }
 
+.dataset-panel {
+  flex: 0 0 auto;
+}
+
 .automation-form {
   display: grid;
   gap: 7px;
@@ -332,9 +342,23 @@ textarea:focus {
 
 .pipeline-list {
   display: grid;
+  align-content: start;
   gap: 4px;
-  min-height: auto;
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.pipeline-list .section-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: -1px -2px 7px 0;
+  padding: 1px 0 4px;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(248, 250, 252, 0.9) 78%, rgba(248, 250, 252, 0));
 }
 
 .step-item {

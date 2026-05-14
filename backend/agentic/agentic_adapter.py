@@ -406,7 +406,7 @@ def get_session_status(session_id: str) -> JSONResponse:
     return JSONResponse(content={'steps': session['steps'], 'recommendations': session.get('recommendations', []), 'updated_at': session['updated_at']})
 
 
-@agentic_router.get('/session/{session_id}/report')
+@agentic_router.get('/session/{session_id}/report', response_model=None)
 def get_session_report(session_id: str) -> HTMLResponse | JSONResponse:
     if not agentic_enabled():
         return disabled_response()
