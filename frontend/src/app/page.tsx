@@ -59,6 +59,9 @@ import MlForecastTab from '@/components/tabs/ml-forecast-tab';
 import LossForecastTab from '@/components/tabs/loss-forecast-tab';
 import ProfitForecastTab from '@/components/tabs/profit-forecast-tab';
 import ReportTab from '@/components/tabs/report-tab';
+// # AGENTIC LAYER START
+import AgenticWorkspace from '@/components/agentic/agentic-workspace';
+// # AGENTIC LAYER END
 
 const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: 'upload', label: 'Data Upload', icon: Upload },
@@ -717,6 +720,9 @@ export default function HomePage() {
     setCurrentUser,
     logoutUser,
     hasHydrated,
+    // # AGENTIC LAYER START
+    agenticEnabled,
+    // # AGENTIC LAYER END
   } = useAppStore();
   const { toast } = useToast();
   const [isResolvingAuth, setIsResolvingAuth] = React.useState(true);
@@ -1053,6 +1059,11 @@ export default function HomePage() {
                   <UploadTab />
                 </div>
               )}
+              {/* # AGENTIC LAYER START */}
+              {agenticEnabled && hasWorkspace && (
+                <AgenticWorkspace datasetId={activeDatasetId} fileName={displayFileName} />
+              )}
+              {/* # AGENTIC LAYER END */}
               <div className="glass-panel rounded-xl border border-white/78 px-3 py-4 shadow-[0_26px_76px_-42px_rgba(31,95,168,0.36)] ring-1 ring-white/58 dark:border-white/10 dark:ring-white/8 sm:px-5 sm:py-5">
                 <div className="mb-5 flex flex-col gap-3 rounded-xl border border-white/72 bg-white/70 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(31,95,168,0.28)] ring-1 ring-white/54 backdrop-blur-xl transition-all duration-300 hover:bg-white/82 dark:border-white/10 dark:bg-white/8 dark:ring-white/8 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">

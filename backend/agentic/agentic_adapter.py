@@ -15,6 +15,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from agentic.run_artifacts import append_audit_log, read_session_summary, write_decision, write_step_output
+
 agentic_router = APIRouter(prefix='/api/agentic')
 
 PIPELINE_STEPS = [
@@ -45,6 +47,13 @@ class ExecuteStepRequest(BaseModel):
     session_id: str
     step_name: str
     approved_by: str
+
+
+class DecisionRequest(BaseModel):
+    session_id: str
+    step_name: str
+    decision: str
+    reasoning: str = ''
 
 
 def agentic_enabled() -> bool:
@@ -80,6 +89,15 @@ def get_backend_module() -> Any:
 
 
 def read_csv_profile(dataset_path: str) -> dict[str, Any]:
+    backend = get_backend_module()
+    dataset_entry = getattr(backend, 'DATASET_CACHE', {}).get(dataset_path)
+    if dataset_entry is not None:
+        try:
+            frame = backend.load_full_dataset_frame(dataset_path, [])
+            return profile_frame(frame, source=dataset_path)
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f'Failed to profile cached dataset: {error}') from error
+
     path = Path(dataset_path).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
@@ -89,6 +107,10 @@ def read_csv_profile(dataset_path: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail='Agentic profiling currently accepts CSV files only.')
 
     frame = pd.read_csv(path)
+    return profile_frame(frame, source=str(path))
+
+
+def profile_frame(frame: pd.DataFrame, source: str) -> dict[str, Any]:
     date_columns = []
     for column in frame.columns:
         if pd.api.types.is_datetime64_any_dtype(frame[column]):
@@ -103,7 +125,7 @@ def read_csv_profile(dataset_path: str) -> dict[str, Any]:
     numeric_columns = [str(column) for column in frame.select_dtypes(include='number').columns]
 
     return {
-        'path': str(path),
+        'path': source,
         'shape': {'rows': int(frame.shape[0]), 'columns': int(frame.shape[1])},
         'nulls': null_counts,
         'dtypes': dtypes,
@@ -216,6 +238,7 @@ def record_agentic_execution(session_id: str, step_name: str, status: str, outpu
     backend = get_backend_module()
     if not getattr(backend, 'ACTIVITY_DB_AVAILABLE', False):
         _step_executions.setdefault(session_id, []).append(execution)
+        append_audit_log(session_id, 'step_execution_recorded', execution)
         return
     # AGENTIC LAYER START
     try:
@@ -244,6 +267,7 @@ def record_agentic_execution(session_id: str, step_name: str, status: str, outpu
             exc_info=True,
         )
         _step_executions.setdefault(session_id, []).append(execution)
+        append_audit_log(session_id, 'step_execution_recorded', execution)
     # AGENTIC LAYER END
 
 
@@ -314,6 +338,7 @@ def suggest_next_steps(payload: SuggestNextStepsRequest) -> JSONResponse:
     session['profile'] = profile
     session['recommendations'] = recommendations[:1]
     session['updated_at'] = datetime.utcnow().isoformat()
+    append_audit_log(session_id, 'recommendations_created', {'profile': profile, 'recommendations': recommendations})
     return JSONResponse(content={'session_id': session_id, 'profile': profile, 'recommendations': recommendations})
 
 
@@ -345,6 +370,7 @@ def execute_step(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
             'completed_at': datetime.utcnow().isoformat(),
             'output_summary': output_summary,
         })
+        write_step_output(payload.session_id, payload.step_name, {'output_summary': output_summary})
         prepare_next_recommendation(payload.session_id, payload.step_name)
         record_agentic_execution(payload.session_id, payload.step_name, 'completed', output_summary, None)
         return JSONResponse(content={'status': 'completed', 'output_summary': output_summary, 'next_recommendations': session['recommendations']})
@@ -354,6 +380,22 @@ def execute_step(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
         error_message = str(error)
         record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, error_message)
         return JSONResponse(content={'status': 'failed', 'output_summary': None, 'error': error_message}, status_code=500)
+
+
+@agentic_router.post('/decision')
+def record_decision(payload: DecisionRequest) -> JSONResponse:
+    if not agentic_enabled():
+        return disabled_response()
+    if payload.decision not in {'accepted', 'skipped'}:
+        raise HTTPException(status_code=400, detail="decision must be 'accepted' or 'skipped'")
+    session = ensure_session(payload.session_id)
+    if payload.decision == 'skipped':
+        session['steps'][payload.step_name] = 'skipped'
+        prepare_next_recommendation(payload.session_id, payload.step_name)
+    _decisions.setdefault(payload.session_id, []).append(payload.model_dump())
+    write_decision(payload.session_id, payload.step_name, payload.decision, payload.reasoning)
+    session['updated_at'] = datetime.utcnow().isoformat()
+    return JSONResponse(content={'status': 'recorded', 'steps': session['steps'], 'next_recommendations': session.get('recommendations', [])})
 
 
 @agentic_router.get('/session/{session_id}/status')
@@ -369,6 +411,7 @@ def get_session_report(session_id: str) -> HTMLResponse | JSONResponse:
     if not agentic_enabled():
         return disabled_response()
     session = ensure_session(session_id)
+    summary = read_session_summary(session_id)
     rows = ''.join(
         f'<tr><td>{html.escape(step)}</td><td>{html.escape(status)}</td></tr>'
         for step, status in session['steps'].items()
@@ -392,6 +435,8 @@ def get_session_report(session_id: str) -> HTMLResponse | JSONResponse:
         </table>
         <h2>Execution Events</h2>
         <ul>{events or '<li>No execution events recorded.</li>'}</ul>
+        <h2>Artifact Summary</h2>
+        <pre>{html.escape(json.dumps(summary, indent=2, default=str))}</pre>
       </body>
     </html>
     '''
