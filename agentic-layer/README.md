@@ -10,16 +10,18 @@ This layer is intentionally separate from the existing application flow. It runs
 - Uses LongCat as the primary LLM provider, then Gemini, then Groq.
 - Reads the workspace structure for context.
 - Searches project text for relevant files and snippets.
-- Suggests secure next steps after dataset upload and stores accepted/skipped automation decisions under `agentic-layer/runs/`.
+- Suggests secure next steps after dataset upload, executes accepted standalone workflow steps, and stores accepted/skipped automation decisions under `agentic-layer/runs/`.
+- Generates local artifacts for understanding, EDA, cleaning, forecasts, model planning, prediction, and a download-ready HTML workflow report.
 - Helps with explanation, planning, review, and navigation.
 - Includes focus modes for Ask, Plan, Review, Explain, and Search workflows.
 - Includes prompt shortcuts, activity feed, session reset, answer copy, and workflow-context insertion.
 
-## What It Does Not Do Yet
+## Current Boundary
 
 - It does not edit application files outside `agentic-layer/`.
 - It does not change the existing login-to-report workflow.
 - It provides `ui/launcher.js` for a bottom-right main-application launcher when the main app is ready to include it.
+- Standalone automation uses local deterministic CSV analysis. The integrated React workspace can still call the main FastAPI workflow for richer app-native execution.
 
 ## Run Locally
 
@@ -117,6 +119,14 @@ agentic-layer/runs/<run-id>/
 ```
 
 Each run has separate `models`, `performance`, `results`, `reports`, and `decisions` folders so generated artifacts can be consumed by the main application later without exposing API keys.
+
+When a user clicks `Accept and Continue`, the standalone runner executes the accepted step and the remaining local workflow steps in order, then writes:
+
+```text
+agentic-layer/runs/<run-id>/reports/workflow_report.html
+```
+
+The UI exposes this as a local `Download local report` link after execution completes.
 
 ## Modes
 

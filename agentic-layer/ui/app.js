@@ -519,28 +519,82 @@ async function createAutomationRun() {
   }
 }
 
-async function submitDecision(stepId, decision) {
+async function submitDecision(stepId, decision, actionButton) {
   if (!activeRun) {
     return;
   }
-  const response = await fetch("/api/workflow/decision", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      run_id: activeRun.run_id,
-      step_id: stepId,
-      decision,
-    }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    runStatus.textContent = data.error || "Decision could not be stored";
-    return;
+  const item = actionButton?.closest("[data-step-id]");
+  const itemButtons = item ? Array.from(item.querySelectorAll("[data-decision]")) : [];
+  const originalButtonText = actionButton?.textContent || "";
+  const submittingMessage = decision === "accept"
+    ? "Approval submitted, agent is executing the approved workflow now."
+    : "Skip submitted, agent will move to the next recommendation shortly.";
+
+  runStatus.textContent = `${submittingMessage} Step: ${stepId}`;
+  if (item) {
+    item.dataset.decisionState = "submitting";
   }
-  const label = decision === "accept" ? "Accepted and queued" : "Skipped";
-  runStatus.textContent = `${label}: ${stepId}`;
-  addMessage("assistant", `${label} \`${stepId}\` for run \`${activeRun.run_id}\`. The decision and step artifact were stored under the run folder.`, "Automation decision");
-  recordActivity("automation_decision", label, stepId);
+  itemButtons.forEach((button) => {
+    button.disabled = true;
+  });
+  if (actionButton) {
+    actionButton.textContent = decision === "accept" ? "Submitting approval..." : "Submitting skip...";
+  }
+
+  try {
+    const response = await fetch("/api/workflow/decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        run_id: activeRun.run_id,
+        step_id: stepId,
+        decision,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Decision could not be stored");
+    }
+    const label = decision === "accept" ? "Accepted and executed" : "Skipped";
+    const executedCount = Array.isArray(data.executed_steps) ? data.executed_steps.length : 0;
+    const reportUrl = data.report?.download_url || "";
+    const completionMessage = decision === "accept"
+      ? `Approval completed. Agent executed ${executedCount || "the"} workflow step${executedCount === 1 ? "" : "s"} and prepared the local report.`
+      : "Step skipped, agent will resume with the next recommendation shortly.";
+
+    runStatus.textContent = `${completionMessage} Step: ${stepId}`;
+    if (item) {
+      item.dataset.decisionState = decision === "accept" ? "accepted" : "skipped";
+    }
+    if (actionButton) {
+      actionButton.textContent = decision === "accept" ? "Approval submitted" : "Skip submitted";
+    }
+    if (item && reportUrl) {
+      const existingLink = item.querySelector(".report-download-link");
+      existingLink?.remove();
+      const link = document.createElement("a");
+      link.className = "report-download-link";
+      link.href = reportUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Download local report";
+      item.appendChild(link);
+    }
+    const reportLine = reportUrl ? `\n\nReport: ${reportUrl}` : "";
+    addMessage("assistant", `${completionMessage} \`${stepId}\` for run \`${activeRun.run_id}\`. Artifacts were stored under the run folder.${reportLine}`, "Automation decision");
+    recordActivity("automation_decision", label, stepId);
+  } catch (error) {
+    runStatus.textContent = error.message || "Decision could not be stored";
+    if (item) {
+      delete item.dataset.decisionState;
+    }
+    itemButtons.forEach((button) => {
+      button.disabled = false;
+    });
+    if (actionButton) {
+      actionButton.textContent = originalButtonText;
+    }
+  }
 }
 
 createRunButton?.addEventListener("click", createAutomationRun);
@@ -550,7 +604,7 @@ suggestionList?.addEventListener("click", (event) => {
   if (!button || !item) {
     return;
   }
-  submitDecision(item.dataset.stepId, button.dataset.decision);
+  submitDecision(item.dataset.stepId, button.dataset.decision, button);
 });
 
 form.addEventListener("submit", async (event) => {

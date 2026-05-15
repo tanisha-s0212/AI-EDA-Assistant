@@ -616,6 +616,29 @@ h1 {
   font-weight: 850;
 }
 
+.suggestion-item[data-decision-state="submitting"] {
+  border-color: rgba(49, 95, 206, 0.34);
+  background:
+    linear-gradient(180deg, rgba(242, 247, 255, 0.98), rgba(248, 250, 252, 0.94)),
+    var(--surface);
+}
+
+.suggestion-item[data-decision-state="accepted"] {
+  border-color: rgba(22, 131, 72, 0.34);
+  background:
+    linear-gradient(180deg, rgba(239, 250, 244, 0.98), rgba(248, 250, 252, 0.94)),
+    var(--surface);
+}
+
+.suggestion-item[data-decision-state="skipped"] {
+  opacity: 0.72;
+}
+
+.suggestion-actions button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .suggestion-actions button:first-child {
   background: var(--ink);
   color: #fff;
@@ -625,6 +648,23 @@ h1 {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--muted-strong);
+}
+
+.report-download-link {
+  justify-self: end;
+  border: 1px solid rgba(8, 122, 118, 0.28);
+  border-radius: 8px;
+  padding: 8px 11px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  font-size: 12px;
+  font-weight: 850;
+  text-decoration: none;
+}
+
+.report-download-link:hover {
+  border-color: rgba(8, 122, 118, 0.46);
+  color: var(--primary);
 }
 
 .chat-panel {

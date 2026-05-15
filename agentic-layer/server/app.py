@@ -12,11 +12,11 @@ if __package__ in {None, ""}:
     import sys
 
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from server.automation import create_run, record_decision
+    from server.automation import RUNS_ROOT, create_run, record_decision
     from server.agent import respond
     from server.config import AGENTIC_ROOT, Settings
 else:
-    from .automation import create_run, record_decision
+    from .automation import RUNS_ROOT, create_run, record_decision
     from .agent import respond
     from .config import AGENTIC_ROOT, Settings
 
@@ -89,6 +89,15 @@ class AgenticRequestHandler(BaseHTTPRequestHandler):
                     },
                 }
             )
+            return
+
+        if parsed.path.startswith("/runs/"):
+            requested_run_file = unquote(parsed.path.removeprefix("/runs/"))
+            file_path = (RUNS_ROOT / requested_run_file).resolve()
+            if not str(file_path).startswith(str(RUNS_ROOT.resolve())):
+                self.send_error(HTTPStatus.FORBIDDEN, "Invalid run file path")
+                return
+            self._send_file(file_path)
             return
 
         requested = "index.html" if parsed.path in {"/", ""} else unquote(parsed.path.lstrip("/"))
