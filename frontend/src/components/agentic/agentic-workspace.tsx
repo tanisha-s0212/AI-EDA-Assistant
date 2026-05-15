@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
-import type { AgenticStepStatus, Recommendation } from '@/lib/store';
+import type { AgenticStepStatus, ColumnInfo, Recommendation } from '@/lib/store';
 import { cn } from '@/lib/utils';
 
 const PIPELINE_STEPS = [
@@ -58,6 +58,84 @@ function statusProgress(statuses: Record<string, AgenticStepStatus>) {
   return Math.round((completed / PIPELINE_STEPS.length) * 100);
 }
 
+type StoreTabId = ReturnType<typeof useAppStore.getState>['activeTab'];
+
+const STEP_TO_TAB: Record<string, StoreTabId> = {
+  'Data Understanding': 'understanding',
+  EDA: 'eda',
+  'Data Cleaning': 'cleaning',
+  'Time Series Forecast': 'forecast_ts',
+  'ML Forecast': 'forecast_ml',
+  'Loss Forecast': 'loss_forecast',
+  'Profit Forecast': 'profit_forecast',
+  'ML Assistant': 'ml',
+  Prediction: 'prediction',
+  'Report Generation': 'report',
+};
+
+function getNextRecommendation(completedStep: string, findings: string[] = []): Recommendation[] {
+  const currentIndex = PIPELINE_STEPS.indexOf(completedStep);
+  const state = useAppStore.getState();
+  const nextStep = PIPELINE_STEPS.slice(currentIndex + 1).find((step) => {
+    const status = state.agenticStepStatuses[step];
+    return status !== 'completed' && status !== 'skipped';
+  });
+
+  if (!nextStep) return [];
+
+  return [{
+    step: nextStep,
+    reason: 'The previous approved action finished, so the assistant is ready to continue the application workflow.',
+    findings: findings.length ? findings : [`${completedStep} completed.`, 'The next action will run only after approval.'],
+  }];
+}
+
+function getPreferredDateColumn() {
+  const { columns } = useAppStore.getState();
+  return columns.find((column) => column.role === 'datetime')?.name
+    ?? columns.find((column) => /date|month|time|period/i.test(column.name))?.name
+    ?? '';
+}
+
+function getPreferredTargetColumn() {
+  const { columns } = useAppStore.getState();
+  return columns.find((column) => /sales|revenue|amount|profit|loss|target|value|price|cost/i.test(column.name) && column.role === 'numeric')?.name
+    ?? columns.find((column) => column.role === 'numeric')?.name
+    ?? columns.find((column) => !/id$/i.test(column.name) && column.role !== 'identifier')?.name
+    ?? '';
+}
+
+function getAutoFeatureColumns(targetColumn: string) {
+  const { columns } = useAppStore.getState();
+  return columns
+    .filter((column) => column.name !== targetColumn && column.role !== 'identifier')
+    .map((column) => column.name)
+    .slice(0, 30);
+}
+
+function inferProblemType(targetColumn: string): 'regression' | 'classification' {
+  const { columns } = useAppStore.getState();
+  const target = columns.find((column) => column.name === targetColumn);
+  if (!target) return 'regression';
+  return target.role === 'numeric' && target.uniqueCount > 12 ? 'regression' : 'classification';
+}
+
+function normalizePredictionFeatures(features: string[]) {
+  const state = useAppStore.getState();
+  const sampleRow = (state.cleanedData ?? state.rawData ?? [])[0] ?? {};
+  const columnsByName = new Map(state.columns.map((column) => [column.name, column]));
+
+  return Object.fromEntries(features.map((feature) => {
+    const value = sampleRow[feature];
+    const column = columnsByName.get(feature);
+    if (column?.role === 'numeric') {
+      const numericValue = typeof value === 'number' ? value : Number(value);
+      return [feature, Number.isFinite(numericValue) ? numericValue : 0];
+    }
+    return [feature, value == null || value === '' ? 'unknown' : String(value)];
+  }));
+}
+
 export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspaceProps) {
   const {
     agenticSessionId,
@@ -73,6 +151,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const [runningStep, setRunningStep] = React.useState<string | null>(null);
   const [banner, setBanner] = React.useState<string | null>(null);
   const [lastSummary, setLastSummary] = React.useState<string | null>(null);
+  const lastSuggestedDatasetRef = React.useRef<string | null>(null);
 
   const activeRecommendation = agenticRecommendations[0] ?? null;
   const progress = statusProgress(agenticStepStatuses);
@@ -97,9 +176,17 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     const pollStatus = async () => {
       try {
         const response = await apiClient.get<StatusResponse>(`/agentic/session/${agenticSessionId}/status`);
-        Object.entries(response.data.steps ?? {}).forEach(([step, status]) => setAgenticStepStatus(step, status));
+        const currentStatuses = useAppStore.getState().agenticStepStatuses;
+        Object.entries(response.data.steps ?? {}).forEach(([step, status]) => {
+          const currentStatus = currentStatuses[step];
+          if (currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'running') return;
+          setAgenticStepStatus(step, status);
+        });
         if (response.data.recommendations) {
-          setAgenticRecommendations(response.data.recommendations);
+          const hasActiveLocalRecommendation = useAppStore.getState().agenticRecommendations.length > 0;
+          if (!hasActiveLocalRecommendation) {
+            setAgenticRecommendations(response.data.recommendations.slice(0, 1));
+          }
         }
         setAgenticLastSyncedAt(Date.now());
       } catch {
@@ -114,7 +201,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     return () => window.clearInterval(interval);
   }, [agenticSessionId, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticStepStatus]);
 
-  const suggestNextSteps = async () => {
+  const suggestNextSteps = React.useCallback(async () => {
     if (!datasetId) return;
     setIsSuggesting(true);
     setBanner(null);
@@ -123,7 +210,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
         dataset_path: datasetId,
       });
       setAgenticSessionId(response.data.session_id);
-      setAgenticRecommendations(response.data.recommendations);
+      setAgenticRecommendations(response.data.recommendations.slice(0, 1));
       PIPELINE_STEPS.forEach((step) => setAgenticStepStatus(step, 'pending'));
       setAgenticLastSyncedAt(Date.now());
     } catch (error) {
@@ -131,7 +218,13 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     } finally {
       setIsSuggesting(false);
     }
-  };
+  }, [datasetId, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticSessionId, setAgenticStepStatus]);
+
+  React.useEffect(() => {
+    if (!datasetId || health?.agentic_enabled === false || lastSuggestedDatasetRef.current === datasetId) return;
+    lastSuggestedDatasetRef.current = datasetId;
+    void suggestNextSteps();
+  }, [datasetId, health?.agentic_enabled, suggestNextSteps]);
 
   const downloadReport = async (sessionId: string) => {
     const response = await apiClient.get(`/agentic/session/${sessionId}/report`, { responseType: 'blob' });
@@ -145,27 +238,176 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     URL.revokeObjectURL(url);
   };
 
+  const runApprovedStep = async (stepName: string) => {
+    const state = useAppStore.getState();
+    const tab = STEP_TO_TAB[stepName];
+    if (tab) state.setActiveTab(tab);
+
+    if (stepName === 'Data Understanding' || stepName === 'EDA') {
+      return `${stepName} reviewed from the uploaded dataset profile. The application tab is open for inspection.`;
+    }
+
+    if (stepName === 'Data Cleaning') {
+      if (!state.datasetId) {
+        useAppStore.setState({ cleanedData: state.rawData, cleaningDone: true, cleanedRowCount: state.rawData?.length ?? 0 });
+        return 'Cleaning marked complete for the in-browser dataset preview.';
+      }
+
+      const response = await apiClient.post('/clean-dataset', {
+        dataset_id: state.datasetId,
+        remove_duplicates: true,
+        handle_missing: true,
+        convert_dates: true,
+        standardize_names: true,
+        infer_dtypes: true,
+      });
+      const result = response.data;
+      useAppStore.setState({
+        rawData: result.data,
+        cleanedData: result.data,
+        columns: (result.columns ?? state.columns).map((column: ColumnInfo) => ({ ...column, sample: Array.isArray(column.sample) ? column.sample : [] })),
+        cleaningLogs: result.logs ?? [],
+        cleaningDone: true,
+        cleanedRowCount: result.rowCount ?? result.data?.length ?? state.totalRows,
+        loadedRowCount: result.loadedRowCount ?? result.data?.length ?? state.loadedRowCount,
+        previewLoaded: Boolean(result.previewLoaded),
+        duplicates: result.duplicates ?? 0,
+        reportGenerated: false,
+        reportUrl: null,
+      });
+      return `Data Cleaning completed with ${(result.logs ?? []).length} recorded operation(s).`;
+    }
+
+    if (stepName === 'Time Series Forecast' || stepName === 'ML Forecast') {
+      const latest = useAppStore.getState();
+      const dateColumn = getPreferredDateColumn();
+      const targetColumn = getPreferredTargetColumn();
+      if (!dateColumn || !targetColumn) {
+        throw new Error('A date-like column and numeric target are required for automated forecasting.');
+      }
+
+      const isMlForecast = stepName === 'ML Forecast';
+      const response = await apiClient.post(isMlForecast ? '/forecast/ml/run' : '/forecast/ts/run', {
+        dataset_id: latest.datasetId ?? null,
+        data: latest.datasetId ? [] : latest.cleanedData ?? latest.rawData ?? [],
+        date_column: dateColumn,
+        target_column: targetColumn,
+        forecast_periods: 3,
+        test_percentage: 20,
+        ...(isMlForecast
+          ? { lag_periods: 3, model_type: 'gradient_boosting', feature_groups: ['trend', 'calendar', 'lags', 'rolling'] }
+          : { model_type: 'sarima' }),
+      });
+      useAppStore.setState(isMlForecast ? { mlForecastResult: response.data } : { timeSeriesForecastResult: response.data });
+      return `${stepName} completed for ${targetColumn} over ${dateColumn}.`;
+    }
+
+    if (stepName === 'Loss Forecast') {
+      if (!state.datasetId) throw new Error('Loss Forecast needs a cached dataset id.');
+      await state.runLossForecast(state.datasetId, 30);
+      return 'Loss Forecast completed and stored in the application workflow.';
+    }
+
+    if (stepName === 'Profit Forecast') {
+      if (!state.datasetId) throw new Error('Profit Forecast needs a cached dataset id.');
+      await state.runProfitForecast(state.datasetId, 30);
+      return 'Profit Forecast completed and stored in the application workflow.';
+    }
+
+    if (stepName === 'ML Assistant') {
+      const latest = useAppStore.getState();
+      const targetColumn = getPreferredTargetColumn();
+      const featureColumns = getAutoFeatureColumns(targetColumn);
+      if (!targetColumn || featureColumns.length === 0) {
+        throw new Error('Automated model training needs one target and at least one feature column.');
+      }
+
+      const problemType = inferProblemType(targetColumn);
+      const modelType = problemType === 'regression' ? 'ridge_regression' : 'random_forest_classifier';
+      const response = await apiClient.post('/train', {
+        data: latest.datasetId ? [] : latest.cleanedData ?? latest.rawData ?? [],
+        dataset_id: latest.datasetId ?? null,
+        target_column: targetColumn,
+        feature_columns: featureColumns,
+        problem_type: problemType,
+        model_type: modelType,
+        test_size: 0.2,
+        random_state: 42,
+        cv_folds: 5,
+        training_mode: 'fast',
+      });
+      const result = response.data;
+      useAppStore.setState({
+        targetColumn,
+        problemType,
+        selectedFeatures: featureColumns,
+        selectedModel: modelType,
+        modelId: result.model_id ?? null,
+        modelMetrics: result.metrics ?? null,
+        modelTrained: true,
+        featureImportance: result.feature_importance ?? [],
+        uploadedModel: {
+          name: modelType,
+          type: modelType,
+          target: targetColumn,
+          problem: problemType,
+          trainedAt: new Date().toISOString(),
+          metrics: result.metrics ?? {},
+          features: featureColumns,
+        },
+      });
+      return `${modelType} trained for ${targetColumn} using ${featureColumns.length} feature(s).`;
+    }
+
+    if (stepName === 'Prediction') {
+      const latest = useAppStore.getState();
+      if (!latest.modelId) throw new Error('Prediction needs a trained model id.');
+      const features = normalizePredictionFeatures(latest.selectedFeatures);
+      const response = await apiClient.post('/predict', { model_id: latest.modelId, features });
+      const predictionValue = response.data.prediction_label ?? response.data.prediction;
+      useAppStore.setState({
+        predictionResult: predictionValue,
+        predictionAnalysis: `Automated prediction generated from the approved agentic flow for ${latest.targetColumn ?? 'the selected target'}.`,
+        predictionProbabilities: response.data.probabilities ?? null,
+        predictionHistory: [
+          ...latest.predictionHistory,
+          {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            prediction: predictionValue,
+            confidence: response.data.confidence,
+            probabilities: response.data.probabilities,
+            features,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      });
+      return `Prediction completed with result ${String(predictionValue)}.`;
+    }
+
+    if (stepName === 'Report Generation') {
+      if (agenticSessionId) await downloadReport(agenticSessionId);
+      return 'Agentic run report downloaded and the application Report tab is open for the final workflow PDF.';
+    }
+
+    return `${stepName} completed.`;
+  };
+
   const acceptRecommendation = async () => {
     if (!activeRecommendation || !agenticSessionId) return;
-    if (activeRecommendation.step === 'Report Generation') {
-      await downloadReport(agenticSessionId);
-      setAgenticStepStatus(activeRecommendation.step, 'completed');
-      setAgenticRecommendations([]);
-      return;
-    }
 
     setRunningStep(activeRecommendation.step);
     setAgenticStepStatus(activeRecommendation.step, 'running');
     try {
-      const response = await apiClient.post<ExecuteResponse>('/agentic/execute-step', {
+      const outputSummary = await runApprovedStep(activeRecommendation.step);
+      await apiClient.post('/agentic/decision', {
         session_id: agenticSessionId,
         step_name: activeRecommendation.step,
-        approved_by: 'current_user',
+        decision: 'accepted',
+        reasoning: outputSummary,
       });
-      const nextStatus = response.data.status === 'not_yet_wired' ? 'failed' : response.data.status;
-      setAgenticStepStatus(activeRecommendation.step, nextStatus);
-      setLastSummary(response.data.output_summary ?? response.data.error ?? null);
-      setAgenticRecommendations(response.data.next_recommendations ?? []);
+      setAgenticStepStatus(activeRecommendation.step, 'completed');
+      setLastSummary(outputSummary);
+      setAgenticRecommendations(getNextRecommendation(activeRecommendation.step, [outputSummary]));
     } catch (error) {
       setAgenticStepStatus(activeRecommendation.step, 'failed');
       setBanner(getApiErrorMessage(error, 'Agentic layer unavailable — manual mode active'));
@@ -236,7 +478,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" onClick={acceptRecommendation} disabled={Boolean(runningStep)} className="rounded-sm">
                     {runningStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : activeRecommendation.step === 'Report Generation' ? <Download className="mr-2 h-4 w-4" /> : <Check className="mr-2 h-4 w-4" />}
-                    Accept
+                    Accept & Continue
                   </Button>
                   <Button size="sm" variant="outline" onClick={skipRecommendation} disabled={Boolean(runningStep)} className="rounded-sm bg-white/70 dark:bg-white/8">
                     <SkipForward className="mr-2 h-4 w-4" />

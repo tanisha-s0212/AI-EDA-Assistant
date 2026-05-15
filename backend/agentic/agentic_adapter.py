@@ -392,6 +392,17 @@ def record_decision(payload: DecisionRequest) -> JSONResponse:
     if payload.decision == 'skipped':
         session['steps'][payload.step_name] = 'skipped'
         prepare_next_recommendation(payload.session_id, payload.step_name)
+    elif payload.decision == 'accepted':
+        session['steps'][payload.step_name] = 'completed'
+        session['events'].append({
+            'step_name': payload.step_name,
+            'status': 'completed',
+            'approved_by': 'current_user',
+            'completed_at': datetime.utcnow().isoformat(),
+            'output_summary': payload.reasoning,
+        })
+        write_step_output(payload.session_id, payload.step_name, {'output_summary': payload.reasoning})
+        prepare_next_recommendation(payload.session_id, payload.step_name)
     _decisions.setdefault(payload.session_id, []).append(payload.model_dump())
     write_decision(payload.session_id, payload.step_name, payload.decision, payload.reasoning)
     session['updated_at'] = datetime.utcnow().isoformat()
