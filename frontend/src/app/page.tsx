@@ -288,6 +288,15 @@ function getUserInitials(user?: AuthenticatedUser | null) {
   return source.slice(0, 2).toUpperCase();
 }
 
+function maskEmail(value?: string | null) {
+  if (!value || !value.includes('@')) return 'Email hidden';
+  const [name, domain] = value.split('@');
+  const visibleName = name.length <= 2 ? `${name[0] ?? '*'}***` : `${name.slice(0, 2)}***`;
+  const [domainName, ...domainRest] = domain.split('.');
+  const visibleDomain = domainName ? `${domainName[0] ?? '*'}***` : '***';
+  return `${visibleName}@${visibleDomain}${domainRest.length ? `.${domainRest.join('.')}` : ''}`;
+}
+
 function UserAvatar({ user, className }: { user?: AuthenticatedUser | null; className?: string }) {
   return (
     <Avatar className={cn('border border-white/70 bg-white shadow-[0_14px_32px_-22px_rgba(31,95,168,0.55)]', className)}>
@@ -400,6 +409,7 @@ function UserProfileDialog({
   };
   const displayName = name.trim() || currentUser.username;
   const displayEmail = email.trim() || currentUser.email;
+  const privateEmailLabel = maskEmail(displayEmail);
   const hasProfileImage = Boolean(previewUrl || currentUser.profileImageDataUrl);
   const hasChanges =
     name.trim() !== currentUser.username ||
@@ -410,14 +420,14 @@ function UserProfileDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden rounded-xl border border-white/80 bg-[#f5f8fc] p-0 shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#101b2c] sm:max-w-3xl">
-        <div className="relative overflow-hidden bg-[linear-gradient(135deg,#17427c_0%,#2f72bb_58%,#5ab6dc_100%)] px-7 py-7 text-white dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)]">
+        <div className="relative overflow-hidden bg-[linear-gradient(135deg,#123767_0%,#2565a7_58%,#3f9ccc_100%)] px-7 py-7 text-white dark:bg-[linear-gradient(135deg,#14284a_0%,#21558c_54%,#2d7eb2_100%)]">
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(130deg,rgba(255,255,255,0.18)_0%,rgba(255,255,255,0.05)_42%,rgba(0,0,0,0.18)_100%)]" />
           <div className="pointer-events-none absolute -right-12 -top-16 h-44 w-44 rounded-full border border-white/18" />
           <div className="pointer-events-none absolute -bottom-24 left-20 h-52 w-52 rounded-full bg-cyan-200/12 blur-2xl" />
           <DialogHeader className="relative max-w-[29rem] gap-2 text-left">
-            <DialogTitle className="text-2xl font-semibold tracking-normal">User Profile</DialogTitle>
+            <DialogTitle className="text-2xl font-semibold tracking-normal">Account Profile</DialogTitle>
             <DialogDescription className="text-sm leading-6 text-white/82">
-              Account identity, contact details, and workspace profile image.
+              Private workspace identity, access status, and profile image.
             </DialogDescription>
           </DialogHeader>
           <Button
@@ -434,7 +444,7 @@ function UserProfileDialog({
 
         <form onSubmit={handleSaveProfile} className="space-y-5 p-6">
           <section className="grid gap-5 rounded-lg border border-slate-200/90 bg-white p-5 shadow-[0_20px_56px_-42px_rgba(31,95,168,0.42)] dark:border-white/10 dark:bg-white/8 md:grid-cols-[14rem_1fr]">
-            <div className="flex flex-col items-center justify-center rounded-lg border border-slate-200/80 bg-slate-50/80 p-5 dark:border-white/10 dark:bg-white/5">
+            <div className="flex flex-col items-center justify-center rounded-lg border border-slate-200/80 bg-[linear-gradient(180deg,#f8fbff,#eef5fb)] p-5 dark:border-white/10 dark:bg-white/5">
               <div className="relative">
                 <UserAvatar user={avatarPreviewUser} className="size-28 border-4 border-white shadow-[0_22px_48px_-28px_rgba(15,23,42,0.72)]" />
                 <button
@@ -454,6 +464,7 @@ function UserProfileDialog({
               <Badge className="mt-4 rounded-md border border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-50 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-100">
                 {profileStatus}
               </Badge>
+              <p className="mt-3 text-center text-xs leading-5 text-muted-foreground">Profile details are shown with privacy controls by default.</p>
             </div>
 
             <div className="min-w-0 space-y-5">
@@ -461,12 +472,12 @@ function UserProfileDialog({
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Workspace Account</p>
                 <h3 className="mt-2 truncate text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{displayName}</h3>
                 <div className="mt-2 flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
-                  <Mail className="h-4 w-4 shrink-0 text-blue-600" />
-                  <span className="truncate">{displayEmail}</span>
+                  <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span className="truncate">Email hidden for privacy ({privateEmailLabel})</span>
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-3">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/5">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Access</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
@@ -475,10 +486,17 @@ function UserProfileDialog({
                   </p>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/5">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Mode</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Privacy</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
                     <CheckCircle2 className="h-4 w-4 text-blue-600" />
-                    {isEditing ? 'Editing profile' : 'View only'}
+                    Email protected
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Mode</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                    <Pencil className="h-4 w-4 text-sky-600" />
+                    {isEditing ? 'Editing' : 'Review'}
                   </p>
                 </div>
               </div>
@@ -496,11 +514,11 @@ function UserProfileDialog({
               <Input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} minLength={3} maxLength={80} required disabled={!isEditing} className="h-11 rounded-lg bg-slate-50 disabled:opacity-100 dark:bg-white/5" />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="profile-email">Email ID</Label>
+              <Label htmlFor="profile-email">Private Email</Label>
               <Input
                 id="profile-email"
-                type="email"
-                value={email}
+                type={isEditing ? 'email' : 'text'}
+                value={isEditing ? email : privateEmailLabel}
                 onChange={(event) => setEmail(event.target.value)}
                 required
                 disabled={!isEditing}
@@ -679,7 +697,7 @@ function SidebarContent({
             <p className="truncate text-sm font-semibold leading-5 text-foreground">
               {currentUser?.username ?? 'Workspace User'}
             </p>
-            <p className="truncate text-xs text-muted-foreground">{currentUser?.email ?? 'View profile'}</p>
+            <p className="truncate text-xs text-muted-foreground">Private workspace profile</p>
           </div>
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 text-blue-700 transition-all duration-300 group-hover:translate-x-0.5 group-hover:bg-blue-100 dark:border-white/10 dark:bg-white/8 dark:text-cyan-100">
             <ChevronRight className="h-4 w-4" />
@@ -948,7 +966,7 @@ export default function HomePage() {
           <div className="mx-auto max-w-7xl px-4 pb-6 pt-3 sm:px-6 sm:pt-4 lg:px-8">
             <div className="sticky top-0 z-30 -mx-4 mb-5 border-b border-white/55 bg-[linear-gradient(180deg,rgba(237,241,246,0.92),rgba(237,241,246,0.74))] px-4 py-3 backdrop-blur-2xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.92),rgba(18,32,52,0.76))] sm:-mx-6 sm:mb-6 sm:px-6 sm:py-4 lg:-mx-8 lg:px-8">
               <div className="mx-auto max-w-7xl">
-                <div className="group relative overflow-hidden rounded-xl border border-white/70 bg-[linear-gradient(135deg,rgba(47,95,168,0.96)_0%,rgba(78,142,211,0.94)_56%,rgba(103,179,223,0.9)_100%)] p-4 text-white shadow-[0_28px_82px_-44px_rgba(31,95,168,0.72)] ring-1 ring-blue-100/30 backdrop-blur-2xl transition-all duration-500 hover:shadow-[0_32px_92px_-44px_rgba(31,95,168,0.8)] dark:border-white/12 dark:bg-[linear-gradient(135deg,rgba(20,40,74,0.96)_0%,rgba(33,85,140,0.92)_54%,rgba(45,126,178,0.9)_100%)] sm:p-5">
+                <div className="group relative overflow-hidden rounded-xl border border-white/70 bg-[linear-gradient(135deg,rgba(28,73,124,0.98)_0%,rgba(50,112,181,0.96)_56%,rgba(74,154,205,0.94)_100%)] p-4 text-white shadow-[0_28px_82px_-44px_rgba(31,95,168,0.72)] ring-1 ring-blue-100/30 backdrop-blur-2xl transition-all duration-500 hover:shadow-[0_32px_92px_-44px_rgba(31,95,168,0.8)] dark:border-white/12 dark:bg-[linear-gradient(135deg,rgba(20,40,74,0.96)_0%,rgba(33,85,140,0.92)_54%,rgba(45,126,178,0.9)_100%)] sm:p-5">
                   <div className="pointer-events-none absolute inset-0 opacity-80">
                     <div className="absolute -left-12 top-8 h-28 w-28 rounded-full bg-white/16 blur-3xl transition-transform duration-700 group-hover:scale-125" />
                     <div className="absolute right-0 top-0 h-36 w-36 rounded-full bg-blue-100/16 blur-3xl transition-transform duration-700 group-hover:translate-x-4 group-hover:-translate-y-2" />
@@ -975,15 +993,7 @@ export default function HomePage() {
                           </SheetContent>
                         </Sheet>
                         <div className="min-w-0">
-                          <div className="mb-3 flex flex-wrap items-center gap-3">
-                            <span className="rounded-full border border-white/14 bg-white/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.26em] text-white/86 backdrop-blur-md">
-                              Client Analytics Workspace
-                            </span>
-                            <span className="hidden h-1 w-1 rounded-full bg-slate-400/70 sm:inline-block" />
-                            <span className="text-xs font-medium text-white/76">
-                              {activeTabMeta.label}
-                            </span>
-                          </div>
+                          <div className="mb-3 text-xs font-semibold text-white/78">{activeTabMeta.label}</div>
                           <div className="flex items-center gap-3">
                             <ApplicationLogo />
                             <div className="min-w-0 border-l border-white/14 pl-3">
@@ -1003,10 +1013,6 @@ export default function HomePage() {
                               <ShieldCheck className="mr-2 h-3.5 w-3.5 text-sky-300" />
                               PostgreSQL activity tracking connected
                             </Badge>
-                            <Badge variant="outline" className="rounded-full !border-white/18 !bg-white/12 px-3 py-1 !text-white shadow-sm backdrop-blur-md">
-                              <RefreshCw className={cn('mr-2 h-3.5 w-3.5 text-cyan-300', isRefreshingActivity && 'animate-spin')} />
-                              {sessionContinuity.freshness}
-                            </Badge>
                           </div>
                         </div>
                       </div>
@@ -1024,8 +1030,6 @@ export default function HomePage() {
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-300">
                             <span>{liveIndiaDate}</span>
-                            <span className="text-slate-500">|</span>
-                            <span>{sessionContinuity.status}</span>
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 xl:justify-end">

@@ -123,7 +123,6 @@ export default function MlForecastTab() {
   const cleanedData = useAppStore((state) => state.cleanedData);
   const columns = useAppStore((state) => state.columns);
   const datasetId = useAppStore((state) => state.datasetId);
-  const modelTrained = useAppStore((state) => state.modelTrained);
   const storedResult = useAppStore((state) => state.mlForecastResult);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const data = cleanedData ?? rawData ?? [];
@@ -669,7 +668,7 @@ export default function MlForecastTab() {
                         <p className="text-sm leading-6 text-muted-foreground">{result.analysis}</p>
                         <div className="flex justify-end gap-2">
                           <Button variant="outline" onClick={() => setCurrentStep(2)}>Try Another ML Forecast Model</Button>
-                          <Button onClick={() => setActiveTab(modelTrained ? 'prediction' : 'ml')} className="gap-2">{modelTrained ? 'Continue To Prediction' : 'Continue To ML Assistant'}<ArrowRight className="h-4 w-4" /></Button>
+                          <Button onClick={() => setActiveTab('loss_forecast')} className="gap-2">Continue To Loss Forecast<ArrowRight className="h-4 w-4" /></Button>
                         </div>
                       </CardContent>
                     </Card>

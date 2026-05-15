@@ -33,6 +33,27 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 const currency = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const number = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
+const compactNumber = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
+
+function compactCurrency(value: number | string) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return '₹0';
+
+  const sign = numericValue < 0 ? '-' : '';
+  const absoluteValue = Math.abs(numericValue);
+  if (absoluteValue >= 1_00_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_00_000)} Cr`;
+  if (absoluteValue >= 1_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_000)} L`;
+  if (absoluteValue >= 1_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_000)} K`;
+  return `${sign}${currency.format(absoluteValue)}`;
+}
+
+function currencyTooltip(value: number | string) {
+  return currency.format(Number(value) || 0);
+}
+
+function percentAxis(value: number | string) {
+  return `${number.format(Number(value) || 0)}%`;
+}
 
 const SCENARIOS: ProfitScenario[] = ['optimistic', 'baseline', 'pessimistic'];
 const PERIOD_OPTIONS = [
@@ -265,8 +286,8 @@ export default function ProfitForecastTab() {
                     <ComposedChart data={waterfallData(firstActive)}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="name" />
-                      <YAxis tickFormatter={(value) => currency.format(Number(value)).replace('.00', '')} />
-                      <RechartsTooltip formatter={(value: number) => currency.format(value)} />
+                      <YAxis width={76} tickFormatter={compactCurrency} />
+                      <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                       <Bar dataKey="value" radius={[8, 8, 0, 0]}>
                         {waterfallData(firstActive).map((row) => <Cell key={row.name} fill={row.fill} />)}
                       </Bar>
@@ -287,8 +308,8 @@ export default function ProfitForecastTab() {
                       <LineChart data={combinedLineData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis />
-                        <RechartsTooltip formatter={(value: number) => currency.format(value)} />
+                        <YAxis width={76} tickFormatter={compactCurrency} />
+                        <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                         <Legend />
                         <ReferenceLine y={0} stroke="#64748b" label="Break-even" />
                         <Line connectNulls dataKey="optimistic" stroke="#10b981" strokeWidth={3} />
@@ -309,8 +330,8 @@ export default function ProfitForecastTab() {
                       <AreaChart data={activeRows}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis tickFormatter={(value) => `${value}%`} />
-                        <RechartsTooltip formatter={(value: number) => `${number.format(value)}%`} />
+                        <YAxis width={56} tickFormatter={percentAxis} />
+                        <RechartsTooltip formatter={(value: number) => percentAxis(value)} />
                         <Legend />
                         <Area dataKey="gross_margin_pct" name="Gross Margin %" stroke="#2563eb" fill="#bfdbfe" />
                         <Area dataKey="net_margin_pct" name="Net Margin %" stroke="#10b981" fill="#bbf7d0" />
@@ -331,8 +352,8 @@ export default function ProfitForecastTab() {
                       <BarChart data={groupedBarData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis />
-                        <RechartsTooltip formatter={(value: number) => currency.format(value)} />
+                        <YAxis width={76} tickFormatter={compactCurrency} />
+                        <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                         <Legend />
                         <Bar dataKey="revenue" name="Forecasted Revenue" fill="#2563eb" />
                         <Bar dataKey="costs" name="Total Costs" fill="#f97316" />

@@ -4443,7 +4443,11 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         if request.convert_dates:
             converted_columns: list[str] = []
             for column in frame.columns:
-                parsed_series = try_parse_datetime_series(frame[column])
+                try:
+                    parsed_series = try_parse_datetime_series(frame[column])
+                except Exception:
+                    logger.warning('Skipping date conversion for column %s during cleaning.', column, exc_info=True)
+                    continue
                 if parsed_series is None or parsed_series.notna().sum() == 0:
                     continue
                 frame[column] = parsed_series.dt.strftime('%Y-%m-%d').where(parsed_series.notna(), None)
@@ -4548,12 +4552,16 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         converted_columns: list[str] = []
         date_expressions: list[pl.Expr] = []
         for column, dtype in frame.schema.items():
-            parsed_expr = build_polars_datetime_expr(column, dtype)
-            sample = frame.select(parsed_expr.alias('__parsed_date')).drop_nulls().head(50).to_series()
-            if sample.len() == 0:
-                continue
-            success_ratio = float(sample.len() / min(50, max(1, frame.select(pl.col(column).drop_nulls().len()).item()))) if frame.height > 0 else 0.0
-            if dtype not in pl.TEMPORAL_DTYPES and success_ratio < 0.6:
+            try:
+                parsed_expr = build_polars_datetime_expr(column, dtype)
+                sample = frame.select(parsed_expr.alias('__parsed_date')).drop_nulls().head(50).to_series()
+                if sample.len() == 0:
+                    continue
+                success_ratio = float(sample.len() / min(50, max(1, frame.select(pl.col(column).drop_nulls().len()).item()))) if frame.height > 0 else 0.0
+                if dtype not in pl.TEMPORAL_DTYPES and success_ratio < 0.6:
+                    continue
+            except Exception:
+                logger.warning('Skipping date conversion for column %s during cleaning.', column, exc_info=True)
                 continue
             date_expressions.append(
                 pl.when(pl.col(column).is_null())

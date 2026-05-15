@@ -454,6 +454,79 @@ export default function CleaningTab() {
 
     setIsProcessing(true);
 
+    const runPreviewCleaning = async (fallbackReason?: string) => {
+      const logs: CleaningLog[] = [];
+      let currentData = [...rawData];
+
+      await new Promise((r) => setTimeout(r, 300));
+
+      if (ops.removeDuplicates) {
+        const result = removeDuplicates(currentData);
+        currentData = result.cleaned;
+        logs.push(result.log);
+      }
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      if (ops.handleMissing) {
+        const result = handleMissingValues(currentData, columns);
+        currentData = result.cleaned;
+        logs.push(result.log);
+      }
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      if (ops.convertDates) {
+        const result = convertDates(currentData, columns);
+        currentData = result.cleaned;
+        logs.push(result.log);
+      }
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      if (ops.standardizeNames) {
+        const result = standardizeNames(currentData, columns);
+        currentData = result.cleaned;
+        logs.push(result.log);
+      }
+
+      useAppStore.setState({
+        rawData: currentData,
+        cleanedData: currentData,
+        columns: buildColumnInfo(currentData),
+        cleaningLogs: logs,
+        cleaningDone: true,
+        cleanedRowCount: currentData.length,
+        loadedRowCount: currentData.length,
+        previewLoaded: false,
+        duplicates: ops.removeDuplicates ? 0 : duplicates,
+        targetColumn: null,
+        selectedFeatures: [],
+        selectedModel: null,
+        modelId: null,
+        modelMetrics: null,
+        modelTrained: false,
+        featureImportance: null,
+        predictionResult: null,
+        predictionAnalysis: null,
+        predictionProbabilities: null,
+        predictionHistory: [],
+        timeSeriesForecastResult: null,
+        mlForecastResult: null,
+        reportGenerated: false,
+        reportUrl: null,
+        aiInsights: null,
+      });
+
+      setLogsOpen(true);
+      toast({
+        title: fallbackReason ? 'Cleaning completed in preview mode' : 'Cleaning Complete',
+        description: fallbackReason
+          ? `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied to the loaded preview. ${fallbackReason}`
+          : `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied successfully. ${currentData.length.toLocaleString()} rows remaining.`,
+      });
+    };
+
     try {
       if (datasetId) {
         const response = await apiClient.post('/clean-dataset', {
@@ -513,73 +586,12 @@ export default function CleaningTab() {
         return;
       }
 
-      const logs: CleaningLog[] = [];
-      let currentData = [...rawData];
-
-      await new Promise((r) => setTimeout(r, 300));
-
-      if (ops.removeDuplicates) {
-        const result = removeDuplicates(currentData);
-        currentData = result.cleaned;
-        logs.push(result.log);
-      }
-
-      await new Promise((r) => setTimeout(r, 200));
-
-      if (ops.handleMissing) {
-        const result = handleMissingValues(currentData, columns);
-        currentData = result.cleaned;
-        logs.push(result.log);
-      }
-
-      await new Promise((r) => setTimeout(r, 200));
-
-      if (ops.convertDates) {
-        const result = convertDates(currentData, columns);
-        currentData = result.cleaned;
-        logs.push(result.log);
-      }
-
-      await new Promise((r) => setTimeout(r, 200));
-
-      if (ops.standardizeNames) {
-        const result = standardizeNames(currentData, columns);
-        currentData = result.cleaned;
-        logs.push(result.log);
-      }
-
-      useAppStore.setState({
-        rawData: currentData,
-        cleanedData: currentData,
-        columns: buildColumnInfo(currentData),
-        cleaningLogs: logs,
-        cleaningDone: true,
-        cleanedRowCount: currentData.length,
-        duplicates: ops.removeDuplicates ? 0 : duplicates,
-        targetColumn: null,
-        selectedFeatures: [],
-        selectedModel: null,
-        modelId: null,
-        modelMetrics: null,
-        modelTrained: false,
-        featureImportance: null,
-        predictionResult: null,
-        predictionAnalysis: null,
-        predictionProbabilities: null,
-        predictionHistory: [],
-        timeSeriesForecastResult: null,
-        mlForecastResult: null,
-        reportGenerated: false,
-        reportUrl: null,
-        aiInsights: null,
-      });
-
-      setLogsOpen(true);
-      toast({
-        title: 'Cleaning Complete',
-        description: `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied successfully. ${currentData.length.toLocaleString()} rows remaining.`,
-      });
+      await runPreviewCleaning();
     } catch (error) {
+      if (datasetId && rawData.length > 0) {
+        await runPreviewCleaning(getApiErrorMessage(error, 'Full dataset cleaning could not be completed.'));
+        return;
+      }
       toast({
         title: 'Cleaning failed',
         description: getApiErrorMessage(error, 'The cleaning workflow could not be completed for this dataset.'),

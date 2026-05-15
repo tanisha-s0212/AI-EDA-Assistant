@@ -31,6 +31,23 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 const currency = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const percent = new Intl.NumberFormat('en-IN', { style: 'percent', maximumFractionDigits: 1 });
+const compactNumber = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
+
+function compactCurrency(value: number | string) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return '₹0';
+
+  const sign = numericValue < 0 ? '-' : '';
+  const absoluteValue = Math.abs(numericValue);
+  if (absoluteValue >= 1_00_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_00_000)} Cr`;
+  if (absoluteValue >= 1_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_000)} L`;
+  if (absoluteValue >= 1_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_000)} K`;
+  return `${sign}${currency.format(absoluteValue)}`;
+}
+
+function currencyTooltip(value: number | string) {
+  return currency.format(Number(value) || 0);
+}
 
 const LOSS_COLORS = {
   revenue_loss: '#ef4444',
@@ -237,8 +254,8 @@ export default function LossForecastTab() {
                   <LineChart data={lossForecast}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="period" />
-                    <YAxis tickFormatter={(value) => currency.format(Number(value)).replace('.00', '')} />
-                    <RechartsTooltip formatter={(value: number) => currency.format(value)} />
+                    <YAxis width={76} tickFormatter={compactCurrency} />
+                    <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                     <Legend />
                     <Line dataKey="revenue_loss" name="Revenue Loss" stroke={LOSS_COLORS.revenue_loss} strokeWidth={2} />
                     <Line dataKey="operational_loss" name="Operational Loss" stroke={LOSS_COLORS.operational_loss} strokeWidth={2} />
@@ -262,8 +279,8 @@ export default function LossForecastTab() {
                   <BarChart data={lossForecast}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="period" />
-                    <YAxis />
-                    <RechartsTooltip formatter={(value: number) => currency.format(value)} />
+                    <YAxis width={76} tickFormatter={compactCurrency} />
+                    <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                     <Legend />
                     <Bar dataKey="revenue_loss" stackId="loss" fill={LOSS_COLORS.revenue_loss} name="Revenue" />
                     <Bar dataKey="operational_loss" stackId="loss" fill={LOSS_COLORS.operational_loss} name="Operational" />
@@ -294,10 +311,10 @@ export default function LossForecastTab() {
                     <Pie data={segmentRows} dataKey="total_loss" nameKey="segment" innerRadius={72} outerRadius={112} paddingAngle={2}>
                       {segmentRows.map((_, index) => <Cell key={index} fill={['#ef4444', '#f97316', '#f59e0b', '#8b5cf6', '#14b8a6', '#2563eb'][index % 6]} />)}
                     </Pie>
-                    <RechartsTooltip formatter={(value: number) => currency.format(value)} />
+                    <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                     <Legend />
                     <text x="50%" y="50%" textAnchor="middle" dominantBaseline="middle" className="fill-foreground text-sm font-bold">
-                      {currency.format(totalSegmentLoss)}
+                      {compactCurrency(totalSegmentLoss)}
                     </text>
                   </PieChart>
                 </ResponsiveContainer>
