@@ -508,11 +508,14 @@ const store = create<AppState>()(
           const response = await apiClient.post('/loss-forecast/run', { session_id: sessionId, forecast_periods: periods });
           set({
             lossForecast: response.data.loss_forecast ?? [],
+            lossSegments: response.data.segments ?? [],
             lossSummary: response.data.summary ?? null,
             lossLoading: false,
             lossError: null,
           });
-          await get().fetchLossSegments(sessionId);
+          if (!response.data.segments?.length) {
+            await get().fetchLossSegments(sessionId);
+          }
         } catch (error) {
           set({ lossLoading: false, lossError: getApiErrorMessage(error, 'Loss forecast failed.') });
           throw error;

@@ -3,6 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, ArrowRight, Landmark, Loader2, Lock, Scale, TrendingUp, Wallet, Zap } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import {
   Area,
   AreaChart,
@@ -51,6 +52,18 @@ function currencyTooltip(value: number | string) {
   return currency.format(Number(value) || 0);
 }
 
+function formatIndianAxis(value: number | string) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return '\u20b90';
+
+  const sign = numericValue < 0 ? '-' : '';
+  const absoluteValue = Math.abs(numericValue);
+  if (absoluteValue >= 10000000) return `${sign}\u20b9${(absoluteValue / 10000000).toFixed(1)}Cr`;
+  if (absoluteValue >= 100000) return `${sign}\u20b9${(absoluteValue / 100000).toFixed(1)}L`;
+  if (absoluteValue >= 1000) return `${sign}\u20b9${(absoluteValue / 1000).toFixed(1)}K`;
+  return `${sign}\u20b9${absoluteValue}`;
+}
+
 function percentAxis(value: number | string) {
   return `${number.format(Number(value) || 0)}%`;
 }
@@ -78,9 +91,14 @@ function scenarioColor(scenario: ProfitScenario) {
 }
 
 function deltaText(value: number, baseline: number) {
-  if (!baseline) return '0%';
+  if (!baseline) return null;
   const delta = ((value - baseline) / Math.abs(baseline)) * 100;
   return `${delta >= 0 ? '+' : ''}${number.format(delta)}%`;
+}
+
+function deltaBadgeClass(delta: string | null) {
+  if (!delta) return '';
+  return delta.startsWith('-') ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700';
 }
 
 function SkeletonBlock({ className = 'h-72' }: { className?: string }) {
@@ -168,6 +186,14 @@ export default function ProfitForecastTab() {
     };
   });
 
+  const kpiCards: { label: string; value: string; delta: string | null; Icon: LucideIcon }[] = [
+    { label: 'Forecasted Revenue', value: currency.format(summary.selected.revenue), delta: scenario === 'baseline' ? null : deltaText(summary.selected.revenue, summary.baseline.revenue), Icon: Wallet },
+    { label: 'Gross Profit', value: currency.format(summary.selected.grossProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossProfit, summary.baseline.grossProfit), Icon: TrendingUp },
+    { label: 'Net Profit', value: currency.format(summary.selected.netProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netProfit, summary.baseline.netProfit), Icon: Landmark },
+    { label: 'Gross Margin %', value: `${number.format(summary.selected.grossMargin)}%`, delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossMargin, summary.baseline.grossMargin), Icon: Scale },
+    { label: 'Net Margin %', value: `${number.format(summary.selected.netMargin)}%`, delta: scenario === 'baseline' ? null : deltaText(summary.selected.netMargin, summary.baseline.netMargin), Icon: Scale },
+  ];
+
   const handleRun = async () => {
     if (!datasetId) return;
     try {
@@ -252,21 +278,15 @@ export default function ProfitForecastTab() {
       ) : activeRows.length ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-            {[
-              ['Forecasted Revenue', currency.format(summary.selected.revenue), deltaText(summary.selected.revenue, summary.baseline.revenue), Wallet],
-              ['Gross Profit', currency.format(summary.selected.grossProfit), deltaText(summary.selected.grossProfit, summary.baseline.grossProfit), TrendingUp],
-              ['Net Profit', currency.format(summary.selected.netProfit), deltaText(summary.selected.netProfit, summary.baseline.netProfit), Landmark],
-              ['Gross Margin %', `${number.format(summary.selected.grossMargin)}%`, deltaText(summary.selected.grossMargin, summary.baseline.grossMargin), Scale],
-              ['Net Margin %', `${number.format(summary.selected.netMargin)}%`, deltaText(summary.selected.netMargin, summary.baseline.netMargin), Scale],
-            ].map(([label, value, delta, Icon], index) => (
-              <motion.div key={String(label)} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.1 }}>
+            {kpiCards.map(({ label, value, delta, Icon }, index) => (
+              <motion.div key={label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.1 }}>
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardDescription>{String(label)}</CardDescription>
-                    <CardTitle className="text-lg">{String(value)}</CardTitle>
+                    <CardDescription>{label}</CardDescription>
+                    <CardTitle className="text-lg">{value}</CardTitle>
                   </CardHeader>
                   <CardContent className="flex items-center justify-between">
-                    <Badge variant="outline">{String(delta)} vs baseline</Badge>
+                    {delta ? <Badge variant="outline" className={deltaBadgeClass(delta)}>{delta} vs baseline</Badge> : <span />}
                     <Icon className="h-5 w-5 text-emerald-600" />
                   </CardContent>
                 </Card>
@@ -286,7 +306,7 @@ export default function ProfitForecastTab() {
                     <ComposedChart data={waterfallData(firstActive)}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="name" />
-                      <YAxis width={76} tickFormatter={compactCurrency} />
+                      <YAxis width={76} tickFormatter={formatIndianAxis} />
                       <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                       <Bar dataKey="value" radius={[8, 8, 0, 0]}>
                         {waterfallData(firstActive).map((row) => <Cell key={row.name} fill={row.fill} />)}
@@ -308,7 +328,7 @@ export default function ProfitForecastTab() {
                       <LineChart data={combinedLineData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis width={76} tickFormatter={compactCurrency} />
+                        <YAxis width={76} tickFormatter={formatIndianAxis} />
                         <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                         <Legend />
                         <ReferenceLine y={0} stroke="#64748b" label="Break-even" />
@@ -352,7 +372,7 @@ export default function ProfitForecastTab() {
                       <BarChart data={groupedBarData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis width={76} tickFormatter={compactCurrency} />
+                        <YAxis width={76} tickFormatter={formatIndianAxis} />
                         <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                         <Legend />
                         <Bar dataKey="revenue" name="Forecasted Revenue" fill="#2563eb" />

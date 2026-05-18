@@ -49,6 +49,18 @@ function currencyTooltip(value: number | string) {
   return currency.format(Number(value) || 0);
 }
 
+function formatIndianAxis(value: number | string) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return '\u20b90';
+
+  const sign = numericValue < 0 ? '-' : '';
+  const absoluteValue = Math.abs(numericValue);
+  if (absoluteValue >= 10000000) return `${sign}\u20b9${(absoluteValue / 10000000).toFixed(1)}Cr`;
+  if (absoluteValue >= 100000) return `${sign}\u20b9${(absoluteValue / 100000).toFixed(1)}L`;
+  if (absoluteValue >= 1000) return `${sign}\u20b9${(absoluteValue / 1000).toFixed(1)}K`;
+  return `${sign}\u20b9${absoluteValue}`;
+}
+
 const LOSS_COLORS = {
   revenue_loss: '#ef4444',
   operational_loss: '#f97316',
@@ -141,7 +153,7 @@ export default function LossForecastTab() {
   const pageRows = sortedRows.slice(page * 10, page * 10 + 10);
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / 10));
   const filteredSegments = lossSegments.filter((item) => item.segment_type === segmentView);
-  const segmentRows = filteredSegments.length ? filteredSegments : lossSegments;
+  const segmentRows = filteredSegments;
   const totalSegmentLoss = segmentRows.reduce((sum, row) => sum + row.total_loss, 0);
   const heatmapRows = buildHeatmap(lossForecast, segmentRows);
 
@@ -254,7 +266,7 @@ export default function LossForecastTab() {
                   <LineChart data={lossForecast}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="period" />
-                    <YAxis width={76} tickFormatter={compactCurrency} />
+                    <YAxis width={76} tickFormatter={formatIndianAxis} />
                     <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                     <Legend />
                     <Line dataKey="revenue_loss" name="Revenue Loss" stroke={LOSS_COLORS.revenue_loss} strokeWidth={2} />
@@ -279,7 +291,7 @@ export default function LossForecastTab() {
                   <BarChart data={lossForecast}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="period" />
-                    <YAxis width={76} tickFormatter={compactCurrency} />
+                    <YAxis width={76} tickFormatter={formatIndianAxis} />
                     <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
                     <Legend />
                     <Bar dataKey="revenue_loss" stackId="loss" fill={LOSS_COLORS.revenue_loss} name="Revenue" />
@@ -306,18 +318,24 @@ export default function LossForecastTab() {
                 </div>
               </CardHeader>
               <CardContent className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={segmentRows} dataKey="total_loss" nameKey="segment" innerRadius={72} outerRadius={112} paddingAngle={2}>
-                      {segmentRows.map((_, index) => <Cell key={index} fill={['#ef4444', '#f97316', '#f59e0b', '#8b5cf6', '#14b8a6', '#2563eb'][index % 6]} />)}
-                    </Pie>
-                    <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
-                    <Legend />
-                    <text x="50%" y="50%" textAnchor="middle" dominantBaseline="middle" className="fill-foreground text-sm font-bold">
-                      {compactCurrency(totalSegmentLoss)}
-                    </text>
-                  </PieChart>
-                </ResponsiveContainer>
+                {segmentRows.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={segmentRows} dataKey="total_loss" nameKey="segment" innerRadius={72} outerRadius={112} paddingAngle={2}>
+                        {segmentRows.map((_, index) => <Cell key={index} fill={['#ef4444', '#f97316', '#f59e0b', '#8b5cf6', '#14b8a6', '#2563eb'][index % 6]} />)}
+                      </Pie>
+                      <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                      <Legend />
+                      <text x="50%" y="50%" textAnchor="middle" dominantBaseline="middle" className="fill-foreground text-sm font-bold">
+                        {compactCurrency(totalSegmentLoss)}
+                      </text>
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+                    No segment data available
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

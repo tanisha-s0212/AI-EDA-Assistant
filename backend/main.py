@@ -3598,10 +3598,11 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
 
 
 LOSS_COLUMN_PATTERNS = {
+    'revenue_loss': re.compile(r'revenue_loss|lost_revenue|missed_revenue|sales_loss|lost_sales|lost_sale', re.IGNORECASE),
     'returns': re.compile(r'return|refund|return_qty', re.IGNORECASE),
     'discount': re.compile(r'discount|promo|markdown', re.IGNORECASE),
     'waste': re.compile(r'waste|spoil|damage|scrap', re.IGNORECASE),
-    'stockout': re.compile(r'stockout|missed_revenue|lost_sale', re.IGNORECASE),
+    'stockout': re.compile(r'stockout|stock_out|out_of_stock', re.IGNORECASE),
     'quantity': re.compile(r'quantity|qty|units', re.IGNORECASE),
     'unit_cost': re.compile(r'unit_cost|cost_per_unit|unit_cogs|cost_each', re.IGNORECASE),
     'cost': re.compile(r'\bcogs\b|cost_of_goods|total_cost|direct_cost|cost_amount|purchase_cost|material_cost|cost\b', re.IGNORECASE),
@@ -3611,7 +3612,7 @@ LOSS_COLUMN_PATTERNS = {
     'margin_pct': re.compile(r'gross_margin_pct|gross_margin_percent|margin_pct|margin_percent|margin_rate', re.IGNORECASE),
     'category': re.compile(r'category|product|segment|sku|item', re.IGNORECASE),
     'region': re.compile(r'region|market|territory|location|state|city', re.IGNORECASE),
-    'revenue': re.compile(r'revenue|sales|amount|total|net_sales', re.IGNORECASE),
+    'revenue': re.compile(r'^(?!.*(?:loss|lost|missed)).*(revenue|sales|amount|total|net_sales)', re.IGNORECASE),
     'date': re.compile(r'date|month|period|time', re.IGNORECASE),
     'price': re.compile(r'price|unit_price|rate', re.IGNORECASE),
 }
@@ -3811,6 +3812,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
         )
 
     returns_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['returns'], numeric=True)
+    revenue_loss_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue_loss'], numeric=True)
     discount_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['discount'], numeric=True)
     waste_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['waste'], numeric=True)
     stockout_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['stockout'], numeric=True)
@@ -3835,6 +3837,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     gross_profit = (revenue - actual_cost).clip(lower=0)
     operating_cost, operating_source, operating_ratio = resolve_operating_expense_series(work, revenue_column, gross_profit)
     returns = numeric_series(work, returns_column, 0.0).clip(lower=0)
+    raw_revenue_loss = numeric_series(work, revenue_loss_column, 0.0).clip(lower=0)
     discounts = numeric_series(work, discount_column, 0.0).clip(lower=0)
     waste = numeric_series(work, waste_column, 0.0).clip(lower=0)
     stockout = numeric_series(work, stockout_column, 0.0).clip(lower=0)
@@ -3851,12 +3854,16 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     if float(unit_cost.sum()) == 0:
         unit_cost = inferred_unit_cost
     work['_actual_revenue'] = revenue
+    period_revenue_baseline = revenue.rolling(3, min_periods=1).mean().shift(1).fillna(revenue.expanding(min_periods=1).mean())
+    inferred_revenue_loss = (period_revenue_baseline - revenue).clip(lower=0)
+    work['_revenue_loss'] = raw_revenue_loss.where(raw_revenue_loss > 0, inferred_revenue_loss)
     work['_operational_loss'] = (operating_cost - baseline_cost).clip(lower=0)
     work['_inventory_loss'] = (waste * unit_cost) + (stockout * price)
     work['_discount_loss'] = revenue * discount_pct
     work['_return_loss'] = returns.where(returns > 1, returns * price).clip(lower=0)
     historical = work.groupby('_period', as_index=False).agg({
         '_actual_revenue': 'sum',
+        '_revenue_loss': 'sum',
         '_operational_loss': 'sum',
         '_inventory_loss': 'sum',
         '_discount_loss': 'sum',
@@ -3865,7 +3872,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
 
     average_actual_revenue = max(float(historical['_actual_revenue'].mean() or 0), 1.0)
     driver_totals = {
-        'Revenue Loss': 0.0,
+        'Revenue Loss': float(historical['_revenue_loss'].sum()),
         'Operational Loss': float(historical['_operational_loss'].sum()),
         'Inventory Loss': float(historical['_inventory_loss'].sum()),
         'Discount Loss': float(historical['_discount_loss'].sum()),
@@ -3880,7 +3887,9 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     for index, item in forecast_frame.reset_index(drop=True).iterrows():
         forecasted_revenue = max(float(item.get('forecasted_revenue') or 0), 0.0)
         pressure = 1 + (index * 0.015)
-        revenue_loss = max(0.0, forecasted_revenue - average_actual_revenue) * 0.12 * pressure
+        historical_revenue_loss = float(historical['_revenue_loss'].mean() or 0)
+        forecast_shortfall_loss = max(0.0, average_actual_revenue - forecasted_revenue) * 0.12
+        revenue_loss = max(historical_revenue_loss, forecast_shortfall_loss, forecasted_revenue * 0.015) * pressure
         operational_loss = max(float(historical['_operational_loss'].mean() or 0), forecasted_revenue * 0.025) * pressure
         inventory_loss = max(float(historical['_inventory_loss'].mean() or 0), forecasted_revenue * 0.018) * pressure
         discount_loss = max(float(historical['_discount_loss'].mean() or 0), forecasted_revenue * 0.02) * pressure
@@ -3915,7 +3924,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
         if not column or column not in work.columns:
             continue
         grouped = work.assign(
-            _segment_loss=work['_operational_loss'] + work['_inventory_loss'] + work['_discount_loss'] + work['_return_loss'],
+            _segment_loss=work['_revenue_loss'] + work['_operational_loss'] + work['_inventory_loss'] + work['_discount_loss'] + work['_return_loss'],
             _segment_revenue=work['_actual_revenue'],
         ).groupby(column, dropna=False).agg({'_segment_loss': 'sum', '_segment_revenue': 'sum'}).reset_index()
         for _, segment_row in grouped.sort_values('_segment_loss', ascending=False).head(12).iterrows():
@@ -4015,6 +4024,28 @@ def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str,
     revenue_series = numeric_series(clean_frame, revenue_column, 0.0).clip(lower=0)
     gross_profit_series = (revenue_series - cogs_series).clip(lower=0)
     _opex_series, _opex_source, operating_expense_ratio = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
+    date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
+    historical_cogs_ratios: list[float] = []
+    seasonal_cogs_ratios: dict[int, float] = {}
+    if date_column:
+        margin_work = clean_frame.copy()
+        margin_work['_period'] = pd.to_datetime(margin_work[date_column], errors='coerce')
+        margin_work['_revenue'] = revenue_series
+        margin_work['_cogs'] = cogs_series
+        margin_work = margin_work.dropna(subset=['_period'])
+        if not margin_work.empty:
+            period_costs = margin_work.groupby(margin_work['_period'].dt.to_period('M')).agg({'_revenue': 'sum', '_cogs': 'sum'}).reset_index()
+            period_costs['_ratio'] = period_costs.apply(
+                lambda row: bounded_ratio(float(row['_cogs']) / float(row['_revenue']), cogs_ratio) if float(row['_revenue']) else cogs_ratio,
+                axis=1,
+            )
+            historical_cogs_ratios = [float(value) for value in period_costs['_ratio'].tail(max(1, forecast_periods)).tolist()]
+            period_costs['_month'] = period_costs['_period'].dt.month
+            seasonal_cogs_ratios = {
+                int(row['_month']): bounded_ratio(float(row['_ratio']), cogs_ratio)
+                for _, row in period_costs.groupby('_month', as_index=False)['_ratio'].mean().iterrows()
+            }
+    uses_ml_cogs_forecast = 'ML forecast target' in str(forecast_frame.attrs.get('cogs_source') or '')
 
     scenario_config = {
         'optimistic': {'revenue': 1.10, 'cogs': 0.97, 'loss': 0.80},
@@ -4024,10 +4055,17 @@ def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str,
     scenarios: dict[str, list[dict[str, Any]]] = {}
     for scenario, multipliers in scenario_config.items():
         rows: list[dict[str, Any]] = []
-        for _, item in forecast_frame.iterrows():
+        for index, item in forecast_frame.reset_index(drop=True).iterrows():
             period = normalize_period_value(item['period'])
             revenue = max(float(item.get('forecasted_revenue') or 0) * multipliers['revenue'], 0.0)
-            cogs = max(float(item.get('forecasted_cogs') or revenue * 0.58) * multipliers['cogs'], 0.0)
+            period_date = pd.to_datetime(period, errors='coerce')
+            period_month = int(period_date.month) if pd.notna(period_date) else 0
+            period_cogs_ratio = seasonal_cogs_ratios.get(
+                period_month,
+                historical_cogs_ratios[index % len(historical_cogs_ratios)] if historical_cogs_ratios else cogs_ratio,
+            )
+            base_cogs = float(item.get('forecasted_cogs') or 0) if uses_ml_cogs_forecast else revenue * period_cogs_ratio
+            cogs = max(base_cogs * multipliers['cogs'], 0.0)
             if cogs <= 0 and revenue > 0:
                 cogs = revenue * cogs_ratio
             if cogs > revenue * 0.92:
@@ -4123,7 +4161,7 @@ def run_loss_forecast(request: ForecastRunRequest, http_request: Request) -> JSO
         state['loss_summary'] = build_loss_summary(rows, driver_weights)
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='loss_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail=f'Generated {len(rows)} loss forecast rows.')
-        return JSONResponse(content=safe_serialize({'status': 'success', 'loss_forecast': rows, 'summary': state['loss_summary']}))
+        return JSONResponse(content=safe_serialize({'status': 'success', 'loss_forecast': rows, 'segments': segments, 'summary': state['loss_summary']}))
     except HTTPException:
         raise
     except Exception as error:
@@ -4146,6 +4184,11 @@ def get_loss_forecast_segments(session_id: str) -> JSONResponse:
     try:
         state = ensure_session_state(session_id)
         segments = state.get('loss_segments') or []
+        if not segments:
+            loss_rows = query_loss_results(session_id)
+            if loss_rows:
+                _frame, segments, _driver_weights = build_loss_base_frame(session_id, len(loss_rows))
+                state['loss_segments'] = segments
         return JSONResponse(content=safe_serialize({'segments': segments}))
     except Exception as error:
         raise HTTPException(status_code=422, detail=f'Unable to fetch loss segments: {error}') from error
