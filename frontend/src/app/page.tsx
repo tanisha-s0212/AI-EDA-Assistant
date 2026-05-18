@@ -686,21 +686,38 @@ function SidebarContent({
       </div>
 
       {/* Footer */}
-      <div className="border-t border-white/40 p-4 sm:p-5 dark:border-white/10">
+      <div className="border-t border-white/40 bg-[linear-gradient(180deg,rgba(255,255,255,0.1),rgba(219,234,254,0.32))] p-4 sm:p-5 dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(59,130,246,0.08))]">
         <button
           type="button"
           onClick={() => setProfileOpen(true)}
-          className="group flex w-full items-center gap-3 rounded-lg border border-white/70 bg-white/72 p-3 text-left shadow-[0_18px_50px_-34px_rgba(31,95,168,0.36)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-100 hover:bg-white/88 hover:shadow-[0_22px_58px_-34px_rgba(31,95,168,0.46)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-white/8 dark:hover:bg-white/12"
+          className="group relative w-full overflow-hidden rounded-2xl border border-white/75 bg-white/82 p-3.5 text-left shadow-[0_18px_52px_-34px_rgba(31,95,168,0.42)] ring-1 ring-blue-100/70 backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-white/94 hover:shadow-[0_24px_64px_-36px_rgba(31,95,168,0.5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-white/8 dark:ring-white/10 dark:hover:bg-white/12"
         >
-          <UserAvatar user={currentUser} className="size-12" />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold leading-5 text-foreground">
-              {currentUser?.username ?? 'Workspace User'}
-            </p>
-            <p className="truncate text-xs text-muted-foreground">Private workspace profile</p>
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.62),transparent_48%,rgba(76,184,240,0.08))]" />
+          <div className="relative flex items-center gap-3">
+            <div className="relative shrink-0">
+              <UserAvatar user={currentUser} className="size-12 border-2 border-white shadow-[0_12px_28px_-18px_rgba(15,23,42,0.66)] dark:border-white/15" />
+              <span className="absolute -right-0.5 -bottom-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-white bg-emerald-500 shadow-sm dark:border-slate-900">
+                <ShieldCheck className="h-2.5 w-2.5 text-white" />
+              </span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate text-sm font-bold leading-5 text-slate-900 dark:text-slate-50">
+                  {currentUser?.username ?? 'Workspace User'}
+                </p>
+                <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700 dark:border-emerald-300/20 dark:bg-emerald-300/10 dark:text-emerald-100">
+                  Secure
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-xs font-medium text-slate-500 dark:text-slate-300">Private workspace identity</p>
+            </div>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-700 shadow-sm transition-all duration-300 group-hover:translate-x-0.5 group-hover:bg-blue-100 dark:border-white/10 dark:bg-white/8 dark:text-cyan-100">
+              <ChevronRight className="h-4 w-4" />
+            </div>
           </div>
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 text-blue-700 transition-all duration-300 group-hover:translate-x-0.5 group-hover:bg-blue-100 dark:border-white/10 dark:bg-white/8 dark:text-cyan-100">
-            <ChevronRight className="h-4 w-4" />
+          <div className="relative mt-3 flex items-center justify-between rounded-xl border border-blue-100/80 bg-blue-50/55 px-3 py-2 text-[11px] font-semibold text-[#2f5fa8] dark:border-white/10 dark:bg-white/6 dark:text-cyan-100">
+            <span>Profile privacy protected</span>
+            <span className="text-slate-500 dark:text-slate-300">Manage</span>
           </div>
         </button>
         {currentUser && (
