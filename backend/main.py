@@ -2450,9 +2450,19 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                 parsed_date_expr.alias('__parsed_date'),
                 pl.col(target_column).cast(pl.Float64, strict=False).alias('__parsed_sales'),
             ])
-            .drop_nulls(['__parsed_date', '__parsed_sales'])
+            .drop_nulls(['__parsed_date'])
             .group_by_dynamic('__parsed_date', every=period_freq, label='left')
-            .agg(pl.col('__parsed_sales').sum().alias('sales'))
+            .agg([
+                pl.col('__parsed_sales').sum().alias('sales'),
+                pl.col('__parsed_sales').is_not_null().sum().alias('__valid_sales_count'),
+            ])
+            .with_columns(
+                pl.when(pl.col('__valid_sales_count') > 0)
+                .then(pl.col('sales'))
+                .otherwise(None)
+                .alias('sales')
+            )
+            .drop('__valid_sales_count')
             .sort('__parsed_date')
             .collect(streaming=True)
         )
@@ -2466,8 +2476,9 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
 
     series_frame = aggregated.rename({'__parsed_date': 'period'}).to_pandas(use_pyarrow_extension_array=False)
     full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
-    series_frame = series_frame.set_index('period').reindex(full_range, fill_value=0.0).rename_axis('period').reset_index()
+    series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
     series_frame['sales'] = series_frame['sales'].astype(float)
+    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales')
 
     if len(series_frame) < 6:
         raise HTTPException(status_code=400, detail=f'Sales forecasting needs at least 6 {period_label} periods after aggregation.')
@@ -2536,7 +2547,7 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
     working = frame[[date_column, target_column]].copy()
     working[date_column] = pd.to_datetime(working[date_column], errors='coerce')
     working[target_column] = pd.to_numeric(working[target_column], errors='coerce')
-    working = working.dropna(subset=[date_column, target_column])
+    working = working.dropna(subset=[date_column])
 
     if working.empty:
         raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
@@ -2545,12 +2556,13 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
     period_freq = {'MS': 'M', 'QS': 'Q', 'YS': 'Y'}.get(freq, freq)
     period_index = working[date_column].dt.to_period(period_freq).dt.to_timestamp()
     working = working.assign(period=period_index)
-    series_frame = working.groupby('period', as_index=False)[target_column].sum().sort_values('period')
+    series_frame = working.groupby('period', as_index=False)[target_column].sum(min_count=1).sort_values('period')
     series_frame = series_frame.rename(columns={target_column: 'sales'})
 
     full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
-    series_frame = series_frame.set_index('period').reindex(full_range, fill_value=0.0).rename_axis('period').reset_index()
+    series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
     series_frame['sales'] = series_frame['sales'].astype(float)
+    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales')
 
     if len(series_frame) < 6:
         raise HTTPException(status_code=400, detail=f'Sales forecasting needs at least 6 {period_label} periods after aggregation.')
@@ -3600,6 +3612,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
 LOSS_COLUMN_PATTERNS = {
     'revenue_loss': re.compile(r'revenue_loss|lost_revenue|missed_revenue|sales_loss|lost_sales|lost_sale', re.IGNORECASE),
     'returns': re.compile(r'return|refund|return_qty', re.IGNORECASE),
+    'inventory_value': re.compile(r'inventory[_\s-]*(value|amt|amount|cost)|stock[_\s-]*(value|amt|amount|cost)', re.IGNORECASE),
     'discount': re.compile(r'discount|promo|markdown', re.IGNORECASE),
     'waste': re.compile(r'waste|spoil|damage|scrap', re.IGNORECASE),
     'stockout': re.compile(r'stockout|stock_out|out_of_stock', re.IGNORECASE),
@@ -3634,6 +3647,24 @@ def first_matching_column(frame: pd.DataFrame, pattern: re.Pattern[str], numeric
     return None
 
 
+def matching_numeric_columns(
+    frame: pd.DataFrame,
+    pattern: re.Pattern[str],
+    exclude: set[str] | None = None,
+) -> list[str]:
+    excluded = exclude or set()
+    columns: list[str] = []
+    for column in frame.columns:
+        column_name = str(column)
+        if column_name in excluded or not pattern.search(column_name):
+            continue
+        converted = pd.to_numeric(frame[column], errors='coerce')
+        if converted.notna().sum() == 0:
+            continue
+        columns.append(column_name)
+    return columns
+
+
 def bounded_ratio(value: float, fallback: float, lower: float = 0.08, upper: float = 0.92) -> float:
     if not np.isfinite(value) or value <= 0:
         return fallback
@@ -3646,18 +3677,218 @@ def numeric_series(frame: pd.DataFrame, column: str | None, default: float = 0.0
     return pd.to_numeric(frame[column], errors='coerce').fillna(default).astype(float)
 
 
+def numeric_columns_sum(frame: pd.DataFrame, columns: list[str], default: float = 0.0) -> pd.Series:
+    if not columns:
+        return pd.Series(default, index=frame.index, dtype='float64')
+    total = pd.Series(0.0, index=frame.index, dtype='float64')
+    for column in columns:
+        total = total.add(numeric_series(frame, column, 0.0), fill_value=0.0)
+    return total.fillna(default).astype(float)
+
+
+def repair_zero_period_values_with_seasonal_interpolation(
+    frame: pd.DataFrame,
+    value_column: str,
+    period_column: str = 'period',
+) -> pd.DataFrame:
+    repaired_frame = frame.copy()
+    if repaired_frame.empty or value_column not in repaired_frame.columns or period_column not in repaired_frame.columns:
+        return repaired_frame
+
+    values = pd.to_numeric(repaired_frame[value_column], errors='coerce').astype(float)
+    missing_like = values.isna() | (values <= 0)
+    if not missing_like.any():
+        repaired_frame[value_column] = values.fillna(0.0)
+        return repaired_frame
+
+    tail_size = max(1, int(np.ceil(len(values) * 0.2)))
+    tail_start_boundary = max(0, len(values) - tail_size)
+    trailing_positions = np.flatnonzero(missing_like.to_numpy())
+    if trailing_positions.size == 0 or trailing_positions[-1] != len(values) - 1:
+        repaired_frame[value_column] = values.fillna(0.0)
+        return repaired_frame
+
+    run_start = int(trailing_positions[-1])
+    while run_start > 0 and bool(missing_like.iloc[run_start - 1]):
+        run_start -= 1
+    if run_start < tail_start_boundary:
+        repaired_frame[value_column] = values.fillna(0.0)
+        return repaired_frame
+
+    prior_history = values.iloc[:run_start]
+    if prior_history.empty or prior_history.isna().any() or (prior_history <= 0).any():
+        repaired_frame[value_column] = values.fillna(0.0)
+        return repaired_frame
+
+    positive_values = prior_history[prior_history > 0]
+    if positive_values.empty:
+        repaired_frame[value_column] = values.fillna(0.0)
+        return repaired_frame
+
+    periods = pd.to_datetime(repaired_frame[period_column], errors='coerce')
+    period_label = infer_sales_time_frequency(periods.dropna())[1] if periods.notna().sum() >= 2 else 'month'
+    repair_season_length = {'day': 7, 'week': 52, 'month': 12, 'quarter': 4, 'year': 1}.get(period_label, 1)
+    season_length = max(1, min(repair_season_length, max(1, len(repaired_frame) - 1)))
+
+    repaired = values.copy()
+    repaired.iloc[run_start:] = np.nan
+    if period_label in {'month', 'quarter'} and season_length > 1 and len(prior_history) >= season_length:
+        seasonal_positions = np.arange(len(prior_history)) % season_length
+        seasonal_means = prior_history.groupby(seasonal_positions).mean()
+        overall_mean = max(float(prior_history.mean()), 1e-9)
+        seasonal_index = (seasonal_means / overall_mean).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+        deseasonalized = prior_history / pd.Series(
+            [float(seasonal_index.get(position % season_length, 1.0)) for position in range(len(prior_history))],
+            index=prior_history.index,
+        )
+        trend_values = deseasonalized.rolling(min(3, len(deseasonalized)), min_periods=1).mean()
+        recent_trend = float(trend_values.tail(min(season_length, len(trend_values))).median())
+        recent_level = float(prior_history.tail(min(season_length, len(prior_history))).median())
+        if not np.isfinite(recent_trend) or recent_trend <= 0:
+            recent_trend = recent_level
+        for position in range(run_start, len(repaired)):
+            season_factor = float(seasonal_index.get(position % season_length, 1.0))
+            repaired.iloc[position] = max(recent_trend * season_factor, 0.0)
+    else:
+        repaired = repaired.interpolate(method='linear', limit_direction='forward')
+        recent = prior_history.tail(min(4, len(prior_history))).astype(float)
+        slope = float(np.mean(np.diff(recent))) if len(recent) > 1 else 0.0
+        last_value = float(prior_history.iloc[-1])
+        for offset, position in enumerate(range(run_start, len(repaired)), start=1):
+            repaired.iloc[position] = max(last_value + (slope * offset), 0.0)
+
+    repaired = repaired.fillna(float(positive_values.median())).clip(lower=0)
+    repaired_frame[value_column] = repaired.astype(float)
+    return repaired_frame
+
+
+def distribute_repaired_period_totals(
+    frame: pd.DataFrame,
+    date_column: str,
+    value_column: str,
+    period_freq: str,
+) -> pd.Series:
+    values = numeric_series(frame, value_column, 0.0).clip(lower=0)
+    work = frame.copy()
+    work['_repair_period'] = pd.to_datetime(work[date_column], errors='coerce').dt.to_period(period_freq).dt.to_timestamp()
+    valid_periods = work['_repair_period'].notna()
+    if not valid_periods.any():
+        return values
+
+    grouped = (
+        work.loc[valid_periods]
+        .assign(_repair_value=values.loc[valid_periods])
+        .groupby('_repair_period', as_index=False)['_repair_value']
+        .sum()
+        .rename(columns={'_repair_period': 'period', '_repair_value': value_column})
+        .sort_values('period')
+    )
+    repaired_grouped = repair_zero_period_values_with_seasonal_interpolation(grouped, value_column)
+    repaired_totals = repaired_grouped.set_index('period')[value_column].to_dict()
+    original_totals = grouped.set_index('period')[value_column].to_dict()
+    period_counts = work.loc[valid_periods].groupby('_repair_period').size().to_dict()
+
+    repaired_values = values.copy()
+    for period_value, row_indexes in work.loc[valid_periods].groupby('_repair_period').groups.items():
+        original_total = float(original_totals.get(period_value, 0.0) or 0.0)
+        repaired_total = float(repaired_totals.get(period_value, original_total) or 0.0)
+        if original_total > 0:
+            repaired_values.loc[row_indexes] = values.loc[row_indexes] * (repaired_total / original_total)
+        elif repaired_total > 0:
+            repaired_values.loc[row_indexes] = repaired_total / max(int(period_counts.get(period_value, 1)), 1)
+    return repaired_values.clip(lower=0)
+
+
+def column_name_suggests_amount(column_name: str | None) -> bool:
+    return bool(column_name and re.search(r'(^|[_\s-])(amt|amount|value|inr|rs|rupee|rupees)($|[_\s-])', str(column_name), re.IGNORECASE))
+
+
+def repair_revenue_column_for_forecast_context(
+    frame: pd.DataFrame,
+    date_column: str | None,
+    revenue_column: str | None,
+    period_label: str | None,
+) -> pd.DataFrame:
+    if not date_column or not revenue_column or date_column not in frame.columns or revenue_column not in frame.columns:
+        return frame
+    period_freq = 'D' if period_label == 'day' else 'W' if period_label == 'week' else 'Q' if period_label == 'quarter' else 'M'
+    repaired = frame.copy()
+    repaired[revenue_column] = distribute_repaired_period_totals(repaired, date_column, revenue_column, period_freq)
+    return repaired
+
+
+def repair_forecast_revenue_from_history(
+    forecast_frame: pd.DataFrame,
+    history_frame: pd.DataFrame,
+    date_column: str | None,
+    revenue_column: str | None,
+    period_label: str | None,
+) -> pd.DataFrame:
+    if forecast_frame.empty or 'period' not in forecast_frame.columns or not date_column or not revenue_column:
+        return forecast_frame
+    if date_column not in history_frame.columns or revenue_column not in history_frame.columns:
+        return forecast_frame
+
+    period_freq = 'D' if period_label == 'day' else 'W' if period_label == 'week' else 'Q' if period_label == 'quarter' else 'M'
+    history = history_frame.copy()
+    history['_period'] = pd.to_datetime(history[date_column], errors='coerce').dt.to_period(period_freq).dt.to_timestamp()
+    history['_revenue'] = numeric_series(history, revenue_column, 0.0).clip(lower=0)
+    history = history.dropna(subset=['_period'])
+    if history.empty:
+        return forecast_frame
+
+    history_totals = history.groupby('_period', as_index=False)['_revenue'].sum().rename(columns={'_period': 'period', '_revenue': 'revenue'})
+    history_totals = repair_zero_period_values_with_seasonal_interpolation(history_totals.sort_values('period'), 'revenue')
+    positive_history = history_totals[history_totals['revenue'] > 0].copy()
+    if positive_history.empty:
+        return forecast_frame
+
+    positive_history['_month'] = pd.to_datetime(positive_history['period']).dt.month
+    positive_history['_quarter'] = pd.to_datetime(positive_history['period']).dt.quarter
+    month_baseline = positive_history.groupby('_month')['revenue'].median().to_dict()
+    quarter_baseline = positive_history.groupby('_quarter')['revenue'].median().to_dict()
+    recent_baseline = float(positive_history['revenue'].tail(min(6, len(positive_history))).median())
+
+    repaired_forecast = forecast_frame.copy()
+    if 'forecasted_revenue' not in repaired_forecast.columns:
+        return repaired_forecast
+    revenue_values = pd.to_numeric(repaired_forecast['forecasted_revenue'], errors='coerce').fillna(0.0).astype(float)
+    for index, value in revenue_values.items():
+        if value > 0:
+            continue
+        period = pd.to_datetime(repaired_forecast.at[index, 'period'], errors='coerce')
+        if pd.isna(period):
+            repaired_value = recent_baseline
+        elif period_label == 'quarter':
+            repaired_value = float(quarter_baseline.get(int(period.quarter), recent_baseline))
+        elif period_label in {'month', 'day', 'week'}:
+            repaired_value = float(month_baseline.get(int(period.month), recent_baseline))
+        else:
+            repaired_value = recent_baseline
+        repaired_forecast.at[index, 'forecasted_revenue'] = max(repaired_value, 0.0)
+    return repaired_forecast
+
+
 def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) -> tuple[pd.Series, str, float]:
     revenue = numeric_series(frame, revenue_column, 0.0).clip(lower=0)
     quantity_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
     unit_cost_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
-    cost_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['cost'], numeric=True)
+    excluded_cost_columns = {
+        column for column in frame.columns
+        if column_matches_pattern(str(column), LOSS_COLUMN_PATTERNS['operating_cost'])
+        or column_matches_pattern(str(column), LOSS_COLUMN_PATTERNS['inventory_value'])
+        or column_matches_pattern(str(column), LOSS_COLUMN_PATTERNS['discount'])
+        or str(column) == str(revenue_column)
+    }
+    cost_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['cost'], exclude={str(column) for column in excluded_cost_columns})
     gross_profit_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['gross_profit'], numeric=True)
     margin_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['margin_pct'], numeric=True)
 
-    if cost_column:
-        cogs = numeric_series(frame, cost_column, 0.0).clip(lower=0)
+    if cost_columns:
+        cogs = numeric_columns_sum(frame, cost_columns, 0.0).clip(lower=0)
         ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
-        return cogs, f'mapped cost column "{cost_column}"', ratio
+        joined_columns = '", "'.join(cost_columns)
+        return cogs, f'mapped cost column(s) "{joined_columns}"', ratio
 
     if quantity_column and unit_cost_column:
         cogs = (numeric_series(frame, quantity_column, 0.0).clip(lower=0) * numeric_series(frame, unit_cost_column, 0.0).clip(lower=0)).clip(lower=0)
@@ -3684,11 +3915,12 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
 
 def resolve_operating_expense_series(frame: pd.DataFrame, revenue_column: str | None, gross_profit: pd.Series | None = None) -> tuple[pd.Series, str, float]:
     revenue = numeric_series(frame, revenue_column, 0.0).clip(lower=0)
-    operating_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
-    if operating_column:
-        opex = numeric_series(frame, operating_column, 0.0).clip(lower=0)
+    operating_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['operating_cost'])
+    if operating_columns:
+        opex = numeric_columns_sum(frame, operating_columns, 0.0).clip(lower=0)
         ratio = bounded_ratio(float(opex.sum() / max(revenue.sum(), 1.0)), 0.12, lower=0.03, upper=0.45)
-        return opex, f'mapped operating expense column "{operating_column}"', ratio
+        joined_columns = '", "'.join(operating_columns)
+        return opex, f'mapped operating expense column(s) "{joined_columns}"', ratio
 
     net_profit_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['net_profit'], numeric=True)
     if net_profit_column is not None and gross_profit is not None:
@@ -3774,6 +4006,10 @@ def fetch_upstream_forecasts(session_id: str) -> tuple[pd.DataFrame, dict[str, A
 
     merged = pd.merge(ts_future, ml_future, on='period', how='outer').sort_values('period').fillna(0)
     revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
+    date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
+    period_label = ts_result.get('period_label') or 'month'
+    clean_frame = repair_revenue_column_for_forecast_context(clean_frame, date_column, revenue_column, period_label)
+    merged = repair_forecast_revenue_from_history(merged, clean_frame, date_column, revenue_column, period_label)
     cogs_series, cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
     ml_target_column = str(ml_result.get('target_column') or '')
     if column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['cost']) or column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['unit_cost']):
@@ -3813,7 +4049,8 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
 
     returns_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['returns'], numeric=True)
     revenue_loss_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue_loss'], numeric=True)
-    discount_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['discount'], numeric=True)
+    inventory_value_columns = matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['inventory_value'])
+    discount_columns = matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['discount'])
     waste_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['waste'], numeric=True)
     stockout_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['stockout'], numeric=True)
     quantity_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
@@ -3830,6 +4067,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     period_label = ts_result.get('period_label') or 'month'
     period_freq = 'D' if period_label == 'day' else 'W' if period_label == 'week' else 'Q' if period_label == 'quarter' else 'M'
     work['_period'] = work['_period'].dt.to_period(period_freq).dt.to_timestamp().dt.date
+    work[revenue_column] = distribute_repaired_period_totals(work, date_column, revenue_column, period_freq)
 
     revenue = numeric_series(work, revenue_column)
     quantity = numeric_series(work, quantity_column, 1.0).clip(lower=0)
@@ -3838,7 +4076,11 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     operating_cost, operating_source, operating_ratio = resolve_operating_expense_series(work, revenue_column, gross_profit)
     returns = numeric_series(work, returns_column, 0.0).clip(lower=0)
     raw_revenue_loss = numeric_series(work, revenue_loss_column, 0.0).clip(lower=0)
-    discounts = numeric_series(work, discount_column, 0.0).clip(lower=0)
+    discount_amount_columns = [column for column in discount_columns if column_name_suggests_amount(column)]
+    discount_rate_columns = [column for column in discount_columns if column not in discount_amount_columns]
+    discount_amounts = numeric_columns_sum(work, discount_amount_columns, 0.0).clip(lower=0)
+    discount_rates = numeric_columns_sum(work, discount_rate_columns, 0.0).clip(lower=0)
+    inventory_value = numeric_columns_sum(work, inventory_value_columns, 0.0).clip(lower=0)
     waste = numeric_series(work, waste_column, 0.0).clip(lower=0)
     stockout = numeric_series(work, stockout_column, 0.0).clip(lower=0)
     price = numeric_series(work, price_column, 0.0)
@@ -3846,7 +4088,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
         price = revenue / quantity.replace(0, np.nan)
         price = price.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-    discount_pct = discounts.where(discounts <= 1, discounts / 100).clip(lower=0, upper=0.95)
+    discount_pct = discount_rates.where(discount_rates <= 1, discount_rates / 100).clip(lower=0, upper=0.95)
     baseline_cost = operating_cost.rolling(7, min_periods=1).mean() * 1.2
     inferred_unit_cost = actual_cost / quantity.replace(0, np.nan)
     inferred_unit_cost = inferred_unit_cost.replace([np.inf, -np.inf], np.nan).fillna(0)
@@ -3858,8 +4100,10 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     inferred_revenue_loss = (period_revenue_baseline - revenue).clip(lower=0)
     work['_revenue_loss'] = raw_revenue_loss.where(raw_revenue_loss > 0, inferred_revenue_loss)
     work['_operational_loss'] = (operating_cost - baseline_cost).clip(lower=0)
-    work['_inventory_loss'] = (waste * unit_cost) + (stockout * price)
-    work['_discount_loss'] = revenue * discount_pct
+    inventory_event_loss = (waste * unit_cost) + (stockout * price)
+    inventory_value_loss = inventory_value * 0.02
+    work['_inventory_loss'] = inventory_event_loss.where(inventory_event_loss > 0, inventory_value_loss)
+    work['_discount_loss'] = (discount_amounts + (revenue * discount_pct)).clip(lower=0)
     work['_return_loss'] = returns.where(returns > 1, returns * price).clip(lower=0)
     historical = work.groupby('_period', as_index=False).agg({
         '_actual_revenue': 'sum',
@@ -3882,6 +4126,20 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     driver_weights = {key: value / total_driver for key, value in driver_totals.items()}
     driver_weights['COGS Basis'] = cogs_ratio
     driver_weights['Operating Expense Basis'] = operating_ratio
+    inventory_loss_rate = bounded_ratio(
+        float(historical['_inventory_loss'].sum() / max(historical['_actual_revenue'].sum(), 1.0)),
+        0.018,
+        lower=0.002,
+        upper=0.18,
+    )
+    discount_loss_rate = bounded_ratio(
+        float(historical['_discount_loss'].sum() / max(historical['_actual_revenue'].sum(), 1.0)),
+        0.02,
+        lower=0.001,
+        upper=0.35,
+    )
+    driver_weights['Inventory Loss Basis'] = inventory_loss_rate
+    driver_weights['Discount Loss Basis'] = discount_loss_rate
 
     rows: list[dict[str, Any]] = []
     for index, item in forecast_frame.reset_index(drop=True).iterrows():
@@ -3891,8 +4149,8 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
         forecast_shortfall_loss = max(0.0, average_actual_revenue - forecasted_revenue) * 0.12
         revenue_loss = max(historical_revenue_loss, forecast_shortfall_loss, forecasted_revenue * 0.015) * pressure
         operational_loss = max(float(historical['_operational_loss'].mean() or 0), forecasted_revenue * 0.025) * pressure
-        inventory_loss = max(float(historical['_inventory_loss'].mean() or 0), forecasted_revenue * 0.018) * pressure
-        discount_loss = max(float(historical['_discount_loss'].mean() or 0), forecasted_revenue * 0.02) * pressure
+        inventory_loss = max(float(historical['_inventory_loss'].mean() or 0), forecasted_revenue * inventory_loss_rate) * pressure
+        discount_loss = max(float(historical['_discount_loss'].mean() or 0), forecasted_revenue * discount_loss_rate) * pressure
         return_loss = max(float(historical['_return_loss'].mean() or 0), 0.0) * pressure
         total_loss = revenue_loss + operational_loss + inventory_loss + discount_loss + return_loss
         risk_score = min(1.0, total_loss / max(forecasted_revenue, 1.0))
@@ -3917,7 +4175,17 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
         })
 
     for row in rows:
-        row['basis_note'] = f'COGS: {cogs_source}; OpEx: {operating_source}'
+        inventory_column_names = '", "'.join(inventory_value_columns)
+        mapped_inventory = f'inventory value column(s) "{inventory_column_names}"' if inventory_value_columns else 'waste/stockout-derived inventory exposure'
+        discount_basis_parts = []
+        if discount_amount_columns:
+            discount_amount_names = '", "'.join(discount_amount_columns)
+            discount_basis_parts.append(f'amount column(s) "{discount_amount_names}"')
+        if discount_rate_columns:
+            discount_rate_names = '", "'.join(discount_rate_columns)
+            discount_basis_parts.append(f'rate column(s) "{discount_rate_names}"')
+        mapped_discount = '; '.join(discount_basis_parts) if discount_basis_parts else 'standard discount exposure'
+        row['basis_note'] = f'COGS: {cogs_source}; OpEx: {operating_source}; Inventory: {mapped_inventory}; Discount: {mapped_discount}'
 
     segments: list[dict[str, Any]] = []
     for column, segment_type in [(category_column, 'category'), (region_column, 'region')]:
