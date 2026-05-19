@@ -21,7 +21,7 @@ This layer is intentionally separate from the existing application flow. It runs
 - It does not edit application files outside `agentic-layer/`.
 - It does not change the existing login-to-report workflow.
 - It provides `ui/launcher.js` for a bottom-right main-application launcher when the main app is ready to include it.
-- Standalone automation uses local deterministic CSV analysis. The integrated React workspace can still call the main FastAPI workflow for richer app-native execution.
+- Standalone automation uses local deterministic CSV, TSV, Excel, and Parquet analysis. The integrated React workspace can still call the main FastAPI workflow for richer app-native execution.
 
 ## Run Locally
 

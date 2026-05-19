@@ -88,7 +88,20 @@ def get_backend_module() -> Any:
     return importlib.import_module('main')
 
 
-def read_csv_profile(dataset_path: str) -> dict[str, Any]:
+def read_dataset_file(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix == '.csv':
+        return pd.read_csv(path)
+    if suffix == '.tsv':
+        return pd.read_csv(path, sep='\t')
+    if suffix in {'.xlsx', '.xls'}:
+        return pd.read_excel(path)
+    if suffix == '.parquet':
+        return pd.read_parquet(path)
+    raise HTTPException(status_code=400, detail='Agentic profiling accepts .csv, .tsv, .xlsx, .xls, and .parquet files.')
+
+
+def read_dataset_profile(dataset_path: str) -> dict[str, Any]:
     backend = get_backend_module()
     dataset_entry = getattr(backend, 'DATASET_CACHE', {}).get(dataset_path)
     if dataset_entry is not None:
@@ -103,10 +116,8 @@ def read_csv_profile(dataset_path: str) -> dict[str, Any]:
         path = Path.cwd() / path
     if not path.exists():
         raise HTTPException(status_code=404, detail=f'Dataset path not found: {dataset_path}')
-    if path.suffix.lower() != '.csv':
-        raise HTTPException(status_code=400, detail='Agentic profiling currently accepts CSV files only.')
 
-    frame = pd.read_csv(path)
+    frame = read_dataset_file(path)
     return profile_frame(frame, source=str(path))
 
 
@@ -141,7 +152,7 @@ def build_findings(profile: dict[str, Any]) -> list[str]:
     if null_total:
         findings.append(f'Detected {null_total} missing values across the dataset.')
     else:
-        findings.append('No missing values detected in the CSV profile.')
+        findings.append('No missing values detected in the dataset profile.')
     if profile['date_columns']:
         findings.append(f"Detected date-like columns: {', '.join(profile['date_columns'])}.")
     if profile['numeric_columns']:
@@ -331,7 +342,7 @@ def prepare_next_recommendation(session_id: str, completed_step: str) -> None:
 def suggest_next_steps(payload: SuggestNextStepsRequest) -> JSONResponse:
     if not agentic_enabled():
         return disabled_response()
-    profile = read_csv_profile(payload.dataset_path)
+    profile = read_dataset_profile(payload.dataset_path)
     session_id = uuid.uuid4().hex
     session = ensure_session(session_id)
     recommendations = build_recommendations(profile)

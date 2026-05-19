@@ -483,8 +483,8 @@ async function createAutomationRun() {
   runStatus.textContent = "Creating secure run folder...";
 
   try {
-    const isCsvPath = /\.csv$/i.test(value) && /[\\/]/.test(value);
-    const payload = isCsvPath
+    const isDatasetPath = /\.(csv|tsv|xlsx|xls|parquet)$/i.test(value) && /[\\/]/.test(value);
+    const payload = isDatasetPath
       ? { dataset_path: value }
       : {
           dataset_name: value || context?.datasetName || "uploaded dataset",

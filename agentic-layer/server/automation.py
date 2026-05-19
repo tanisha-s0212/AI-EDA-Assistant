@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, median
 
+import pandas as pd
+
 from .config import AGENTIC_ROOT, WORKSPACE_ROOT
 
 
@@ -73,15 +75,38 @@ def _safe_workspace_file(relative_path: str) -> Path:
     return candidate
 
 
-def _profile_csv(path: Path, max_rows: int = 500) -> DatasetProfile:
-    rows: list[dict[str, str]] = []
-    with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as csv_file:
-        reader = csv.DictReader(csv_file)
-        columns = list(reader.fieldnames or [])
-        for index, row in enumerate(reader):
-            if index >= max_rows:
-                break
-            rows.append(row)
+def _load_dataset_sample(path: Path, max_rows: int | None = 500) -> list[dict[str, str]]:
+    suffix = path.suffix.lower()
+    if suffix in {".csv", ".tsv"}:
+        rows: list[dict[str, str]] = []
+        with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as csv_file:
+            reader = csv.DictReader(csv_file, delimiter="\t" if suffix == ".tsv" else ",")
+            for index, row in enumerate(reader):
+                if max_rows is not None and index >= max_rows:
+                    break
+                rows.append({str(key): "" if value is None else str(value) for key, value in row.items()})
+        return rows
+
+    if suffix in {".xlsx", ".xls"}:
+        frame = pd.read_excel(path, nrows=max_rows)
+    elif suffix == ".parquet":
+        frame = pd.read_parquet(path)
+        if max_rows is not None:
+            frame = frame.head(max_rows)
+    else:
+        return []
+
+    frame = frame.where(pd.notna(frame), "")
+    return [{str(key): "" if value is None else str(value) for key, value in row.items()} for row in frame.to_dict(orient="records")]
+
+
+def _profile_dataset_file(path: Path, max_rows: int = 500) -> DatasetProfile:
+    rows = _load_dataset_sample(path, max_rows=max_rows)
+    columns = list(rows[0].keys()) if rows else []
+    if path.suffix.lower() in {".csv", ".tsv"}:
+        with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as csv_file:
+            reader = csv.DictReader(csv_file, delimiter="\t" if path.suffix.lower() == ".tsv" else ",")
+            columns = list(reader.fieldnames or columns)
 
     missing_counts = {column: 0 for column in columns}
     numeric_values: dict[str, list[float]] = {column: [] for column in columns}
@@ -154,17 +179,7 @@ def _load_dataset_rows(dataset: dict, max_rows: int | None = None) -> list[dict[
         return []
 
     path = _safe_workspace_file(source_path)
-    if path.suffix.lower() != ".csv":
-        return []
-
-    rows: list[dict[str, str]] = []
-    with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as csv_file:
-        reader = csv.DictReader(csv_file)
-        for index, row in enumerate(reader):
-            if max_rows is not None and index >= max_rows:
-                break
-            rows.append({str(key): "" if value is None else str(value) for key, value in row.items()})
-    return rows
+    return _load_dataset_sample(path, max_rows=max_rows)
 
 
 def _numeric_values(rows: list[dict[str, str]], column: str) -> list[float]:
@@ -635,11 +650,11 @@ def create_run(payload: dict) -> dict:
 
     if dataset_path:
         safe_path = _safe_workspace_file(dataset_path)
-        if safe_path.suffix.lower() == ".csv":
-            profile = _profile_csv(safe_path)
+        if safe_path.suffix.lower() in {".csv", ".tsv", ".xlsx", ".xls", ".parquet"}:
+            profile = _profile_dataset_file(safe_path)
         else:
             profile = _default_profile(safe_path.name)
-            profile.notes.append("Only CSV files are profiled directly in this local scaffold.")
+            profile.notes.append("Direct file profiling supports CSV, TSV, Excel, and Parquet datasets.")
     else:
         profile = _default_profile(
             dataset_name or dataset_id,
