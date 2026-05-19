@@ -5,7 +5,7 @@
   }
 
   const scriptOrigin = document.currentScript?.src ? new URL(document.currentScript.src).origin : "";
-  const agentUrl = window.IDA_AGENTIC_CORE_URL || scriptOrigin || "http://127.0.0.1:5055";
+  const agentUrl = window.IDA_AGENTIC_CORE_URL || scriptOrigin || "/api/agentic/core";
 
   function getActiveDatasetContext() {
     try {
