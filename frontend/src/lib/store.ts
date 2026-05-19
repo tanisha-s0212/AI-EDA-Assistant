@@ -260,7 +260,7 @@ const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
 const STORE_PERSIST_VERSION = 4;
 
 // # AGENTIC LAYER START
-const AGENTIC_ENABLED = process.env.NEXT_PUBLIC_AGENTIC_ENABLED === 'true';
+const AGENTIC_ENABLED = process.env.NEXT_PUBLIC_AGENTIC_ENABLED !== 'false';
 // # AGENTIC LAYER END
 
 function createEmptyDatasetState(): DatasetWorkspaceState {

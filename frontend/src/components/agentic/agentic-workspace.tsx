@@ -155,6 +155,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
 
   const activeRecommendation = agenticRecommendations[0] ?? null;
   const progress = statusProgress(agenticStepStatuses);
+  const workflowComplete = PIPELINE_STEPS.every((step) => ['completed', 'skipped'].includes(agenticStepStatuses[step]));
 
   const refreshHealth = React.useCallback(async () => {
     try {
@@ -323,7 +324,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       }
 
       const problemType = inferProblemType(targetColumn);
-      const modelType = problemType === 'regression' ? 'ridge_regression' : 'random_forest_classifier';
+      const modelType = problemType === 'regression' ? 'ridge_regression' : 'random_forest';
       const response = await apiClient.post('/train', {
         data: latest.datasetId ? [] : latest.cleanedData ?? latest.rawData ?? [],
         dataset_id: latest.datasetId ?? null,
@@ -489,7 +490,17 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
             </Card>
           ) : (
             <div className="rounded-lg border border-dashed border-slate-300 bg-white/54 p-4 text-sm text-muted-foreground dark:border-white/12 dark:bg-white/5">
-              Upload or select a dataset, then ask the agent for the next approved step.
+              {workflowComplete && agenticSessionId ? (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <span>The approved agentic flow is complete. Download the consolidated run report when you are ready.</span>
+                  <Button size="sm" onClick={() => void downloadReport(agenticSessionId)} className="rounded-sm">
+                    <Download className="mr-2 h-4 w-4" />
+                    Download Report
+                  </Button>
+                </div>
+              ) : (
+                'Upload or select a dataset, then ask the agent for the next approved step.'
+              )}
             </div>
           )}
         </div>

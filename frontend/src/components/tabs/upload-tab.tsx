@@ -12,7 +12,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Bot,
   ArrowRight,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -655,30 +654,23 @@ export default function UploadTab() {
         </div>
 
         <div className="relative flex min-w-0 flex-col items-center gap-6 md:flex-row md:gap-10">
-          {/* Animated Robot Icon */}
+          {/* Dataset Storage Icon */}
           <motion.div
             className="flex-shrink-0"
             animate={{
-              y: [0, -8, 0],
-              rotate: [0, 2, -2, 0],
+              y: [0, -4, 0],
             }}
             transition={{
-              duration: 4,
+              duration: 5,
               repeat: Infinity,
               ease: 'easeInOut',
             }}
           >
             <div className="relative">
               <div className="flex h-24 w-24 items-center justify-center rounded-3xl bg-primary shadow-2xl shadow-primary/25 md:h-32 md:w-32">
-                <Bot className="h-12 w-12 text-primary-foreground md:h-16 md:w-16" />
+                <Database className="h-12 w-12 text-primary-foreground md:h-16 md:w-16" />
               </div>
-              <motion.div
-                className="absolute -top-1 -right-1 h-6 w-6 rounded-full bg-yellow-400 border-2 border-white dark:border-gray-900 flex items-center justify-center"
-                animate={{ scale: [1, 1.2, 1] }}
-                transition={{ duration: 2, repeat: Infinity }}
-              >
-                <Sparkles className="h-3 w-3 text-yellow-800" />
-              </motion.div>
+              <div className="absolute -right-1 -top-1 h-6 w-6 rounded-full border-2 border-white bg-sky-100 shadow-sm dark:border-gray-900 dark:bg-sky-950" />
             </div>
           </motion.div>
 

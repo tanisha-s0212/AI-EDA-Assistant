@@ -122,6 +122,11 @@ type DatasetPreviewResponse = {
 const INDIA_TIMEZONE = 'Asia/Kolkata';
 const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
 const AROHA_LOGO_URL = 'https://aroha.co.in/wp-content/uploads/2024/08/aroha_logo.png';
+const AGENTIC_LAUNCHER_URL = process.env.NEXT_PUBLIC_AGENTIC_LAUNCHER_URL || '/api/agentic/core';
+
+function getAgenticWorkspaceUrl() {
+  return AGENTIC_LAUNCHER_URL.replace(/\/launcher\.js$/i, '').replace(/\/$/, '');
+}
 
 function formatActivityTimestamp(value: string | null) {
   const parsed = value ? new Date(value) : new Date();
@@ -286,6 +291,14 @@ function getUserInitials(user?: AuthenticatedUser | null) {
     return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
   }
   return source.slice(0, 2).toUpperCase();
+}
+
+function getUserMonogram(user?: AuthenticatedUser | null) {
+  const displayName = user?.username?.trim() || user?.email?.split('@')[0]?.trim() || 'User';
+  const parts = displayName.split(/\s+/).filter(Boolean);
+  const firstInitial = parts[0]?.[0] ?? 'U';
+  const lastInitial = parts.length > 1 ? parts[parts.length - 1]?.[0] : '';
+  return `${firstInitial}${lastInitial}`.toUpperCase();
 }
 
 function maskEmail(value?: string | null) {
@@ -580,6 +593,8 @@ function SidebarContent({
   const { activeTab, setActiveTab, rawData, modelTrained, totalRows } = useAppStore();
   const [profileOpen, setProfileOpen] = React.useState(false);
   const hasDatasetContext = Boolean(rawData?.length || totalRows > 0);
+  const displayName = currentUser?.username?.trim() || 'Workspace User';
+  const accessLevel = 'Secure Workspace';
 
   const isTabEnabled = (tabId: TabId) => {
     if (tabId === 'upload') return true;
@@ -690,34 +705,22 @@ function SidebarContent({
         <button
           type="button"
           onClick={() => setProfileOpen(true)}
-          className="group relative w-full overflow-hidden rounded-2xl border border-white/75 bg-white/82 p-3.5 text-left shadow-[0_18px_52px_-34px_rgba(31,95,168,0.42)] ring-1 ring-blue-100/70 backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-white/94 hover:shadow-[0_24px_64px_-36px_rgba(31,95,168,0.5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-white/8 dark:ring-white/10 dark:hover:bg-white/12"
+          className="group relative w-full overflow-hidden rounded-2xl border border-white/75 bg-white/82 p-3 text-left shadow-[0_18px_52px_-34px_rgba(31,95,168,0.42)] ring-1 ring-blue-100/70 backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-white/94 hover:shadow-[0_24px_64px_-36px_rgba(31,95,168,0.5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-white/8 dark:ring-white/10 dark:hover:bg-white/12"
         >
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.62),transparent_48%,rgba(76,184,240,0.08))]" />
           <div className="relative flex items-center gap-3">
-            <div className="relative shrink-0">
-              <UserAvatar user={currentUser} className="size-12 border-2 border-white shadow-[0_12px_28px_-18px_rgba(15,23,42,0.66)] dark:border-white/15" />
-              <span className="absolute -right-0.5 -bottom-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-white bg-emerald-500 shadow-sm dark:border-slate-900">
-                <ShieldCheck className="h-2.5 w-2.5 text-white" />
-              </span>
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(135deg,#2f5fa8_0%,#4cb8f0_100%)] text-xs font-semibold text-white shadow-[0_12px_26px_-18px_rgba(31,95,168,0.8)] ring-2 ring-white/80 dark:ring-white/15">
+              {getUserMonogram(currentUser)}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <p className="truncate text-sm font-bold leading-5 text-slate-900 dark:text-slate-50">
-                  {currentUser?.username ?? 'Workspace User'}
-                </p>
-                <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700 dark:border-emerald-300/20 dark:bg-emerald-300/10 dark:text-emerald-100">
-                  Secure
-                </span>
-              </div>
-              <p className="mt-0.5 truncate text-xs font-medium text-slate-500 dark:text-slate-300">Private workspace identity</p>
+              <p className="truncate text-sm font-medium leading-5 text-slate-900 dark:text-slate-50">
+                {displayName}
+              </p>
+              <p className="truncate text-xs leading-4 text-slate-500 dark:text-slate-300">{accessLevel}</p>
             </div>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-700 shadow-sm transition-all duration-300 group-hover:translate-x-0.5 group-hover:bg-blue-100 dark:border-white/10 dark:bg-white/8 dark:text-cyan-100">
-              <ChevronRight className="h-4 w-4" />
-            </div>
-          </div>
-          <div className="relative mt-3 flex items-center justify-between rounded-xl border border-blue-100/80 bg-blue-50/55 px-3 py-2 text-[11px] font-semibold text-[#2f5fa8] dark:border-white/10 dark:bg-white/6 dark:text-cyan-100">
-            <span>Profile privacy protected</span>
-            <span className="text-slate-500 dark:text-slate-300">Manage</span>
+            <span className="shrink-0 text-xs font-medium text-[#2f5fa8] transition-colors duration-300 group-hover:text-[#244f8d] dark:text-cyan-100 dark:group-hover:text-cyan-50">
+              Manage
+            </span>
           </div>
         </button>
         {currentUser && (
@@ -731,6 +734,60 @@ function SidebarContent({
         )}
       </div>
     </div>
+  );
+}
+
+function AgenticCoreLauncher() {
+  const {
+    activeDatasetKey,
+    datasets,
+    datasetId,
+    fileName,
+    totalRows,
+    loadedRowCount,
+    columns,
+  } = useAppStore();
+
+  const openAgenticCore = React.useCallback(() => {
+    const activeDataset = activeDatasetKey ? datasets[activeDatasetKey] : null;
+    const source = activeDataset ?? { datasetId, fileName, totalRows, loadedRowCount, columns };
+    const params = new URLSearchParams({ returnUrl: window.location.href });
+    if (source.fileName || source.datasetId || source.columns?.length) {
+      params.set('datasetName', source.fileName || source.datasetId || 'uploaded dataset');
+      if (source.datasetId) params.set('datasetId', source.datasetId);
+      if (source.totalRows) params.set('totalRows', String(source.totalRows));
+      if (source.loadedRowCount) params.set('loadedRows', String(source.loadedRowCount));
+      if (source.columns?.length) {
+        params.set('columns', source.columns.map((column) => column.name).filter(Boolean).slice(0, 60).join(','));
+        params.set(
+          'numericColumns',
+          source.columns
+            .filter((column) => column.role === 'numeric' || /float|int|double|decimal|number/i.test(column.dtype))
+            .map((column) => column.name)
+            .filter(Boolean)
+            .slice(0, 40)
+            .join(',')
+        );
+      }
+      params.set('autoSuggest', '1');
+    }
+    window.location.assign(`${getAgenticWorkspaceUrl()}/?${params.toString()}`);
+  }, [activeDatasetKey, columns, datasetId, datasets, fileName, loadedRowCount, totalRows]);
+
+  return (
+    <button
+      type="button"
+      aria-label="Open IDA Agentic Core"
+      onClick={openAgenticCore}
+      className="fixed bottom-6 right-6 z-[70] inline-flex min-h-12 items-center gap-2.5 rounded-xl border border-white/30 bg-[linear-gradient(135deg,#111827_0%,#087a76_58%,#315fce_100%)] py-2 pl-2.5 pr-4 text-left text-white shadow-[0_20px_52px_-24px_rgba(17,24,39,0.48)] ring-1 ring-blue-100/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_58px_-24px_rgba(17,24,39,0.58)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+    >
+      <span className="grid h-8 w-8 place-items-center rounded-lg bg-white/18 text-[10px] font-extrabold tracking-[0.04em]">IDA</span>
+      <span className="flex flex-col leading-none">
+        <span className="text-[13px] font-extrabold">Agentic Core</span>
+        <span className="mt-1 text-[10px] font-semibold text-white/72">Open workspace</span>
+      </span>
+      <ExternalLink className="h-3.5 w-3.5 text-white/72" />
+    </button>
   );
 }
 
@@ -975,6 +1032,7 @@ export default function HomePage() {
       <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-white/60 bg-[linear-gradient(180deg,rgba(237,241,246,0.92),rgba(225,235,247,0.82))] shadow-[18px_0_70px_-46px_rgba(31,95,168,0.5)] backdrop-blur-2xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(20,36,58,0.94),rgba(15,29,48,0.88))] lg:flex">
         <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} onProfileUpdated={setCurrentUser} />
       </aside>
+      <AgenticCoreLauncher />
 
       {/* Main Content */}
       <div className={cn('flex min-w-0 flex-1 flex-col', DESKTOP_SIDEBAR_WIDTH)}>
