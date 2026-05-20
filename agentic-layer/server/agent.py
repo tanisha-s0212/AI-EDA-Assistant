@@ -15,7 +15,8 @@ from .workspace import (
 )
 
 
-SUPPORTED_MODES = {"ask", "plan", "review", "explain", "search", "fast", "balanced", "deep"}
+MODEL_MODES = {"stable", "fast", "balanced", "deep"}
+SUPPORTED_MODES = {"ask", "plan", "review", "explain", "search", *MODEL_MODES}
 SUPPORTED_PROVIDERS = {"longcat", "gemini", "groq"}
 
 
@@ -28,11 +29,11 @@ class AgentResponse:
 
 
 def _model_mode(ui_mode: str) -> str:
-    if ui_mode in {"fast", "balanced", "deep"}:
+    if ui_mode in MODEL_MODES:
         return ui_mode
     if ui_mode in {"plan", "review"}:
         return "balanced"
-    return Settings.default_mode if Settings.default_mode in {"fast", "balanced", "deep"} else "fast"
+    return Settings.default_mode if Settings.default_mode in MODEL_MODES else "stable"
 
 
 def _search_terms(message: str) -> str:

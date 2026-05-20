@@ -86,6 +86,7 @@ class AgenticRequestHandler(BaseHTTPRequestHandler):
                         "longcat_configured": Settings.provider_configured("longcat"),
                         "gemini_configured": Settings.provider_configured("gemini"),
                         "groq_configured": Settings.provider_configured("groq"),
+                        "models": Settings.model_switching_map(),
                     },
                 }
             )

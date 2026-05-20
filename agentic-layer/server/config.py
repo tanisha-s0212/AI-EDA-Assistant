@@ -47,7 +47,8 @@ class Settings:
     longcat_deep_model = os.getenv("LONGCAT_DEEP_MODEL", "LongCat-Flash-Thinking")
 
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-    gemini_fast_model = os.getenv("GEMINI_FAST_MODEL", "gemini-2.5-flash-lite")
+    gemini_stable_model = os.getenv("GEMINI_STABLE_MODEL", "gemini-3.1-flash-lite")
+    gemini_fast_model = os.getenv("GEMINI_FAST_MODEL", gemini_stable_model)
     gemini_balanced_model = os.getenv("GEMINI_BALANCED_MODEL", "gemini-2.5-flash")
     gemini_deep_model = os.getenv("GEMINI_DEEP_MODEL", "gemini-2.5-pro")
 
@@ -79,6 +80,8 @@ class Settings:
 
     @classmethod
     def gemini_model_for_mode(cls, mode: str) -> str:
+        if mode == "stable":
+            return cls.gemini_stable_model
         if mode == "deep":
             return cls.gemini_deep_model
         if mode == "balanced":
@@ -87,6 +90,31 @@ class Settings:
 
     @classmethod
     def groq_model_for_mode(cls, mode: str) -> str:
-        if mode == "fast":
+        if mode in {"fast", "stable"}:
             return cls.groq_fast_model
         return cls.groq_fallback_model
+
+    @classmethod
+    def model_switching_map(cls) -> dict[str, dict[str, str]]:
+        return {
+            "stable": {
+                "gemini": cls.gemini_model_for_mode("stable"),
+                "longcat": cls.longcat_model_for_mode("fast"),
+                "groq": cls.groq_model_for_mode("stable"),
+            },
+            "fast": {
+                "gemini": cls.gemini_model_for_mode("fast"),
+                "longcat": cls.longcat_model_for_mode("fast"),
+                "groq": cls.groq_model_for_mode("fast"),
+            },
+            "balanced": {
+                "gemini": cls.gemini_model_for_mode("balanced"),
+                "longcat": cls.longcat_model_for_mode("balanced"),
+                "groq": cls.groq_model_for_mode("balanced"),
+            },
+            "deep": {
+                "gemini": cls.gemini_model_for_mode("deep"),
+                "longcat": cls.longcat_model_for_mode("deep"),
+                "groq": cls.groq_model_for_mode("deep"),
+            },
+        }

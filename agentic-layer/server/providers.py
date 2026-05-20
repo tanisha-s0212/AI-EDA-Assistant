@@ -22,11 +22,13 @@ def _unique(values: list[str]) -> list[str]:
 
 
 def _gemini_model_candidates(mode: str) -> list[str]:
+    if mode == "stable":
+        return _unique([Settings.gemini_stable_model, Settings.gemini_fast_model])
     if mode == "deep":
-        return _unique([Settings.gemini_deep_model, Settings.gemini_balanced_model, Settings.gemini_fast_model])
+        return _unique([Settings.gemini_deep_model, Settings.gemini_balanced_model, Settings.gemini_stable_model, Settings.gemini_fast_model])
     if mode == "balanced":
-        return _unique([Settings.gemini_balanced_model, Settings.gemini_fast_model, Settings.gemini_deep_model])
-    return _unique([Settings.gemini_fast_model, Settings.gemini_balanced_model])
+        return _unique([Settings.gemini_balanced_model, Settings.gemini_stable_model, Settings.gemini_fast_model, Settings.gemini_deep_model])
+    return _unique([Settings.gemini_fast_model, Settings.gemini_stable_model, Settings.gemini_balanced_model])
 
 
 def _longcat_model_candidates(mode: str) -> list[str]:
@@ -38,7 +40,7 @@ def _longcat_model_candidates(mode: str) -> list[str]:
 
 
 def _groq_model_candidates(mode: str) -> list[str]:
-    if mode == "fast":
+    if mode in {"fast", "stable"}:
         return _unique([Settings.groq_fast_model, Settings.groq_fallback_model])
     return _unique([Settings.groq_fallback_model, Settings.groq_fast_model])
 

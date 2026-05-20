@@ -27,14 +27,18 @@ LONGCAT_DEEP_MODEL=LongCat-Flash-Thinking
 ## Gemini Models
 
 ```env
-GEMINI_FAST_MODEL=gemini-2.5-flash-lite
+GEMINI_STABLE_MODEL=gemini-3.1-flash-lite
+GEMINI_FAST_MODEL=gemini-3.1-flash-lite
 GEMINI_BALANCED_MODEL=gemini-2.5-flash
 GEMINI_DEEP_MODEL=gemini-2.5-pro
 ```
 
-- Primary fast/free-friendly model: `gemini-2.5-flash-lite`
+- Stable default model: `gemini-3.1-flash-lite`
+- Primary fast/free-friendly model: `gemini-3.1-flash-lite`
 - Better reasoning model: `gemini-2.5-flash`
 - Deep reasoning model: `gemini-2.5-pro`
+
+Model switching uses the `stable`, `fast`, `balanced`, and `deep` mode map. Gemini falls back to the stable Flash-Lite model whenever a higher-reasoning Gemini model is unavailable.
 
 ## Groq Models
 

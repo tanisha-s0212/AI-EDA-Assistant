@@ -122,11 +122,6 @@ type DatasetPreviewResponse = {
 const INDIA_TIMEZONE = 'Asia/Kolkata';
 const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
 const AROHA_LOGO_URL = 'https://aroha.co.in/wp-content/uploads/2024/08/aroha_logo.png';
-const AGENTIC_LAUNCHER_URL = process.env.NEXT_PUBLIC_AGENTIC_LAUNCHER_URL || '/api/agentic/core';
-
-function getAgenticWorkspaceUrl() {
-  return AGENTIC_LAUNCHER_URL.replace(/\/launcher\.js$/i, '').replace(/\/$/, '');
-}
 
 function formatActivityTimestamp(value: string | null) {
   const parsed = value ? new Date(value) : new Date();
@@ -737,48 +732,12 @@ function SidebarContent({
   );
 }
 
-function AgenticCoreLauncher() {
-  const {
-    activeDatasetKey,
-    datasets,
-    datasetId,
-    fileName,
-    totalRows,
-    loadedRowCount,
-    columns,
-  } = useAppStore();
-
-  const openAgenticCore = React.useCallback(() => {
-    const activeDataset = activeDatasetKey ? datasets[activeDatasetKey] : null;
-    const source = activeDataset ?? { datasetId, fileName, totalRows, loadedRowCount, columns };
-    const params = new URLSearchParams({ returnUrl: window.location.href });
-    if (source.fileName || source.datasetId || source.columns?.length) {
-      params.set('datasetName', source.fileName || source.datasetId || 'uploaded dataset');
-      if (source.datasetId) params.set('datasetId', source.datasetId);
-      if (source.totalRows) params.set('totalRows', String(source.totalRows));
-      if (source.loadedRowCount) params.set('loadedRows', String(source.loadedRowCount));
-      if (source.columns?.length) {
-        params.set('columns', source.columns.map((column) => column.name).filter(Boolean).slice(0, 60).join(','));
-        params.set(
-          'numericColumns',
-          source.columns
-            .filter((column) => column.role === 'numeric' || /float|int|double|decimal|number/i.test(column.dtype))
-            .map((column) => column.name)
-            .filter(Boolean)
-            .slice(0, 40)
-            .join(',')
-        );
-      }
-      params.set('autoSuggest', '1');
-    }
-    window.location.assign(`${getAgenticWorkspaceUrl()}/?${params.toString()}`);
-  }, [activeDatasetKey, columns, datasetId, datasets, fileName, loadedRowCount, totalRows]);
-
+function AgenticCoreLauncher({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       aria-label="Open IDA Agentic Core"
-      onClick={openAgenticCore}
+      onClick={onOpen}
       className="fixed bottom-6 right-6 z-[70] inline-flex min-h-12 items-center gap-2.5 rounded-xl border border-white/30 bg-[linear-gradient(135deg,#111827_0%,#087a76_58%,#315fce_100%)] py-2 pl-2.5 pr-4 text-left text-white shadow-[0_20px_52px_-24px_rgba(17,24,39,0.48)] ring-1 ring-blue-100/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_58px_-24px_rgba(17,24,39,0.58)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
     >
       <span className="grid h-8 w-8 place-items-center rounded-lg bg-white/18 text-[10px] font-extrabold tracking-[0.04em]">IDA</span>
@@ -786,7 +745,7 @@ function AgenticCoreLauncher() {
         <span className="text-[13px] font-extrabold">Agentic Core</span>
         <span className="mt-1 text-[10px] font-semibold text-white/72">Open workspace</span>
       </span>
-      <ExternalLink className="h-3.5 w-3.5 text-white/72" />
+      <BrainCircuit className="h-3.5 w-3.5 text-white/72" />
     </button>
   );
 }
@@ -820,6 +779,7 @@ export default function HomePage() {
   const [isResolvingAuth, setIsResolvingAuth] = React.useState(true);
   const [isRefreshingActivity, setIsRefreshingActivity] = React.useState(false);
   const [isRestoringWorkspace, setIsRestoringWorkspace] = React.useState(false);
+  const [agenticWorkspaceOpen, setAgenticWorkspaceOpen] = React.useState(false);
   const [recentActivity, setRecentActivity] = React.useState<ActivityResponse['activities'][number] | null>(null);
   const [currentTime, setCurrentTime] = React.useState(() => new Date());
   const lastRestoreDatasetIdRef = React.useRef<string | null>(null);
@@ -1032,7 +992,18 @@ export default function HomePage() {
       <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-white/60 bg-[linear-gradient(180deg,rgba(237,241,246,0.92),rgba(225,235,247,0.82))] shadow-[18px_0_70px_-46px_rgba(31,95,168,0.5)] backdrop-blur-2xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(20,36,58,0.94),rgba(15,29,48,0.88))] lg:flex">
         <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} onProfileUpdated={setCurrentUser} />
       </aside>
-      <AgenticCoreLauncher />
+      {agenticEnabled && <AgenticCoreLauncher onOpen={() => setAgenticWorkspaceOpen(true)} />}
+      <Dialog open={agenticWorkspaceOpen} onOpenChange={setAgenticWorkspaceOpen}>
+        <DialogContent className="max-h-[88vh] overflow-y-auto rounded-xl border border-white/80 bg-[#f5f8fc] p-4 shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#101b2c] sm:max-w-6xl">
+          <DialogHeader className="text-left">
+            <DialogTitle>IDA Agentic Core</DialogTitle>
+            <DialogDescription>
+              Agentic workspace for the active dataset inside Intelligent Data Assistant.
+            </DialogDescription>
+          </DialogHeader>
+          <AgenticWorkspace datasetId={activeDatasetId} fileName={displayFileName} />
+        </DialogContent>
+      </Dialog>
 
       {/* Main Content */}
       <div className={cn('flex min-w-0 flex-1 flex-col', DESKTOP_SIDEBAR_WIDTH)}>
@@ -1138,11 +1109,6 @@ export default function HomePage() {
                   <UploadTab />
                 </div>
               )}
-              {/* # AGENTIC LAYER START */}
-              {agenticEnabled && hasWorkspace && (
-                <AgenticWorkspace datasetId={activeDatasetId} fileName={displayFileName} />
-              )}
-              {/* # AGENTIC LAYER END */}
               <div className="glass-panel rounded-xl border border-white/78 px-3 py-4 shadow-[0_26px_76px_-42px_rgba(31,95,168,0.36)] ring-1 ring-white/58 dark:border-white/10 dark:ring-white/8 sm:px-5 sm:py-5">
                 <div className="mb-5 flex flex-col gap-3 rounded-xl border border-white/72 bg-white/70 px-4 py-3 shadow-[0_18px_50px_-36px_rgba(31,95,168,0.28)] ring-1 ring-white/54 backdrop-blur-xl transition-all duration-300 hover:bg-white/82 dark:border-white/10 dark:bg-white/8 dark:ring-white/8 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">

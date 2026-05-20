@@ -41,7 +41,7 @@ The main React app uses:
 
 ```env
 NEXT_PUBLIC_AGENTIC_ENABLED=true
-NEXT_PUBLIC_AGENTIC_LAUNCHER_URL=/api/agentic/core
+NEXT_PUBLIC_AGENTIC_API_BASE=/api/agentic
 ```
 
 The launcher appears after login and opens the backend-hosted IDA Agentic Core workspace with the active dataset context and a return URL.
@@ -52,6 +52,13 @@ Provider keys still live in:
 
 ```text
 agentic-layer/.env
+```
+
+Gemini stable model switching is configured with:
+
+```env
+GEMINI_STABLE_MODEL=gemini-3.1-flash-lite
+GEMINI_FAST_MODEL=gemini-3.1-flash-lite
 ```
 
 The backend imports the provider configuration and local workflow helpers from `agentic-layer/server`, but serving and API handling happen through `backend/main.py`.

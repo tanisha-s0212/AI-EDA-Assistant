@@ -599,6 +599,11 @@ def agentic_health() -> JSONResponse:
             'agentic_enabled': enabled,
             'db_connected': db_connected,
             'db_fallback_active': enabled and not db_connected,
+            'providers': {
+                'primary': CoreSettings.primary_provider,
+                'fallbacks': CoreSettings.fallback_providers,
+                'models': CoreSettings.model_switching_map(),
+            },
         }
     )
 
@@ -614,6 +619,7 @@ def core_health() -> JSONResponse:
                 'longcat_configured': CoreSettings.provider_configured('longcat'),
                 'gemini_configured': CoreSettings.provider_configured('gemini'),
                 'groq_configured': CoreSettings.provider_configured('groq'),
+                'models': CoreSettings.model_switching_map(),
             },
         }
     )

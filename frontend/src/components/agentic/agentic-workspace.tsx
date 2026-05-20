@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import axios from 'axios';
 import { AlertCircle, Check, Download, Loader2, Play, SkipForward } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -11,6 +12,11 @@ import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import type { AgenticStepStatus, ColumnInfo, Recommendation } from '@/lib/store';
 import { cn } from '@/lib/utils';
+
+const agenticApiClient = axios.create({
+  baseURL: (process.env.NEXT_PUBLIC_AGENTIC_API_BASE || '/api/agentic').replace(/\/$/, ''),
+  withCredentials: true,
+});
 
 const PIPELINE_STEPS = [
   'Data Understanding',
@@ -159,7 +165,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
 
   const refreshHealth = React.useCallback(async () => {
     try {
-      const response = await apiClient.get<AgenticHealth>('/agentic/health');
+      const response = await agenticApiClient.get<AgenticHealth>('/health');
       setHealth(response.data);
       setBanner(response.data.db_connected ? null : 'Running in offline mode — decisions will not persist across sessions');
     } catch {
@@ -176,7 +182,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     if (!agenticSessionId) return;
     const pollStatus = async () => {
       try {
-        const response = await apiClient.get<StatusResponse>(`/agentic/session/${agenticSessionId}/status`);
+        const response = await agenticApiClient.get<StatusResponse>(`/session/${agenticSessionId}/status`);
         const currentStatuses = useAppStore.getState().agenticStepStatuses;
         Object.entries(response.data.steps ?? {}).forEach(([step, status]) => {
           const currentStatus = currentStatuses[step];
@@ -207,7 +213,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     setIsSuggesting(true);
     setBanner(null);
     try {
-      const response = await apiClient.post<SuggestResponse>('/agentic/suggest-next-steps', {
+      const response = await agenticApiClient.post<SuggestResponse>('/suggest-next-steps', {
         dataset_path: datasetId,
       });
       setAgenticSessionId(response.data.session_id);
@@ -228,7 +234,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   }, [datasetId, health?.agentic_enabled, suggestNextSteps]);
 
   const downloadReport = async (sessionId: string) => {
-    const response = await apiClient.get(`/agentic/session/${sessionId}/report`, { responseType: 'blob' });
+    const response = await agenticApiClient.get(`/session/${sessionId}/report`, { responseType: 'blob' });
     const url = URL.createObjectURL(response.data);
     const link = document.createElement('a');
     link.href = url;
@@ -400,7 +406,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     setAgenticStepStatus(activeRecommendation.step, 'running');
     try {
       const outputSummary = await runApprovedStep(activeRecommendation.step);
-      await apiClient.post('/agentic/decision', {
+      await agenticApiClient.post('/decision', {
         session_id: agenticSessionId,
         step_name: activeRecommendation.step,
         decision: 'accepted',
@@ -420,7 +426,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const skipRecommendation = async () => {
     if (!activeRecommendation || !agenticSessionId) return;
     try {
-      const response = await apiClient.post<{ next_recommendations?: Recommendation[] }>('/agentic/decision', {
+      const response = await agenticApiClient.post<{ next_recommendations?: Recommendation[] }>('/decision', {
         session_id: agenticSessionId,
         step_name: activeRecommendation.step,
         decision: 'skipped',
