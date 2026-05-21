@@ -62,6 +62,33 @@ export interface DatasetProfile {
   zero_value_share: number;
 }
 
+export interface ForecastDataQuality {
+  score: number;
+  status: 'pass' | 'warning' | 'fail';
+  minimum_required_periods: number;
+  usable_periods: number;
+  missing_share: number;
+  zero_or_negative_share: number;
+  volatility: number;
+  issues: string[];
+}
+
+export interface ForecastModelComparison {
+  model_type: string;
+  model_name: string;
+  status: string;
+  metrics?: { mae: number; rmse: number; mape: number };
+  skip_reason?: string;
+  availability_note?: string;
+  tuning?: { enabled: boolean; note?: string };
+}
+
+export interface ForecastNaiveBaseline {
+  model_name: string;
+  metrics: { mae: number; rmse: number; mape: number };
+  mae_improvement_pct: number;
+}
+
 export interface StationarityCheck {
   test_name: string;
   p_value: number;
@@ -90,12 +117,16 @@ export interface TimeSeriesForecastResult {
   frequency?: string;
   period_label?: string;
   dataset_profile: DatasetProfile;
+  data_quality?: ForecastDataQuality;
   stationarity_check: StationarityCheck;
   history: { period: string; actual: number }[];
   test_forecast: ForecastPoint[];
   future_forecast: ForecastPoint[];
   metrics: { mae: number; rmse: number; mape: number };
   training_summary: ForecastTrainingSummary;
+  model_comparison?: ForecastModelComparison[];
+  naive_baseline?: ForecastNaiveBaseline;
+  assumptions_audit?: string[];
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };
   analysis: string;
@@ -107,6 +138,7 @@ export interface MlForecastResult {
   frequency?: string;
   period_label?: string;
   dataset_profile: DatasetProfile;
+  data_quality?: ForecastDataQuality;
   generated_features: string[];
   feature_preview_rows: Record<string, string | number | null>[];
   history: { period: string; actual: number }[];
@@ -115,6 +147,9 @@ export interface MlForecastResult {
   metrics: { mae: number; rmse: number; mape: number };
   training_summary: ForecastTrainingSummary & { lag_periods: number };
   shap_feature_importance: ForecastFeatureImportance[];
+  model_comparison?: ForecastModelComparison[];
+  naive_baseline?: ForecastNaiveBaseline;
+  assumptions_audit?: string[];
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };
   analysis: string;
@@ -229,8 +264,8 @@ export interface AppState extends DatasetWorkspaceState {
   selectDataset: (key: string) => void;
   setReportGenerated: (v: boolean) => void;
   setReportUrl: (v: string | null) => void;
-  runLossForecast: (sessionId: string, periods: number) => Promise<void>;
-  runProfitForecast: (sessionId: string, periods: number) => Promise<void>;
+  runLossForecast: (sessionId: string, periods: number, options?: { confirmedAssumptions?: boolean }) => Promise<void>;
+  runProfitForecast: (sessionId: string, periods: number, options?: { confirmedAssumptions?: boolean; scenarioParameters?: Record<string, Record<string, number>>; scenarios?: Record<string, number> }) => Promise<void>;
   fetchLossSegments: (sessionId: string) => Promise<void>;
   fetchBreakeven: (sessionId: string) => Promise<void>;
   resetForecasts: () => void;
@@ -502,10 +537,14 @@ const store = create<AppState>()(
       },
       setReportGenerated: (v) => set({ reportGenerated: v }),
       setReportUrl: (v) => set({ reportUrl: v }),
-      runLossForecast: async (sessionId, periods) => {
+      runLossForecast: async (sessionId, periods, options) => {
         set({ lossLoading: true, lossError: null });
         try {
-          const response = await apiClient.post('/loss-forecast/run', { session_id: sessionId, forecast_periods: periods });
+          const response = await apiClient.post('/loss-forecast/run', {
+            session_id: sessionId,
+            forecast_periods: periods,
+            confirmed_assumptions: Boolean(options?.confirmedAssumptions),
+          });
           set({
             lossForecast: response.data.loss_forecast ?? [],
             lossSegments: response.data.segments ?? [],
@@ -521,10 +560,23 @@ const store = create<AppState>()(
           throw error;
         }
       },
-      runProfitForecast: async (sessionId, periods) => {
+      runProfitForecast: async (sessionId, periods, options) => {
         set({ profitLoading: true, profitError: null });
         try {
-          const response = await apiClient.post('/profit-forecast/run', { session_id: sessionId, forecast_periods: periods });
+          const scalarScenarioParameters = options?.scenarios
+            ? Object.fromEntries(
+                Object.entries(options.scenarios).map(([scenario, multiplier]) => [
+                  scenario,
+                  { revenue: multiplier },
+                ]),
+              )
+            : {};
+          const response = await apiClient.post('/profit-forecast/run', {
+            session_id: sessionId,
+            forecast_periods: periods,
+            confirmed_assumptions: Boolean(options?.confirmedAssumptions),
+            scenario_parameters: options?.scenarioParameters ?? scalarScenarioParameters,
+          });
           const scenarios = response.data.scenarios as ScenarioComparison;
           set({
             scenarios,

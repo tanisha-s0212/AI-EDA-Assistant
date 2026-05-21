@@ -26,9 +26,11 @@ import { useToast } from '@/hooks/use-toast';
 import { getApiErrorMessage } from '@/lib/api';
 import type { ProfitForecastResult, ProfitScenario } from '@/types/forecast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -130,6 +132,8 @@ export default function ProfitForecastTab() {
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const [periods, setPeriods] = useState(30);
   const [scenario, setScenario] = useState<ProfitScenario>('baseline');
+  const [confirmedAssumptions, setConfirmedAssumptions] = useState(false);
+  const [assumptionDialogOpen, setAssumptionDialogOpen] = useState(false);
 
   const locked = !datasetId || !lossForecast?.length;
   const activeRows = scenarios?.[scenario] ?? [];
@@ -194,10 +198,23 @@ export default function ProfitForecastTab() {
     { label: 'Net Margin %', value: `${number.format(summary.selected.netMargin)}%`, delta: scenario === 'baseline' ? null : deltaText(summary.selected.netMargin, summary.baseline.netMargin), Icon: Scale },
   ];
 
-  const handleRun = async () => {
+  const handleRun = async (confirmedOverride?: boolean) => {
     if (!datasetId) return;
+    const assumptionsConfirmed = confirmedOverride ?? confirmedAssumptions;
+    if (!assumptionsConfirmed) {
+      setAssumptionDialogOpen(true);
+      return;
+    }
     try {
-      await runProfitForecast(datasetId, periods);
+      setConfirmedAssumptions(true);
+      await runProfitForecast(datasetId, periods, {
+        confirmedAssumptions: true,
+        scenarioParameters: {
+          optimistic: { revenue: 1.1, cogs: 0.97, loss: 0.8 },
+          baseline: { revenue: 1, cogs: 1, loss: 1 },
+          pessimistic: { revenue: 0.9, cogs: 1.05, loss: 1.2 },
+        },
+      });
       toast({ title: 'Profit forecast ready', description: 'Generated optimistic, baseline, and pessimistic P&L scenarios.' });
     } catch (error) {
       toast({ title: 'Profit forecast failed', description: getApiErrorMessage(error, 'Unable to run profit forecast.'), variant: 'destructive' });
@@ -253,7 +270,7 @@ export default function ProfitForecastTab() {
                 <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
                 <SelectContent>{PERIOD_OPTIONS.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
               </Select>
-              <Button onClick={handleRun} disabled={profitLoading} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button onClick={() => handleRun()} disabled={profitLoading} className="bg-emerald-600 text-white hover:bg-emerald-700">
                 {profitLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
                 Run Profit Forecast
               </Button>
@@ -261,6 +278,35 @@ export default function ProfitForecastTab() {
           </div>
         </CardContent>
       </Card>
+
+      <Alert>
+        <Scale className="h-4 w-4" />
+        <AlertTitle>Scenario Confirmation Required</AlertTitle>
+        <AlertDescription className="space-y-3">
+          <p>Profit forecasting uses confirmed scenario multipliers, mapped revenue/cost fields, loss forecast output, and an audited P&L calculation trail.</p>
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Checkbox checked={confirmedAssumptions} onCheckedChange={(checked) => setConfirmedAssumptions(Boolean(checked))} />
+            I confirm the scenario parameters and calculation assumptions for this run.
+          </label>
+        </AlertDescription>
+      </Alert>
+
+      <AlertDialog open={assumptionDialogOpen} onOpenChange={setAssumptionDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Profit Forecast Assumptions</AlertDialogTitle>
+            <AlertDialogDescription>
+              This run will use the selected scenario parameters, mapped revenue/cost fields, loss forecast output, and audited P&L calculations.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Review Again</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleRun(true)} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              Confirm And Run
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {profitError && (
         <Alert variant="destructive">

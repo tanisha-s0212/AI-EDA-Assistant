@@ -36,6 +36,12 @@ function formatChartValue(value: number | null | undefined) {
   return value == null || Number.isNaN(value) ? 'N/A' : value.toLocaleString();
 }
 
+function modelStatusClass(status: string) {
+  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (status === 'skipped') return 'border-amber-200 bg-amber-50 text-amber-700';
+  return 'border-red-200 bg-red-50 text-red-700';
+}
+
 function ForecastTooltip({
   active,
   payload,
@@ -452,6 +458,57 @@ export default function TimeSeriesForecastTab() {
                       <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>MAE</CardDescription><CardTitle className="text-2xl">{result.metrics.mae.toLocaleString()}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Average absolute forecast error on the backtest window.</CardContent></Card>
                       <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>MAPE</CardDescription><CardTitle className="text-2xl">{result.metrics.mape}%</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Average percentage error over held-out periods.</CardContent></Card>
                     </div>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Production Validation</CardTitle>
+                        <CardDescription>Auto-selection, data quality gate, naive baseline, and calculation assumptions.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="grid gap-4 lg:grid-cols-3">
+                        <div className="rounded-xl border p-4">
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Data Quality</p>
+                          <p className="mt-2 text-2xl font-bold">{result.data_quality?.score ?? 'N/A'}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{result.data_quality?.status ?? 'Not scored'}</p>
+                        </div>
+                        <div className="rounded-xl border p-4">
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Naive Baseline MAE</p>
+                          <p className="mt-2 text-2xl font-bold">{result.naive_baseline?.metrics.mae ?? 'N/A'}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{result.naive_baseline?.mae_improvement_pct ?? 0}% MAE improvement</p>
+                        </div>
+                        <div className="rounded-xl border p-4">
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Audit Trail</p>
+                          <p className="mt-2 text-sm text-muted-foreground">{result.assumptions_audit?.slice(0, 2).join(' ') ?? 'No assumptions captured.'}</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {result.model_comparison?.length ? (
+                      <Card>
+                        <CardHeader>
+                          <CardTitle>Model Comparison</CardTitle>
+                          <CardDescription>Walk-forward validation across Prophet, SARIMA, XGBoost, and LightGBM candidates.</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <Table>
+                            <TableHeader><TableRow><TableHead>Model</TableHead><TableHead>Status</TableHead><TableHead>MAE</TableHead><TableHead>RMSE</TableHead><TableHead>MAPE</TableHead><TableHead>Availability / Training Note</TableHead></TableRow></TableHeader>
+                            <TableBody>
+                              {result.model_comparison.map((model) => (
+                                <TableRow key={model.model_type}>
+                                  <TableCell>{model.model_name}</TableCell>
+                                  <TableCell><Badge variant="outline" className={modelStatusClass(model.status)}>{model.status}</Badge></TableCell>
+                                  <TableCell>{model.metrics?.mae ?? 'N/A'}</TableCell>
+                                  <TableCell>{model.metrics?.rmse ?? 'N/A'}</TableCell>
+                                  <TableCell>{model.metrics?.mape ?? 'N/A'}</TableCell>
+                                  <TableCell className="max-w-md text-sm text-muted-foreground">
+                                    {[model.availability_note, model.skip_reason, model.tuning?.note].filter(Boolean).join(' ')}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </CardContent>
+                      </Card>
+                    ) : null}
 
                     <Card>
                       <CardHeader>

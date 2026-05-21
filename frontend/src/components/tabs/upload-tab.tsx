@@ -17,6 +17,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { useAppStore, type ColumnInfo, type DataRow, type DatasetSheetSummary, type DatasetWorkspaceDraft } from '@/lib/store';
@@ -532,10 +533,11 @@ export default function UploadTab() {
     });
   }, [sheetMergeMode]);
 
-  const handleApplySheetSelection = useCallback(async () => {
+  const handleApplySheetSelection = useCallback(async (overrideSelection?: string[]) => {
     if (!pendingWorkbook) return;
 
-    const selected = sheetMergeMode === 'single' ? sheetSelection.slice(0, 1) : sheetSelection;
+    const currentSelection = overrideSelection ?? sheetSelection;
+    const selected = sheetMergeMode === 'single' ? currentSelection.slice(0, 1) : currentSelection;
     if (!selected.length) {
       toast({
         title: 'Sheet selection required',
@@ -750,6 +752,26 @@ export default function UploadTab() {
                   Stack Matching Sheets
                 </Button>
               </div>
+              <div className="max-w-md">
+                <Select
+                  value={sheetSelection[0] ?? pendingWorkbook.sheetSelection?.availableSheets?.[0]?.name ?? ''}
+                  onValueChange={(value) => {
+                    setSheetMergeMode('single');
+                    setSheetSelection([value]);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a worksheet" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(pendingWorkbook.sheetSelection?.availableSheets ?? []).map((sheet) => (
+                      <SelectItem key={sheet.name} value={sheet.name}>
+                        {sheet.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="grid gap-2 md:grid-cols-2">
                 {(pendingWorkbook.sheetSelection?.availableSheets ?? []).map((sheet) => {
                   const isActive = sheetSelection.includes(sheet.name);
@@ -774,12 +796,22 @@ export default function UploadTab() {
                 <p className="text-xs text-muted-foreground">
                   {sheetMergeMode === 'stack'
                     ? 'Stack mode requires selected sheets to have matching column structure.'
-                    : 'Single mode uses one sheet and keeps the legacy flow exactly as before.'}
+                    : 'Single mode uses one sheet. Skipping selection uses the first non-empty sheet.'}
                 </p>
-                <Button type="button" onClick={() => void handleApplySheetSelection()} disabled={isApplyingSheetSelection || sheetSelection.length === 0}>
-                  {isApplyingSheetSelection ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Continue With Selected Sheets
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleApplySheetSelection([pendingWorkbook.sheetSelection?.availableSheets?.[0]?.name ?? ''])}
+                    disabled={isApplyingSheetSelection || !pendingWorkbook.sheetSelection?.availableSheets?.[0]?.name}
+                  >
+                    Use First Sheet
+                  </Button>
+                  <Button type="button" onClick={() => void handleApplySheetSelection()} disabled={isApplyingSheetSelection || sheetSelection.length === 0}>
+                    {isApplyingSheetSelection ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Continue With Selected Sheets
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>

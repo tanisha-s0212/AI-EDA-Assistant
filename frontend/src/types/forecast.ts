@@ -56,6 +56,10 @@ export interface ScenarioComparison {
   pessimistic: ProfitForecastResult[];
 }
 
+export interface ForecastAssumptionAudit {
+  assumptions_audit?: string[];
+}
+
 export interface ReportConfig {
   includeLoss: boolean;
   includeProfit: boolean;

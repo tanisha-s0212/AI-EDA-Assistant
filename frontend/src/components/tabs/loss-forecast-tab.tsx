@@ -23,9 +23,11 @@ import { useToast } from '@/hooks/use-toast';
 import { getApiErrorMessage } from '@/lib/api';
 import type { LossForecastResult, SegmentBreakdown } from '@/types/forecast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -138,6 +140,8 @@ export default function LossForecastTab() {
   const [segmentView, setSegmentView] = useState<'category' | 'region'>('category');
   const [page, setPage] = useState(0);
   const [sortKey, setSortKey] = useState<keyof LossForecastResult>('period');
+  const [confirmedAssumptions, setConfirmedAssumptions] = useState(false);
+  const [assumptionDialogOpen, setAssumptionDialogOpen] = useState(false);
 
   const locked = !timeSeriesForecastResult || !mlForecastResult || !datasetId;
 
@@ -167,10 +171,16 @@ export default function LossForecastTab() {
     return driverTotals.slice(0, 3);
   }, [lossForecast]);
 
-  const handleRun = async () => {
+  const handleRun = async (confirmedOverride?: boolean) => {
     if (!datasetId) return;
+    const assumptionsConfirmed = confirmedOverride ?? confirmedAssumptions;
+    if (!assumptionsConfirmed) {
+      setAssumptionDialogOpen(true);
+      return;
+    }
     try {
-      await runLossForecast(datasetId, periods);
+      setConfirmedAssumptions(true);
+      await runLossForecast(datasetId, periods, { confirmedAssumptions: true });
       setPage(0);
       toast({ title: 'Loss forecast ready', description: `Generated risk and loss projections for ${periods} future periods.` });
     } catch (error) {
@@ -212,13 +222,42 @@ export default function LossForecastTab() {
               <SelectTrigger className="w-full sm:w-36"><SelectValue /></SelectTrigger>
               <SelectContent>{PERIOD_OPTIONS.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
             </Select>
-            <Button onClick={handleRun} disabled={lossLoading} className="bg-red-600 text-white hover:bg-red-700">
+            <Button onClick={() => handleRun()} disabled={lossLoading} className="bg-red-600 text-white hover:bg-red-700">
               {lossLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
               Run Loss Forecast
             </Button>
           </div>
         </CardContent>
       </Card>
+
+      <Alert>
+        <ShieldAlert className="h-4 w-4" />
+        <AlertTitle>Assumption Confirmation Required</AlertTitle>
+        <AlertDescription className="space-y-3">
+          <p>Loss forecasting uses confirmed revenue/date mappings plus audited fallbacks only where explicit loss-driver columns are unavailable.</p>
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Checkbox checked={confirmedAssumptions} onCheckedChange={(checked) => setConfirmedAssumptions(Boolean(checked))} />
+            I confirm the mapped columns and calculation assumptions for this run.
+          </label>
+        </AlertDescription>
+      </Alert>
+
+      <AlertDialog open={assumptionDialogOpen} onOpenChange={setAssumptionDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Loss Forecast Assumptions</AlertDialogTitle>
+            <AlertDialogDescription>
+              This run will use confirmed revenue/date mappings and audited fallback loss-driver calculations where direct loss columns are unavailable.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Review Again</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleRun(true)} className="bg-red-600 text-white hover:bg-red-700">
+              Confirm And Run
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {lossError && (
         <Alert variant="destructive">
