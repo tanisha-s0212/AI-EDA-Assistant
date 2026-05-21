@@ -13,6 +13,7 @@ import time
 import traceback
 import uuid
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import escape
 from math import erf, sqrt
 from datetime import date, datetime, time as dt_time
@@ -25,8 +26,15 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import polars as pl
-import pyarrow.parquet as pq
 import psycopg
+try:
+    import pyarrow.parquet as pq
+except Exception:  # pragma: no cover - optional runtime dependency with friendly parquet errors
+    pq = None
+try:
+    from dateutil import parser as date_parser
+except Exception:  # pragma: no cover - pandas normally installs python-dateutil
+    date_parser = None
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -50,6 +58,31 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+try:
+    from xgboost import XGBRegressor
+except Exception:  # pragma: no cover - optional production dependency
+    XGBRegressor = None
+
+try:
+    from lightgbm import LGBMRegressor
+except Exception:  # pragma: no cover - optional production dependency
+    LGBMRegressor = None
+
+try:
+    from prophet import Prophet
+except Exception:  # pragma: no cover - optional production dependency
+    Prophet = None
+
+try:
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+except Exception:  # pragma: no cover - optional production dependency
+    SARIMAX = None
+
+try:
+    import optuna
+except Exception:  # pragma: no cover - optional production dependency
+    optuna = None
 
 warnings.filterwarnings('ignore')
 matplotlib.use('Agg')
@@ -829,6 +862,244 @@ def write_cached_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
     return target
 
 
+class IngestionFormatError(ValueError):
+    def __init__(self, message: str, *, issue: str = 'format_error') -> None:
+        super().__init__(message)
+        self.issue = issue
+        self.public_message = message
+
+
+TEXT_ENCODINGS = ['utf-8-sig', 'utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'cp1252', 'latin1']
+DELIMITERS = [',', '\t', ';', '|']
+
+
+def friendly_format_error(error: Exception, file_kind: str = 'dataset') -> str:
+    if isinstance(error, IngestionFormatError):
+        return error.public_message
+    if isinstance(error, HTTPException):
+        return str(error.detail)
+    raw = str(error).strip()
+    if not raw:
+        raw = type(error).__name__
+    return f'Could not read this {file_kind}. Check that the file is not corrupted, password-protected, or using an unsupported format. Details: {raw}'
+
+
+def detect_text_encoding(path: Path) -> str:
+    sample = path.read_bytes()[:131_072]
+    if not sample:
+        raise IngestionFormatError('This delimited file is empty. Upload a CSV or TSV with a header row and at least one data row.', issue='empty_file')
+    for encoding in TEXT_ENCODINGS:
+        try:
+            decoded = sample.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if decoded.count('\ufffd') <= max(1, len(decoded) // 500):
+            return encoding
+    raise IngestionFormatError('Could not detect the text encoding for this CSV/TSV file. Save it as UTF-8, UTF-16, or Windows-1252 and try again.', issue='encoding_detection_failed')
+
+
+def detect_delimiter_from_sample(sample: str, fallback: str = ',') -> str:
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=DELIMITERS)
+        if dialect.delimiter in DELIMITERS:
+            return dialect.delimiter
+    except Exception:
+        pass
+
+    lines = [line for line in sample.splitlines()[:30] if line.strip()]
+    if not lines:
+        return fallback
+    counts = {delimiter: sum(max(0, line.count(delimiter)) for line in lines) for delimiter in DELIMITERS}
+    delimiter, count = max(counts.items(), key=lambda item: item[1])
+    return delimiter if count > 0 else fallback
+
+
+def sniff_delimited_options(path: Path) -> dict[str, Any]:
+    encoding = detect_text_encoding(path)
+    try:
+        sample = path.read_text(encoding=encoding, errors='replace')[:65_536]
+    except Exception as error:
+        raise IngestionFormatError(f'Could not decode this CSV/TSV file with detected encoding {encoding}.') from error
+    fallback = '\t' if path.suffix.lower() == '.tsv' else ','
+    separator = detect_delimiter_from_sample(sample, fallback=fallback)
+    header_row = detect_delimited_header_row(sample, separator)
+    return {'encoding': encoding, 'separator': separator, 'header_row': header_row}
+
+
+def detect_delimited_header_row(sample: str, separator: str) -> int:
+    rows = list(csv.reader(io.StringIO(sample), delimiter=separator))
+    rows = rows[:40]
+    best_index = 0
+    best_score = float('-inf')
+    for index, row in enumerate(rows):
+        cells = [str(cell).strip() for cell in row]
+        non_empty = [cell for cell in cells if cell]
+        if len(non_empty) < 2:
+            continue
+        next_rows = [
+            [str(cell).strip() for cell in rows[next_index]]
+            for next_index in range(index + 1, min(len(rows), index + 6))
+            if len([cell for cell in rows[next_index] if str(cell).strip()]) >= 2
+        ]
+        if not next_rows:
+            continue
+        width_matches = sum(1 for next_row in next_rows if abs(len(next_row) - len(cells)) <= 1)
+        unique_ratio = len(set(non_empty)) / max(1, len(non_empty))
+        alpha_ratio = sum(bool(re.search(r'[A-Za-z_]', cell)) for cell in non_empty) / len(non_empty)
+        numeric_ratio = sum(is_likely_numeric_text(cell) for cell in non_empty) / len(non_empty)
+        score = (width_matches * 3) + (unique_ratio * 2) + (alpha_ratio * 2) - (numeric_ratio * 2) - (index * 0.25)
+        if score > best_score:
+            best_index = index
+            best_score = score
+    return best_index
+
+
+def is_likely_numeric_text(value: Any) -> bool:
+    text = str(value).strip()
+    if not text:
+        return False
+    return bool(re.fullmatch(r'\(?\s*[-+]?\s*[$₹€£]?\s*\d{1,3}(?:,\d{2,3})*(?:\.\d+)?\s*%?\s*\)?|\(?\s*[-+]?\s*[$₹€£]?\s*\d+(?:\.\d+)?\s*%?\s*\)?', text))
+
+
+def parse_numeric_text(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return np.nan
+    text = str(value).strip()
+    if not text:
+        return np.nan
+    negative = text.startswith('(') and text.endswith(')')
+    cleaned = re.sub(r'[$₹€£,%\s()]', '', text.replace(',', ''))
+    if cleaned in {'', '+', '-'}:
+        return np.nan
+    try:
+        number = float(cleaned)
+    except ValueError:
+        return None
+    return -number if negative else number
+
+
+def looks_like_date_value(value: Any) -> bool:
+    text = str(value).strip()
+    if not text or len(text) < 5:
+        return False
+    if re.fullmatch(r'[-+]?\d+(?:\.\d+)?', text):
+        return False
+    return bool(re.search(r'\d', text) and (re.search(r'[-/.\s]', text) or re.search(r'[A-Za-z]{3,}', text)))
+
+
+def parse_dateutil_value(value: Any, *, dayfirst: bool) -> pd.Timestamp | pd.NaT:
+    if value is None or pd.isna(value):
+        return pd.NaT
+    if isinstance(value, (datetime, date, pd.Timestamp, np.datetime64)):
+        return pd.to_datetime(value, errors='coerce')
+    text = str(value).strip()
+    if not looks_like_date_value(text):
+        return pd.NaT
+    if date_parser is not None:
+        try:
+            return pd.Timestamp(date_parser.parse(text, dayfirst=dayfirst, fuzzy=True))
+        except Exception:
+            return pd.NaT
+    return pd.to_datetime(text, errors='coerce', dayfirst=dayfirst)
+
+
+def choose_dayfirst(sample: pd.Series) -> bool:
+    first_token_gt_12 = 0
+    second_token_gt_12 = 0
+    for value in sample.astype(str).head(100):
+        match = re.match(r'\s*(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})', value)
+        if not match:
+            continue
+        first, second = int(match.group(1)), int(match.group(2))
+        if first > 12:
+            first_token_gt_12 += 1
+        if second > 12:
+            second_token_gt_12 += 1
+    return first_token_gt_12 > second_token_gt_12
+
+
+def postprocess_ingested_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    cleaned = pd.DataFrame(frame).copy()
+    cleaned = cleaned.dropna(axis=0, how='all').dropna(axis=1, how='all')
+    seen_columns: dict[str, int] = {}
+    next_columns: list[str] = []
+    for index, column in enumerate(cleaned.columns):
+        base_name = f'column_{index + 1}' if str(column).strip().lower().startswith('unnamed:') or not str(column).strip() else str(column).strip()
+        count = seen_columns.get(base_name, 0) + 1
+        seen_columns[base_name] = count
+        next_columns.append(base_name if count == 1 else f'{base_name}_{count}')
+    cleaned.columns = next_columns
+
+    for column in cleaned.columns:
+        series = cleaned[column]
+        if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+            text_series = series.astype(object).where(series.notna(), np.nan)
+            text_series = text_series.replace(r'^\s*$', np.nan, regex=True)
+            sample = text_series.dropna().astype(str).head(200)
+            if not sample.empty:
+                numeric_ratio = float(sample.map(is_likely_numeric_text).mean())
+                if numeric_ratio >= 0.8:
+                    converted = text_series.map(parse_numeric_text)
+                    if pd.Series(converted).notna().sum() >= max(1, int(text_series.notna().sum() * 0.7)):
+                        cleaned[column] = pd.to_numeric(converted, errors='coerce')
+                        continue
+
+                column_name = str(column).lower()
+                date_candidate = any(token in column_name for token in ['date', 'time', 'month', 'year', 'period']) or float(sample.map(looks_like_date_value).mean()) >= 0.7
+                if date_candidate:
+                    dayfirst = choose_dayfirst(sample)
+                    parsed = text_series.map(lambda value: parse_dateutil_value(value, dayfirst=dayfirst))
+                    parsed = pd.to_datetime(parsed, errors='coerce')
+                    if parsed.notna().sum() >= max(1, int(text_series.notna().sum() * 0.65)):
+                        cleaned[column] = parsed
+                        continue
+            cleaned[column] = text_series
+    return normalize_dataframe(cleaned)
+
+
+def read_delimited_frame(path: Path, *, n_rows: int | None = None, columns: list[str] | None = None, options: dict[str, Any] | None = None) -> pd.DataFrame:
+    resolved = options or sniff_delimited_options(path)
+    try:
+        frame = pd.read_csv(
+            path,
+            sep=resolved['separator'],
+            encoding=resolved['encoding'],
+            skiprows=int(resolved.get('header_row') or 0),
+            nrows=n_rows,
+            low_memory=False,
+        )
+    except UnicodeDecodeError as error:
+        raise IngestionFormatError('Could not decode this CSV/TSV file. Try saving it as UTF-8 and upload again.', issue='encoding_decode_failed') from error
+    except pd.errors.EmptyDataError as error:
+        raise IngestionFormatError('This CSV/TSV file does not contain a readable table.', issue='empty_file') from error
+    except Exception as error:
+        raise IngestionFormatError(f'Could not parse the CSV/TSV file. Detected delimiter "{resolved.get("separator")}" and encoding "{resolved.get("encoding")}". {error}', issue='delimited_parse_failed') from error
+    frame = postprocess_ingested_frame(frame)
+    if columns is not None:
+        missing_columns = [column for column in columns if column not in frame.columns]
+        if missing_columns:
+            raise HTTPException(status_code=400, detail=f'Missing columns: {missing_columns}')
+        frame = frame.loc[:, columns]
+    return frame
+
+
+def count_delimited_rows_from_path(path: Path, options: dict[str, Any]) -> int:
+    try:
+        row_count = 0
+        for chunk in pd.read_csv(
+            path,
+            sep=options['separator'],
+            encoding=options['encoding'],
+            skiprows=int(options.get('header_row') or 0),
+            chunksize=100_000,
+            low_memory=False,
+        ):
+            row_count += len(chunk.dropna(how='all'))
+        return int(row_count)
+    except Exception as error:
+        raise IngestionFormatError(f'Could not count rows in this CSV/TSV file after detecting its format. {error}', issue='delimited_count_failed') from error
+
+
 def read_cached_frame(dataset_entry: dict[str, Any], columns: list[str] | None = None, n_rows: int | None = None) -> pd.DataFrame:
     frame_path = dataset_entry.get('frame_path')
     if not frame_path:
@@ -851,6 +1122,8 @@ def read_cached_parquet(dataset_entry: dict[str, Any], **kwargs: Any) -> pl.Data
     parquet_path = dataset_entry.get('parquet_path')
     if not parquet_path:
         raise HTTPException(status_code=400, detail='Cached parquet dataset path is missing. Please upload the file again.')
+    if pq is None:
+        raise HTTPException(status_code=500, detail='Parquet support is unavailable because pyarrow is not installed in the backend environment.')
 
     try:
         return pl.read_parquet(parquet_path, **kwargs)
@@ -881,16 +1154,20 @@ def sniff_delimited_separator(path: Path, fallback: str = ',') -> str:
         return fallback
 
 
-def read_cached_csv_preview(dataset_entry: dict[str, Any], n_rows: int | None = None) -> pl.DataFrame:
+def read_cached_csv_preview(dataset_entry: dict[str, Any], n_rows: int | None = None) -> pd.DataFrame:
     csv_path = dataset_entry.get('csv_path')
     if not csv_path:
         raise HTTPException(status_code=400, detail='Cached CSV dataset path is missing. Please upload the file again.')
 
     try:
-        separator = get_delimited_separator(dataset_entry)
-        return pl.read_csv(csv_path, separator=separator, n_rows=n_rows, infer_schema_length=1000, ignore_errors=True)
+        options = {
+            'separator': get_delimited_separator(dataset_entry),
+            'encoding': dataset_entry.get('encoding') or 'utf-8-sig',
+            'header_row': int(dataset_entry.get('header_row') or 0),
+        }
+        return read_delimited_frame(Path(str(csv_path)), n_rows=n_rows, options=options)
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f'Failed to load cached CSV preview: {error}') from error
+        raise HTTPException(status_code=400, detail=friendly_format_error(error, 'CSV/TSV preview')) from error
 
 
 def read_cached_csv(dataset_entry: dict[str, Any], columns: list[str] | None = None, n_rows: int | None = None) -> pd.DataFrame:
@@ -899,9 +1176,14 @@ def read_cached_csv(dataset_entry: dict[str, Any], columns: list[str] | None = N
         raise HTTPException(status_code=400, detail='Cached CSV dataset path is missing. Please upload the file again.')
 
     try:
-        return pd.read_csv(csv_path, sep=get_delimited_separator(dataset_entry), usecols=columns, nrows=n_rows, low_memory=True)
+        options = {
+            'separator': get_delimited_separator(dataset_entry),
+            'encoding': dataset_entry.get('encoding') or 'utf-8-sig',
+            'header_row': int(dataset_entry.get('header_row') or 0),
+        }
+        return read_delimited_frame(Path(str(csv_path)), n_rows=n_rows, columns=columns, options=options)
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f'Failed to load cached CSV dataset: {error}') from error
+        raise HTTPException(status_code=400, detail=friendly_format_error(error, 'CSV/TSV dataset')) from error
 
 
 def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None = None, n_rows: int | None = None) -> pd.DataFrame:
@@ -909,7 +1191,6 @@ def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None =
     if not excel_path:
         raise HTTPException(status_code=400, detail='Cached Excel dataset path is missing. Please upload the file again.')
 
-    engine = 'openpyxl' if excel_path.lower().endswith('.xlsx') else 'xlrd'
     try:
         selected_sheets = [str(sheet) for sheet in (dataset_entry.get('selected_sheets') or []) if str(sheet).strip()]
         merge_mode = str(dataset_entry.get('merge_mode') or 'single').lower()
@@ -921,15 +1202,16 @@ def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None =
             selected_sheets = [active_sheet] if active_sheet else []
 
         if not selected_sheets:
-            return pd.read_excel(excel_path, engine=engine, usecols=columns, nrows=n_rows)
+            sheet_summaries = dataset_entry.get('workbook_sheets') or build_excel_sheet_summaries(Path(str(excel_path)))
+            selected_sheets = [str(sheet_summaries[0]['name'])]
 
         if merge_mode == 'single' or len(selected_sheets) == 1:
-            return pd.read_excel(excel_path, engine=engine, sheet_name=selected_sheets[0], usecols=columns, nrows=n_rows)
+            return read_excel_sheet_frame(Path(str(excel_path)), selected_sheets[0], n_rows=n_rows, columns=columns)
 
         frames: list[pd.DataFrame] = []
         base_columns: list[str] | None = None
         for sheet_name in selected_sheets:
-            sheet_frame = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=n_rows)
+            sheet_frame = read_excel_sheet_frame(Path(str(excel_path)), sheet_name, n_rows=n_rows)
             current_columns = [str(col) for col in sheet_frame.columns]
             if base_columns is None:
                 base_columns = current_columns
@@ -954,14 +1236,14 @@ def read_cached_excel(dataset_entry: dict[str, Any], columns: list[str] | None =
             return pd.DataFrame(columns=columns or [])
         return pd.concat(frames, ignore_index=True)
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f'Failed to load cached Excel dataset: {error}') from error
+        raise HTTPException(status_code=400, detail=friendly_format_error(error, 'Excel workbook')) from error
 
 
 def load_cached_preview(dataset_entry: dict[str, Any], limit: int = DATASET_PREVIEW_ROW_LIMIT) -> tuple[pd.DataFrame | pl.DataFrame, bool]:
     if dataset_entry.get('parquet_path'):
         return read_cached_parquet(dataset_entry, n_rows=limit, low_memory=True), True
     if dataset_entry.get('csv_path'):
-        return read_cached_csv_preview(dataset_entry, n_rows=limit), True
+        return read_cached_csv_preview(dataset_entry, n_rows=limit), False
     if dataset_entry.get('excel_path'):
         return read_cached_excel(dataset_entry, n_rows=limit), False
     if dataset_entry.get('frame_path'):
@@ -1089,32 +1371,81 @@ def get_excel_sheet_names(path: Path) -> list[str]:
     return []
 
 
+def detect_excel_header_row(path: Path, sheet_name: str) -> int:
+    engine = 'openpyxl' if path.suffix.lower() == '.xlsx' else 'xlrd'
+    try:
+        raw = pd.read_excel(path, engine=engine, sheet_name=sheet_name, header=None, nrows=40)
+    except Exception as error:
+        raise IngestionFormatError(f'Could not inspect worksheet "{sheet_name}". {error}', issue='excel_sheet_inspection_failed') from error
+    best_index = 0
+    best_score = float('-inf')
+    for index in range(len(raw)):
+        cells = [str(value).strip() for value in raw.iloc[index].tolist() if pd.notna(value) and str(value).strip()]
+        if len(cells) < 2:
+            continue
+        next_rows = []
+        for next_index in range(index + 1, min(len(raw), index + 6)):
+            next_cells = [str(value).strip() for value in raw.iloc[next_index].tolist() if pd.notna(value) and str(value).strip()]
+            if len(next_cells) >= 2:
+                next_rows.append(next_cells)
+        if not next_rows:
+            continue
+        width_matches = sum(1 for next_row in next_rows if abs(len(next_row) - len(cells)) <= 1)
+        unique_ratio = len(set(cells)) / max(1, len(cells))
+        alpha_ratio = sum(bool(re.search(r'[A-Za-z_]', cell)) for cell in cells) / len(cells)
+        numeric_ratio = sum(is_likely_numeric_text(cell) for cell in cells) / len(cells)
+        score = (width_matches * 3) + (unique_ratio * 2) + (alpha_ratio * 2) - (numeric_ratio * 2) - (index * 0.25)
+        if score > best_score:
+            best_index = index
+            best_score = score
+    return best_index
+
+
+def read_excel_sheet_frame(path: Path, sheet_name: str, *, n_rows: int | None = None, columns: list[str] | None = None) -> pd.DataFrame:
+    engine = 'openpyxl' if path.suffix.lower() == '.xlsx' else 'xlrd'
+    header_row = detect_excel_header_row(path, sheet_name)
+    try:
+        frame = pd.read_excel(path, engine=engine, sheet_name=sheet_name, skiprows=header_row, nrows=n_rows)
+    except Exception as error:
+        raise IngestionFormatError(f'Could not parse worksheet "{sheet_name}". {error}', issue='excel_sheet_parse_failed') from error
+    frame = postprocess_ingested_frame(frame)
+    if columns is not None:
+        missing_columns = [column for column in columns if column not in frame.columns]
+        if missing_columns:
+            raise HTTPException(status_code=400, detail=f'Sheet "{sheet_name}" is missing selected columns: {missing_columns}')
+        frame = frame.loc[:, columns]
+    return frame
+
+
+def build_excel_sheet_summaries(path: Path) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for sheet_name in get_excel_sheet_names(path):
+        try:
+            preview = read_excel_sheet_frame(path, sheet_name, n_rows=min(50, DATASET_PREVIEW_ROW_LIMIT))
+            if preview.empty or len(preview.columns) == 0:
+                continue
+            total_rows = int(count_excel_rows_for_sheet(path, sheet_name))
+            if total_rows <= 0:
+                total_rows = int(len(preview))
+            summaries.append({
+                'name': sheet_name,
+                'rowCount': total_rows,
+                'columnCount': int(len(preview.columns)),
+                'columns': [str(column) for column in preview.columns],
+            })
+        except IngestionFormatError:
+            continue
+        except Exception:
+            logger.warning('Skipping unreadable or empty workbook sheet %s in %s', sheet_name, path.name, exc_info=True)
+            continue
+    if not summaries:
+        raise IngestionFormatError('No non-empty worksheets were found in this workbook. Add data to at least one sheet and upload again.', issue='excel_no_data_sheets')
+    return summaries
+
+
 def count_excel_rows_for_sheet(path: Path, sheet_name: str) -> int:
-    suffix = path.suffix.lower()
-    if suffix == '.xlsx':
-        try:
-            import openpyxl
-        except ImportError as error:
-            raise HTTPException(status_code=500, detail='openpyxl is required to count .xlsx sheet rows.') from error
-        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        if sheet_name not in workbook.sheetnames:
-            raise HTTPException(status_code=400, detail=f'Sheet "{sheet_name}" was not found in this workbook.')
-        worksheet = workbook[sheet_name]
-        return max(0, int(worksheet.max_row) - 1)
-
-    if suffix == '.xls':
-        try:
-            import xlrd
-        except ImportError as error:
-            raise HTTPException(status_code=500, detail='xlrd is required to count .xls sheet rows.') from error
-        workbook = xlrd.open_workbook(path)
-        try:
-            sheet = workbook.sheet_by_name(sheet_name)
-        except Exception as error:
-            raise HTTPException(status_code=400, detail=f'Sheet "{sheet_name}" was not found in this workbook.') from error
-        return max(0, int(sheet.nrows) - 1)
-
-    return 0
+    frame = read_excel_sheet_frame(path, sheet_name)
+    return int(len(frame))
 
 
 def resolve_selected_excel_sheets(selected_sheets: list[str], available_sheets: list[str]) -> list[str]:
@@ -1146,19 +1477,18 @@ def build_excel_selection_payload(
     selected_sheets: list[str],
     merge_mode: Literal['single', 'stack'],
 ) -> dict[str, Any]:
-    engine = 'openpyxl' if excel_path.suffix.lower() == '.xlsx' else 'xlrd'
     resolved_merge_mode: Literal['single', 'stack'] = merge_mode if merge_mode in {'single', 'stack'} else 'single'
 
     if resolved_merge_mode == 'single':
         sheet_name = selected_sheets[0]
-        preview_frame = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=DATASET_PREVIEW_ROW_LIMIT)
+        preview_frame = read_excel_sheet_frame(excel_path, sheet_name, n_rows=DATASET_PREVIEW_ROW_LIMIT)
         total_rows = count_excel_rows_for_sheet(excel_path, sheet_name)
     else:
         preview_frames: list[pd.DataFrame] = []
         base_columns: list[str] | None = None
         total_rows = 0
         for sheet_name in selected_sheets:
-            preview_sheet = pd.read_excel(excel_path, engine=engine, sheet_name=sheet_name, nrows=DATASET_PREVIEW_ROW_LIMIT)
+            preview_sheet = read_excel_sheet_frame(excel_path, sheet_name, n_rows=DATASET_PREVIEW_ROW_LIMIT)
             current_columns = [str(col) for col in preview_sheet.columns]
             if base_columns is None:
                 base_columns = current_columns
@@ -1339,7 +1669,8 @@ class TimeSeriesForecastRequest(BaseModel):
     target_column: str
     forecast_periods: int = Field(default=3, ge=1, le=24)
     test_percentage: int = Field(default=20, ge=10, le=50)
-    model_type: str = Field(default='sarima')
+    model_type: str = Field(default='auto')
+    require_quality_gate: bool = True
 
 
 class MlForecastRequest(BaseModel):
@@ -1351,13 +1682,17 @@ class MlForecastRequest(BaseModel):
     forecast_periods: int = Field(default=3, ge=1, le=24)
     test_percentage: int = Field(default=20, ge=10, le=50)
     lag_periods: int = Field(default=3, ge=1, le=12)
-    model_type: str = Field(default='gradient_boosting')
+    model_type: str = Field(default='auto')
     feature_groups: list[str] = Field(default_factory=lambda: ['trend', 'calendar', 'lags', 'rolling'])
+    require_quality_gate: bool = True
 
 
 class ForecastRunRequest(BaseModel):
     session_id: str
     forecast_periods: int = Field(default=30, ge=1, le=180)
+    confirmed_assumptions: bool = False
+    column_mapping: dict[str, str] = Field(default_factory=dict)
+    scenario_parameters: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class ReportConfigPayload(BaseModel):
@@ -2719,6 +3054,75 @@ def calculate_forecast_metrics(actual: list[float], predicted: list[float]) -> d
     }
 
 
+def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -> dict[str, Any]:
+    values = pd.to_numeric(series_frame['sales'], errors='coerce')
+    total = max(1, len(series_frame))
+    missing_share = float(values.isna().sum() / total)
+    zero_share = float((values.fillna(0) <= 0).sum() / total)
+    usable_periods = int(values.notna().sum())
+    volatility = 0.0
+    if usable_periods > 1 and float(abs(values.fillna(0).mean())) > 0:
+        volatility = float(values.fillna(0).std() / abs(values.fillna(0).mean()))
+
+    minimum_required = {'day': 30, 'week': 16, 'month': 12, 'quarter': 8, 'year': 6}.get(period_label, 12)
+    period_score = min(1.0, usable_periods / minimum_required)
+    completeness_score = max(0.0, 1.0 - missing_share)
+    signal_score = max(0.0, 1.0 - min(0.7, zero_share))
+    stability_score = max(0.2, 1.0 - min(0.8, volatility / 2.5))
+    score = round(100 * ((0.4 * period_score) + (0.25 * completeness_score) + (0.2 * signal_score) + (0.15 * stability_score)), 1)
+    issues: list[str] = []
+    if usable_periods < minimum_required:
+        issues.append(f'{usable_periods} usable {period_label} periods found; production forecasting recommends at least {minimum_required}.')
+    if missing_share > 0:
+        issues.append(f'{missing_share:.1%} of aggregated target periods are missing.')
+    if zero_share > 0.25:
+        issues.append(f'{zero_share:.1%} of aggregated target periods are zero or negative.')
+
+    return {
+        'score': score,
+        'status': 'pass' if score >= 70 and usable_periods >= minimum_required else 'warning' if usable_periods >= 6 else 'fail',
+        'minimum_required_periods': minimum_required,
+        'usable_periods': usable_periods,
+        'missing_share': round(missing_share, 4),
+        'zero_or_negative_share': round(zero_share, 4),
+        'volatility': round(volatility, 4),
+        'issues': issues,
+    }
+
+
+def ensure_forecast_data_sufficiency(series_frame: pd.DataFrame, period_label: str, require_quality_gate: bool = True) -> dict[str, Any]:
+    quality = build_forecast_data_quality(series_frame, period_label)
+    if len(series_frame) < 6:
+        raise HTTPException(status_code=422, detail=f'Forecasting needs at least 6 {period_label} periods after aggregation.')
+    if require_quality_gate and quality['status'] == 'fail':
+        raise HTTPException(status_code=422, detail=f'Data quality gate failed: {"; ".join(quality["issues"]) or "insufficient usable signal"}.')
+    return quality
+
+
+def naive_forecast_step(history: list[float]) -> float:
+    return max(0.0, float(history[-1]) if history else 0.0)
+
+
+def append_interval(point: dict[str, Any], residual_std: float) -> dict[str, Any]:
+    lower, upper = build_confidence_bounds(float(point.get('predicted') or 0), residual_std)
+    return {**point, 'lower': lower, 'upper': upper}
+
+
+def append_forecast_version(session_id: str, step: str, payload: dict[str, Any]) -> None:
+    state = ensure_session_state(session_id)
+    versions = state.setdefault('forecast_history_versions', [])
+    versions.append({
+        'id': uuid.uuid4().hex,
+        'step': step,
+        'created_at': utc_now_iso(),
+        'model': (payload.get('model_details') or {}).get('model_name') or payload.get('status') or step,
+        'metrics': payload.get('metrics') or {},
+        'data_quality': payload.get('data_quality') or {},
+        'assumptions_audit': payload.get('assumptions_audit') or [],
+    })
+    del versions[:-25]
+
+
 def normal_tail_probability(value: float) -> float:
     return 0.5 * (1 - erf(abs(value) / sqrt(2)))
 
@@ -2839,6 +3243,24 @@ def build_ml_forecast_training_frame(series_frame: pd.DataFrame, lag_periods: in
 
 
 def build_forecast_regressor(model_type: str):
+    if model_type == 'xgboost' and XGBRegressor is not None:
+        return XGBRegressor(
+            n_estimators=160,
+            learning_rate=0.05,
+            max_depth=3,
+            objective='reg:squarederror',
+            random_state=42,
+            n_jobs=TRAINING_N_JOBS,
+        )
+    if model_type == 'lightgbm' and LGBMRegressor is not None:
+        return LGBMRegressor(
+            n_estimators=160,
+            learning_rate=0.05,
+            max_depth=3,
+            random_state=42,
+            n_jobs=TRAINING_N_JOBS,
+            verbose=-1,
+        )
     if model_type == 'random_forest':
         return RandomForestRegressor(n_estimators=160, random_state=42, min_samples_leaf=2, n_jobs=TRAINING_N_JOBS)
     if model_type == 'ridge_regression':
@@ -2882,6 +3304,293 @@ def calculate_shap_like_importance(model: Any, feature_names: list[str]) -> list
     ]
     importance.sort(key=lambda item: item['importance'], reverse=True)
     return importance
+
+
+def production_model_name(model_type: str) -> str:
+    return {
+        'prophet': 'Prophet',
+        'sarima': 'SARIMA',
+        'xgboost': 'XGBoost',
+        'lightgbm': 'LightGBM',
+    }.get(model_type, model_type.replace('_', ' ').title())
+
+
+def model_availability_note(model_type: str) -> str:
+    if model_type == 'prophet':
+        return 'Prophet package available.' if Prophet is not None else 'Prophet package unavailable; candidate skipped.'
+    if model_type == 'sarima':
+        return 'statsmodels SARIMAX available.' if SARIMAX is not None else 'statsmodels SARIMAX unavailable; candidate skipped.'
+    if model_type == 'xgboost' and XGBRegressor is None:
+        return 'XGBoost package unavailable; candidate skipped.'
+    if model_type == 'lightgbm' and LGBMRegressor is None:
+        return 'LightGBM package unavailable; candidate skipped.'
+    return 'Candidate available.'
+
+
+def walk_forward_splits(total_periods: int, requested_test_periods: int, lag_periods: int) -> list[tuple[int, int]]:
+    min_train = max(lag_periods + 3, int(total_periods * 0.5))
+    max_start = max(min_train, total_periods - max(1, requested_test_periods))
+    starts = sorted(set([min_train, int(total_periods * 0.65), max_start]))
+    return [(start, min(requested_test_periods, total_periods - start)) for start in starts if total_periods - start >= 1]
+
+
+def evaluate_statistical_candidate(
+    series_frame: pd.DataFrame,
+    model_type: str,
+    requested_test_periods: int,
+    freq: str,
+    period_label: str,
+) -> dict[str, Any]:
+    if model_type == 'prophet' and Prophet is None:
+        return {'model_type': model_type, 'model_name': 'Prophet', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
+    if model_type == 'sarima' and SARIMAX is None:
+        return {'model_type': model_type, 'model_name': 'SARIMA', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
+
+    values = series_frame['sales'].astype(float).tolist()
+    periods = series_frame['period'].tolist()
+    season_length = infer_season_length(period_label, len(values))
+    actuals: list[float] = []
+    predictions: list[float] = []
+    test_rows: list[dict[str, Any]] = []
+    for train_end, fold_periods in walk_forward_splits(len(values), requested_test_periods, 1):
+        history = values[:train_end]
+        current_period = pd.Timestamp(periods[train_end])
+        fitted_predictions: list[float] = []
+        if model_type == 'prophet':
+            try:
+                prophet_frame = pd.DataFrame({'ds': pd.to_datetime(periods[:train_end]), 'y': history})
+                prophet_model = Prophet(interval_width=0.95, daily_seasonality=period_label == 'day', weekly_seasonality=period_label in {'day', 'week'}, yearly_seasonality=period_label in {'month', 'quarter'})
+                prophet_model.fit(prophet_frame)
+                future_dates = [pd.Timestamp(current_period) + (pd.tseries.frequencies.to_offset(freq) * index) for index in range(fold_periods)]
+                forecast = prophet_model.predict(pd.DataFrame({'ds': future_dates}))
+                fitted_predictions = [max(0.0, float(value)) for value in forecast['yhat'].tolist()]
+            except Exception as error:
+                raise RuntimeError(f'Prophet training failed during walk-forward validation: {error}') from error
+        elif model_type == 'sarima':
+            try:
+                seasonal_order = (1, 0, 1, max(1, min(season_length, max(1, train_end // 2)))) if season_length > 1 else (0, 0, 0, 0)
+                sarima_model = SARIMAX(history, order=(1, 1, 1), seasonal_order=seasonal_order, enforce_stationarity=False, enforce_invertibility=False)
+                fitted = sarima_model.fit(disp=False)
+                fitted_predictions = [max(0.0, float(value)) for value in fitted.forecast(fold_periods)]
+            except Exception as error:
+                raise RuntimeError(f'SARIMA training failed during walk-forward validation: {error}') from error
+        if len(fitted_predictions) < fold_periods:
+            raise RuntimeError(f'{production_model_name(model_type)} produced {len(fitted_predictions)} predictions for a {fold_periods}-period validation fold.')
+        for offset in range(fold_periods):
+            actual = float(values[train_end + offset])
+            predicted = fitted_predictions[offset]
+            actuals.append(actual)
+            predictions.append(predicted)
+            test_rows.append({
+                'period': format_forecast_period(current_period, period_label),
+                'actual': round(actual, 2),
+                'predicted': round(predicted, 2),
+            })
+            history.append(actual)
+            current_period = current_period + pd.tseries.frequencies.to_offset(freq)
+    metrics = calculate_forecast_metrics(actuals, predictions)
+    residuals = [actual - predicted for actual, predicted in zip(actuals, predictions)]
+    return {
+        'model_type': model_type,
+        'model_name': production_model_name(model_type),
+        'status': 'completed',
+        'metrics': metrics,
+        'residual_std': float(np.std(residuals)) if residuals else 0.0,
+        'test_forecast': test_rows[-requested_test_periods:],
+        'feature_importance': [],
+        'generated_features': [],
+        'feature_preview_rows': [],
+        'tuning': {'enabled': optuna is not None, 'note': 'Optuna available.' if optuna is not None else 'Optuna package unavailable; stable model defaults used.'},
+        'availability_note': f'{production_model_name(model_type)} trained successfully on walk-forward validation folds.',
+    }
+
+
+def evaluate_ml_candidate(
+    series_frame: pd.DataFrame,
+    model_type: str,
+    requested_test_periods: int,
+    lag_periods: int,
+    feature_groups: list[str],
+    freq: str,
+    period_label: str,
+) -> dict[str, Any]:
+    if model_type == 'xgboost' and XGBRegressor is None:
+        return {'model_type': model_type, 'model_name': 'XGBoost', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
+    if model_type == 'lightgbm' and LGBMRegressor is None:
+        return {'model_type': model_type, 'model_name': 'LightGBM', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
+
+    values = series_frame['sales'].astype(float).tolist()
+    periods = series_frame['period'].tolist()
+    actuals: list[float] = []
+    predictions: list[float] = []
+    test_rows: list[dict[str, Any]] = []
+    last_model: Any = None
+    last_X: pd.DataFrame | None = None
+    for train_end, fold_periods in walk_forward_splits(len(values), requested_test_periods, lag_periods):
+        train_frame = series_frame.iloc[:train_end].copy()
+        train_X, train_y = build_ml_forecast_training_frame(train_frame, lag_periods, feature_groups)
+        model = build_forecast_regressor(model_type)
+        model.fit(train_X, train_y)
+        fold_predictions = recursive_ml_forecast(
+            model,
+            train_frame['sales'].astype(float).tolist(),
+            pd.Timestamp(periods[train_end]),
+            fold_periods,
+            lag_periods,
+            feature_groups,
+            freq,
+            period_label,
+        )
+        for offset, point in enumerate(fold_predictions):
+            actual = float(values[train_end + offset])
+            predicted = float(point['predicted'])
+            actuals.append(actual)
+            predictions.append(predicted)
+            test_rows.append({**point, 'actual': round(actual, 2)})
+        last_model = model
+        last_X = train_X
+
+    metrics = calculate_forecast_metrics(actuals, predictions)
+    residuals = [actual - predicted for actual, predicted in zip(actuals, predictions)]
+    feature_names = last_X.columns.tolist() if last_X is not None else []
+    return {
+        'model_type': model_type,
+        'model_name': production_model_name(model_type),
+        'status': 'completed',
+        'metrics': metrics,
+        'residual_std': float(np.std(residuals)) if residuals else 0.0,
+        'test_forecast': test_rows[-requested_test_periods:],
+        'feature_importance': calculate_shap_like_importance(last_model, feature_names) if last_model is not None else [],
+        'generated_features': feature_names,
+        'feature_preview_rows': safe_serialize(last_X.head(5).round(3).to_dict(orient='records')) if last_X is not None else [],
+        'tuning': {
+            'enabled': optuna is not None,
+            'note': 'Optuna is available for future expanded search; current bounded run uses stable production defaults.' if optuna is not None else 'Optuna package unavailable; stable defaults used.',
+        },
+        'availability_note': f'{production_model_name(model_type)} trained successfully on walk-forward validation folds.',
+    }
+
+
+def build_future_for_selected_model(
+    selected: dict[str, Any],
+    series_frame: pd.DataFrame,
+    forecast_periods: int,
+    lag_periods: int,
+    feature_groups: list[str],
+    freq: str,
+    period_label: str,
+) -> list[dict[str, Any]]:
+    model_type = selected['model_type']
+    residual_std = float(selected.get('residual_std') or 0.0)
+    current_period = pd.Timestamp(series_frame.iloc[-1]['period']) + pd.tseries.frequencies.to_offset(freq)
+    if model_type in {'prophet', 'sarima'}:
+        season_length = infer_season_length(period_label, len(series_frame))
+        history = series_frame['sales'].astype(float).tolist()
+        if model_type == 'prophet' and Prophet is not None:
+            try:
+                prophet_frame = pd.DataFrame({'ds': pd.to_datetime(series_frame['period']), 'y': history})
+                prophet_model = Prophet(interval_width=0.95, daily_seasonality=period_label == 'day', weekly_seasonality=period_label in {'day', 'week'}, yearly_seasonality=period_label in {'month', 'quarter'})
+                prophet_model.fit(prophet_frame)
+                future_dates = [pd.Timestamp(current_period) + (pd.tseries.frequencies.to_offset(freq) * index) for index in range(forecast_periods)]
+                forecast = prophet_model.predict(pd.DataFrame({'ds': future_dates}))
+                return [
+                    {
+                        'period': format_forecast_period(pd.Timestamp(row['ds']), period_label),
+                        'predicted': round(max(0.0, float(row['yhat'])), 2),
+                        'lower': round(max(0.0, float(row.get('yhat_lower', row['yhat']))), 2),
+                        'upper': round(max(0.0, float(row.get('yhat_upper', row['yhat']))), 2),
+                    }
+                    for _, row in forecast.iterrows()
+                ]
+            except Exception as error:
+                raise RuntimeError(f'Prophet training failed while building the final future forecast: {error}') from error
+        if model_type == 'sarima' and SARIMAX is not None:
+            try:
+                seasonal_order = (1, 0, 1, max(1, min(season_length, max(1, len(history) // 2)))) if season_length > 1 else (0, 0, 0, 0)
+                sarima_model = SARIMAX(history, order=(1, 1, 1), seasonal_order=seasonal_order, enforce_stationarity=False, enforce_invertibility=False)
+                fitted = sarima_model.fit(disp=False)
+                predictions = [max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
+                rows = []
+                for prediction in predictions:
+                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std))
+                    current_period = current_period + pd.tseries.frequencies.to_offset(freq)
+                return rows
+            except Exception as error:
+                raise RuntimeError(f'SARIMA training failed while building the final future forecast: {error}') from error
+        raise RuntimeError(f'{production_model_name(model_type)} is unavailable and cannot build a production forecast.')
+
+    full_X, full_y = build_ml_forecast_training_frame(series_frame, lag_periods, feature_groups)
+    model = build_forecast_regressor(model_type)
+    model.fit(full_X, full_y)
+    return [append_interval(point, residual_std) for point in recursive_ml_forecast(
+        model,
+        series_frame['sales'].astype(float).tolist(),
+        current_period,
+        forecast_periods,
+        lag_periods,
+        feature_groups,
+        freq,
+        period_label,
+    )]
+
+
+def auto_select_forecast_model(
+    series_frame: pd.DataFrame,
+    forecast_periods: int,
+    requested_test_periods: int,
+    lag_periods: int,
+    feature_groups: list[str],
+    freq: str,
+    period_label: str,
+) -> dict[str, Any]:
+    candidates = ['prophet', 'sarima', 'xgboost', 'lightgbm']
+    comparison: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(4, len(candidates))) as executor:
+        futures = {
+            executor.submit(evaluate_statistical_candidate, series_frame, candidate, requested_test_periods, freq, period_label): candidate
+            for candidate in ['prophet', 'sarima']
+        }
+        for candidate in ['xgboost', 'lightgbm']:
+            futures[executor.submit(evaluate_ml_candidate, series_frame, candidate, requested_test_periods, lag_periods, feature_groups, freq, period_label)] = candidate
+        for future in as_completed(futures):
+            try:
+                comparison.append(future.result())
+            except Exception as error:
+                candidate = futures[future]
+                comparison.append({'model_type': candidate, 'model_name': production_model_name(candidate), 'status': 'failed', 'skip_reason': str(error)})
+
+    completed = [item for item in comparison if item.get('status') == 'completed']
+    if not completed:
+        raise HTTPException(status_code=422, detail='No forecast candidate could be trained. Install Prophet/XGBoost/LightGBM or provide more history.')
+
+    selected = min(completed, key=lambda item: (float(item['metrics'].get('mae', np.inf)), float(item['metrics'].get('rmse', np.inf)), float(item['metrics'].get('mape', np.inf))))
+    future = build_future_for_selected_model(selected, series_frame, forecast_periods, lag_periods, feature_groups, freq, period_label)
+    test_forecast = [append_interval(point, float(selected.get('residual_std') or 0.0)) for point in selected.get('test_forecast', [])]
+
+    naive_actuals: list[float] = []
+    naive_predictions: list[float] = []
+    values = series_frame['sales'].astype(float).tolist()
+    for train_end, fold_periods in walk_forward_splits(len(values), requested_test_periods, 1):
+        history = values[:train_end]
+        for offset in range(fold_periods):
+            naive_actuals.append(float(values[train_end + offset]))
+            naive_predictions.append(naive_forecast_step(history))
+            history.append(float(values[train_end + offset]))
+    naive_metrics = calculate_forecast_metrics(naive_actuals, naive_predictions)
+    selected_mae = float(selected['metrics'].get('mae') or 0)
+    naive_mae = float(naive_metrics.get('mae') or 0)
+
+    return {
+        'selected': selected,
+        'future_forecast': future,
+        'test_forecast': test_forecast,
+        'model_comparison': sorted(comparison, key=lambda item: item.get('metrics', {}).get('mae', np.inf) if item.get('status') == 'completed' else np.inf),
+        'naive_baseline': {
+            'model_name': 'Naive last-observation baseline',
+            'metrics': naive_metrics,
+            'mae_improvement_pct': round(((naive_mae - selected_mae) / naive_mae) * 100, 2) if naive_mae else 0.0,
+        },
+    }
 
 
 def build_time_series_model_recommendations(profile: dict[str, Any], stationarity: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3395,57 +4104,35 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
         series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
 
     total_periods = len(series_frame)
+    data_quality = ensure_forecast_data_sufficiency(series_frame, period_label, request.require_quality_gate)
     effective_test_periods = min(max(1, int(round(total_periods * (request.test_percentage / 100)))), max(1, total_periods - 4))
     train_periods = total_periods - effective_test_periods
-    train_series = series_frame.iloc[:train_periods].copy()
-    test_series = series_frame.iloc[train_periods:].copy()
-    train_values = train_series['sales'].astype(float).tolist()
-    test_values = test_series['sales'].astype(float).tolist()
-
-    season_length = infer_season_length(period_label, total_periods)
     stationarity = compute_stationarity_check(series_frame['sales'].astype(float).tolist())
-    model_name = resolve_time_series_model_name(request.model_type)
-    residual_std = float(np.std(np.diff(train_values))) if len(train_values) > 1 else 0.0
-    residual_std = max(residual_std, float(np.std(train_values[-min(4, len(train_values)):])) if train_values else 1.0)
-
-    backtest: list[dict[str, Any]] = []
-    running_history = list(train_values)
-    current_period = pd.Timestamp(test_series.iloc[0]['period'])
-    predicted_test_values: list[float] = []
-    for actual in test_values:
-        prediction = statistical_forecast_step(running_history, season_length, request.model_type)
-        lower, upper = build_confidence_bounds(prediction, residual_std)
-        backtest.append({
-            'period': format_forecast_period(current_period, period_label),
-            'actual': round(float(actual), 2),
-            'predicted': round(prediction, 2),
-            'lower': lower,
-            'upper': upper,
-        })
-        predicted_test_values.append(round(prediction, 2))
-        running_history.append(float(actual))
-        current_period = current_period + pd.tseries.frequencies.to_offset(freq)
-
-    future_forecast: list[dict[str, Any]] = []
-    future_history = series_frame['sales'].astype(float).tolist()
-    current_period = pd.Timestamp(series_frame.iloc[-1]['period']) + pd.tseries.frequencies.to_offset(freq)
-    for _ in range(request.forecast_periods):
-        prediction = statistical_forecast_step(future_history, season_length, request.model_type)
-        lower, upper = build_confidence_bounds(prediction, residual_std)
-        future_forecast.append({
-            'period': format_forecast_period(current_period, period_label),
-            'predicted': round(prediction, 2),
-            'lower': lower,
-            'upper': upper,
-        })
-        future_history.append(prediction)
-        current_period = current_period + pd.tseries.frequencies.to_offset(freq)
+    effective_lag_periods = min(3, max(1, train_periods - 1), max(1, total_periods - 2))
+    auto_result = auto_select_forecast_model(
+        series_frame,
+        request.forecast_periods,
+        effective_test_periods,
+        effective_lag_periods,
+        ['trend', 'calendar', 'lags', 'rolling'],
+        freq,
+        period_label,
+    )
+    selected = auto_result['selected']
+    model_name = selected['model_name']
+    backtest = auto_result['test_forecast']
+    future_forecast = auto_result['future_forecast']
 
     history = [{'period': format_forecast_period(pd.Timestamp(row['period']), period_label), 'actual': round(float(row['sales']), 2)} for _, row in series_frame.iterrows()]
-    metrics = calculate_forecast_metrics(test_values, predicted_test_values)
+    metrics = selected['metrics']
     profile = build_dataset_profile(series_frame, period_label)
     session_id = get_session_id(request.dataset_id, request.session_id)
     session_state = ensure_session_state(session_id)
+    assumptions = [
+        'Forecast candidates are compared with walk-forward validation using MAE, RMSE, and MAPE.',
+        'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
+        'A naive last-observation baseline is always calculated for comparison.',
+    ]
 
     response = {
         'date_column': request.date_column,
@@ -3453,6 +4140,7 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
         'frequency': freq,
         'period_label': period_label,
         'dataset_profile': profile,
+        'data_quality': data_quality,
         'stationarity_check': stationarity,
         'history': history,
         'test_forecast': backtest,
@@ -3472,20 +4160,24 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
             'test_end': history[-1]['period'],
             'last_observed_period': history[-1]['period'],
         },
+        'model_comparison': auto_result['model_comparison'],
+        'naive_baseline': auto_result['naive_baseline'],
+        'assumptions_audit': assumptions,
         'recommended_models': build_time_series_model_recommendations(profile, stationarity),
         'model_details': {
-            'model_type': request.model_type,
+            'model_type': selected['model_type'],
             'model_name': model_name,
-            'rationale': f'{model_name} was chosen against a {period_label}-level series with {profile["usable_periods"]} usable periods.',
+            'rationale': f'{model_name} was auto-selected from Prophet, SARIMA, XGBoost, and LightGBM candidates using walk-forward MAE/RMSE/MAPE.',
         },
         'analysis': (
-            f'{model_name} forecasted {request.forecast_periods} future {period_label}{"s" if request.forecast_periods != 1 else ""}. '
+            f'{model_name} was auto-selected and forecasted {request.forecast_periods} future {period_label}{"s" if request.forecast_periods != 1 else ""}. '
             f'The series shows {stationarity["verdict"].lower()}, and the backtest produced MAE {metrics["mae"]}, RMSE {metrics["rmse"]}, and MAPE {metrics["mape"]}%.'
         ),
     }
 
     session_state['forecast_steps']['ts'] = True
     session_state['time_series_result'] = safe_serialize(response)
+    append_forecast_version(session_id, 'time_series_forecast', response)
     session_state['updated_at'] = utc_now_iso()
     record_activity(
         request=http_request,
@@ -3497,9 +4189,10 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
         metadata={
             'date_column': request.date_column,
             'target_column': request.target_column,
-            'model_type': request.model_type,
+            'model_type': selected['model_type'],
             'forecast_periods': request.forecast_periods,
             'metrics': metrics,
+            'data_quality': data_quality,
         },
     )
     return JSONResponse(content=safe_serialize(response))
@@ -3518,57 +4211,37 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
 
     total_periods = len(series_frame)
+    data_quality = ensure_forecast_data_sufficiency(series_frame, period_label, request.require_quality_gate)
     effective_test_periods = min(max(1, int(round(total_periods * (request.test_percentage / 100)))), max(1, total_periods - 4))
     train_periods = total_periods - effective_test_periods
     effective_lag_periods = min(request.lag_periods, max(1, train_periods - 1), max(1, total_periods - 2))
-    train_series = series_frame.iloc[:train_periods].copy()
-    test_series = series_frame.iloc[train_periods:].copy()
-
-    train_X, train_y = build_ml_forecast_training_frame(train_series, effective_lag_periods, request.feature_groups)
-    model = build_forecast_regressor(request.model_type)
-    model.fit(train_X, train_y)
-
-    test_predictions = recursive_ml_forecast(
-        model,
-        train_series['sales'].astype(float).tolist(),
-        pd.Timestamp(test_series.iloc[0]['period']),
+    auto_result = auto_select_forecast_model(
+        series_frame,
+        request.forecast_periods,
         effective_test_periods,
         effective_lag_periods,
         request.feature_groups,
         freq,
         period_label,
     )
-    actual_test_values = test_series['sales'].astype(float).tolist()
-    predicted_test_values = [float(item['predicted']) for item in test_predictions]
-    metrics = calculate_forecast_metrics(actual_test_values, predicted_test_values)
-
-    full_X, full_y = build_ml_forecast_training_frame(series_frame, effective_lag_periods, request.feature_groups)
-    full_model = build_forecast_regressor(request.model_type)
-    full_model.fit(full_X, full_y)
-    future_predictions = recursive_ml_forecast(
-        full_model,
-        series_frame['sales'].astype(float).tolist(),
-        pd.Timestamp(series_frame.iloc[-1]['period']) + pd.tseries.frequencies.to_offset(freq),
-        request.forecast_periods,
-        effective_lag_periods,
-        request.feature_groups,
-        freq,
-        period_label,
-    )
+    selected = auto_result['selected']
+    metrics = selected['metrics']
+    future_predictions = auto_result['future_forecast']
 
     history = [{'period': format_forecast_period(pd.Timestamp(row['period']), period_label), 'actual': round(float(row['sales']), 2)} for _, row in series_frame.iterrows()]
-    test_results = [
-        {
-            'period': format_forecast_period(pd.Timestamp(test_series.iloc[index]['period']), period_label),
-            'actual': round(float(actual_test_values[index]), 2),
-            'predicted': round(float(predicted_test_values[index]), 2),
-        }
-        for index in range(len(test_predictions))
-    ]
+    test_results = auto_result['test_forecast']
     profile = build_dataset_profile(series_frame, period_label)
-    importance = calculate_shap_like_importance(full_model, full_X.columns.tolist())
+    generated_features = selected.get('generated_features') or []
+    feature_preview_rows = selected.get('feature_preview_rows') or []
+    importance = selected.get('feature_importance') or []
     session_id = get_session_id(request.dataset_id, request.session_id)
     session_state = ensure_session_state(session_id)
+    assumptions = [
+        'Forecast candidates are compared with walk-forward validation using MAE, RMSE, and MAPE.',
+        'XGBoost and LightGBM require optional production packages; unavailable engines are reported in model comparison.',
+        'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
+        'A naive last-observation baseline is always calculated for comparison.',
+    ]
 
     response = {
         'date_column': request.date_column,
@@ -3576,14 +4249,15 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'frequency': freq,
         'period_label': period_label,
         'dataset_profile': profile,
-        'generated_features': full_X.columns.tolist(),
-        'feature_preview_rows': safe_serialize(full_X.head(5).round(3).to_dict(orient='records')),
+        'data_quality': data_quality,
+        'generated_features': generated_features,
+        'feature_preview_rows': feature_preview_rows,
         'history': history,
         'test_forecast': test_results,
         'future_forecast': future_predictions,
         'metrics': metrics,
         'training_summary': {
-            'model_name': 'Gradient Boosting' if request.model_type == 'gradient_boosting' else 'Random Forest' if request.model_type == 'random_forest' else 'Ridge Regression',
+            'model_name': selected['model_name'],
             'total_periods': total_periods,
             'train_periods': train_periods,
             'test_periods': effective_test_periods,
@@ -3598,14 +4272,17 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             'last_observed_period': history[-1]['period'],
         },
         'shap_feature_importance': importance,
-        'recommended_models': build_ml_model_recommendations(full_X.columns.tolist()),
+        'model_comparison': auto_result['model_comparison'],
+        'naive_baseline': auto_result['naive_baseline'],
+        'assumptions_audit': assumptions,
+        'recommended_models': build_ml_model_recommendations(generated_features),
         'model_details': {
-            'model_type': request.model_type,
-            'model_name': 'Gradient Boosting' if request.model_type == 'gradient_boosting' else 'Random Forest' if request.model_type == 'random_forest' else 'Ridge Regression',
-            'rationale': f'The model learned across {len(full_X.columns)} generated forecast features created from time-derived signals.',
+            'model_type': selected['model_type'],
+            'model_name': selected['model_name'],
+            'rationale': f'{selected["model_name"]} was auto-selected from Prophet, SARIMA, XGBoost, and LightGBM candidates using walk-forward MAE/RMSE/MAPE.',
         },
         'analysis': (
-            f'ML forecasting converted time into {len(full_X.columns)} generated features and trained a {request.model_type.replace("_", " ")} model. '
+            f'ML forecasting auto-selected {selected["model_name"]} after comparing production candidates. '
             f'The strongest drivers were {", ".join(item["name"] for item in importance[:3]) or "the engineered feature set"}, '
             f'with backtest MAE {metrics["mae"]}, RMSE {metrics["rmse"]}, and MAPE {metrics["mape"]}%.'
         ),
@@ -3613,6 +4290,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
 
     session_state['forecast_steps']['ml'] = True
     session_state['ml_forecast_result'] = safe_serialize(response)
+    append_forecast_version(session_id, 'ml_forecast', response)
     session_state['updated_at'] = utc_now_iso()
     record_activity(
         request=http_request,
@@ -3627,7 +4305,9 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             'forecast_periods': request.forecast_periods,
             'lag_periods': effective_lag_periods,
             'feature_groups': request.feature_groups,
+            'model_type': selected['model_type'],
             'metrics': metrics,
+            'data_quality': data_quality,
         },
     )
     return JSONResponse(content=safe_serialize(response))
@@ -4052,14 +4732,34 @@ def fetch_upstream_forecasts(session_id: str) -> tuple[pd.DataFrame, dict[str, A
     return merged, ts_result, ml_result, clean_frame
 
 
-def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.DataFrame, list[dict[str, Any]], dict[str, float]]:
+def mapped_or_matching_column(
+    frame: pd.DataFrame,
+    mapping: dict[str, str] | None,
+    key: str,
+    pattern: re.Pattern[str],
+    numeric: bool | None = None,
+) -> str | None:
+    mapped = (mapping or {}).get(key)
+    if mapped and mapped in frame.columns:
+        if numeric is True and pd.to_numeric(frame[mapped], errors='coerce').notna().sum() == 0:
+            return None
+        return mapped
+    return first_matching_column(frame, pattern, numeric=numeric)
+
+
+def build_loss_base_frame(
+    session_id: str,
+    forecast_periods: int,
+    column_mapping: dict[str, str] | None = None,
+    confirmed_assumptions: bool = False,
+) -> tuple[pd.DataFrame, list[dict[str, Any]], dict[str, float], list[str]]:
     forecast_frame, ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id)
     forecast_frame = forecast_frame.head(forecast_periods).copy()
     if forecast_frame.empty:
         raise HTTPException(status_code=422, detail='No forecast periods are available for loss forecasting.')
 
-    date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
-    revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
+    date_column = mapped_or_matching_column(clean_frame, column_mapping, 'date', LOSS_COLUMN_PATTERNS['date'])
+    revenue_column = mapped_or_matching_column(clean_frame, column_mapping, 'revenue', LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
     missing = []
     if not date_column:
         missing.append('date / period')
@@ -4071,6 +4771,11 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
             detail=f"Missing required columns for loss forecasting: {', '.join(missing)}. Remap or rename these fields in Data Upload, then rerun forecasting.",
         )
 
+    audit_trail = [
+        f'Date column mapped to "{date_column}".',
+        f'Revenue column mapped to "{revenue_column}".',
+        'Loss forecast uses upstream TS/ML future periods and historical loss-driver rates.',
+    ]
     returns_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['returns'], numeric=True)
     revenue_loss_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue_loss'], numeric=True)
     inventory_value_columns = matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['inventory_value'])
@@ -4164,6 +4869,20 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     )
     driver_weights['Inventory Loss Basis'] = inventory_loss_rate
     driver_weights['Discount Loss Basis'] = discount_loss_rate
+    assumption_notes = [
+        f'COGS basis: {cogs_source}.',
+        f'Operating expense basis: {operating_source}.',
+        'Inventory loss basis falls back to inferred waste/stockout or bounded historical exposure when explicit fields are absent.',
+        'Discount loss basis falls back to bounded historical exposure when explicit discount fields are absent.',
+    ]
+    audit_trail.extend(assumption_notes)
+    requires_confirmation = any('standard' in note.lower() or 'falls back' in note.lower() for note in assumption_notes)
+    if requires_confirmation and not confirmed_assumptions:
+        raise HTTPException(
+            status_code=428,
+            detail='Loss forecast requires confirmation of calculation assumptions before running.',
+            headers={'X-Assumptions-Required': 'true'},
+        )
 
     rows: list[dict[str, Any]] = []
     for index, item in forecast_frame.reset_index(drop=True).iterrows():
@@ -4231,7 +4950,7 @@ def build_loss_base_frame(session_id: str, forecast_periods: int) -> tuple[pd.Da
     if not segments:
         segments = [{'segment': 'All Business', 'segment_type': 'portfolio', 'total_loss': round(sum(row['total_loss'] for row in rows), 2), 'risk_score': round(float(np.mean([row['loss_risk_score'] for row in rows])), 4), 'risk_label': rows[0]['risk_label'] if rows else 'Low'}]
 
-    return pd.DataFrame(rows), segments, driver_weights
+    return pd.DataFrame(rows), segments, driver_weights, audit_trail
 
 
 def persist_loss_forecast(session_id: str, rows: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
@@ -4297,21 +5016,29 @@ def build_loss_summary(rows: list[dict[str, Any]], driver_weights: dict[str, flo
     }
 
 
-def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+def build_profit_rows(
+    session_id: str,
+    forecast_periods: int,
+    scenario_parameters: dict[str, dict[str, float]] | None = None,
+    column_mapping: dict[str, str] | None = None,
+    confirmed_assumptions: bool = False,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
     forecast_frame, _ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id)
     loss_rows = query_loss_results(session_id)
     if not loss_rows:
-        loss_frame, segments, driver_weights = build_loss_base_frame(session_id, forecast_periods)
+        loss_frame, segments, driver_weights, loss_audit = build_loss_base_frame(session_id, forecast_periods, column_mapping, confirmed_assumptions)
         loss_rows = safe_serialize(loss_frame.to_dict(orient='records'))
         persist_loss_forecast(session_id, loss_rows, segments)
         state = ensure_session_state(session_id)
         state['loss_forecast_result'] = loss_rows
         state['loss_segments'] = segments
         state['loss_summary'] = build_loss_summary(loss_rows, driver_weights)
+    else:
+        loss_audit = ['Existing confirmed loss forecast rows reused for profit calculations.']
 
     loss_by_period = {normalize_period_value(row['period']): float(row.get('total_loss') or 0) for row in loss_rows}
     forecast_frame = forecast_frame.head(forecast_periods).copy()
-    revenue_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
+    revenue_column = mapped_or_matching_column(clean_frame, column_mapping, 'revenue', LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
     cogs_series, _cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
     revenue_series = numeric_series(clean_frame, revenue_column, 0.0).clip(lower=0)
     gross_profit_series = (revenue_series - cogs_series).clip(lower=0)
@@ -4339,11 +5066,29 @@ def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str,
             }
     uses_ml_cogs_forecast = 'ML forecast target' in str(forecast_frame.attrs.get('cogs_source') or '')
 
-    scenario_config = {
+    scenario_config: dict[str, dict[str, float]] = {
         'optimistic': {'revenue': 1.10, 'cogs': 0.97, 'loss': 0.80},
         'baseline': {'revenue': 1.0, 'cogs': 1.0, 'loss': 1.0},
         'pessimistic': {'revenue': 0.90, 'cogs': 1.05, 'loss': 1.20},
     }
+    for scenario, overrides in (scenario_parameters or {}).items():
+        if scenario in scenario_config:
+            for key in ('revenue', 'cogs', 'loss'):
+                if key in overrides and np.isfinite(float(overrides[key])):
+                    scenario_config[scenario][key] = float(overrides[key])
+    audit_trail = [
+        *loss_audit,
+        f'Profit revenue column mapped to "{revenue_column or "not available"}".',
+        f'COGS ratio basis: {cogs_ratio:.4f}.',
+        f'Operating expense ratio basis: {operating_expense_ratio:.4f}.',
+        f'Scenario multipliers: {json.dumps(scenario_config, sort_keys=True)}.',
+    ]
+    if not confirmed_assumptions:
+        raise HTTPException(
+            status_code=428,
+            detail='Profit forecast requires confirmation of scenario and calculation assumptions before running.',
+            headers={'X-Assumptions-Required': 'true'},
+        )
     scenarios: dict[str, list[dict[str, Any]]] = {}
     for scenario, multipliers in scenario_config.items():
         rows: list[dict[str, Any]] = []
@@ -4391,7 +5136,7 @@ def build_profit_rows(session_id: str, forecast_periods: int) -> tuple[dict[str,
         'breakeven_period': baseline[breakeven_index]['period'] if breakeven_index is not None else None,
         'periods_to_breakeven': breakeven_index + 1 if breakeven_index is not None else None,
     }
-    return scenarios, breakeven
+    return scenarios, breakeven, audit_trail
 
 
 def persist_profit_forecast(session_id: str, scenarios: dict[str, list[dict[str, Any]]]) -> None:
@@ -4443,7 +5188,12 @@ def query_profit_results(session_id: str) -> dict[str, list[dict[str, Any]]]:
 def run_loss_forecast(request: ForecastRunRequest, http_request: Request) -> JSONResponse:
     try:
         session_id = request.session_id
-        frame, segments, driver_weights = build_loss_base_frame(session_id, request.forecast_periods)
+        frame, segments, driver_weights, audit_trail = build_loss_base_frame(
+            session_id,
+            request.forecast_periods,
+            request.column_mapping,
+            request.confirmed_assumptions,
+        )
         rows = safe_serialize(frame.to_dict(orient='records'))
         persist_loss_forecast(session_id, rows, segments)
         state = ensure_session_state(session_id)
@@ -4451,9 +5201,11 @@ def run_loss_forecast(request: ForecastRunRequest, http_request: Request) -> JSO
         state['loss_forecast_result'] = rows
         state['loss_segments'] = segments
         state['loss_summary'] = build_loss_summary(rows, driver_weights)
+        state['loss_assumptions_audit'] = audit_trail
+        append_forecast_version(session_id, 'loss_forecast', {'status': 'success', 'metrics': state['loss_summary'], 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='loss_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail=f'Generated {len(rows)} loss forecast rows.')
-        return JSONResponse(content=safe_serialize({'status': 'success', 'loss_forecast': rows, 'segments': segments, 'summary': state['loss_summary']}))
+        return JSONResponse(content=safe_serialize({'status': 'success', 'loss_forecast': rows, 'segments': segments, 'summary': state['loss_summary'], 'assumptions_audit': audit_trail}))
     except HTTPException:
         raise
     except Exception as error:
@@ -4479,7 +5231,7 @@ def get_loss_forecast_segments(session_id: str) -> JSONResponse:
         if not segments:
             loss_rows = query_loss_results(session_id)
             if loss_rows:
-                _frame, segments, _driver_weights = build_loss_base_frame(session_id, len(loss_rows))
+                _frame, segments, _driver_weights, _audit_trail = build_loss_base_frame(session_id, len(loss_rows), confirmed_assumptions=True)
                 state['loss_segments'] = segments
         return JSONResponse(content=safe_serialize({'segments': segments}))
     except Exception as error:
@@ -4490,16 +5242,24 @@ def get_loss_forecast_segments(session_id: str) -> JSONResponse:
 def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> JSONResponse:
     try:
         session_id = request.session_id
-        scenarios, breakeven = build_profit_rows(session_id, request.forecast_periods)
+        scenarios, breakeven, audit_trail = build_profit_rows(
+            session_id,
+            request.forecast_periods,
+            request.scenario_parameters,
+            request.column_mapping,
+            request.confirmed_assumptions,
+        )
         serialized = safe_serialize(scenarios)
         persist_profit_forecast(session_id, serialized)
         state = ensure_session_state(session_id)
         state['forecast_steps']['profit'] = True
         state['profit_scenarios'] = serialized
         state['breakeven'] = safe_serialize(breakeven)
+        state['profit_assumptions_audit'] = audit_trail
+        append_forecast_version(session_id, 'profit_forecast', {'status': 'success', 'metrics': breakeven, 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='profit_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail='Generated profit forecast scenarios.')
-        return JSONResponse(content=safe_serialize({'status': 'success', 'scenarios': serialized, 'breakeven': breakeven}))
+        return JSONResponse(content=safe_serialize({'status': 'success', 'scenarios': serialized, 'breakeven': breakeven, 'assumptions_audit': audit_trail}))
     except HTTPException:
         raise
     except Exception as error:
@@ -6031,11 +6791,24 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
             ['Date Column', ts_result.get('date_column', 'N/A')],
             ['Target Column', ts_result.get('target_column', 'N/A')],
             ['Usable Periods', ts_profile.get('usable_periods', 'N/A')],
+            ['Data Quality Score', (ts_result.get('data_quality') or {}).get('score', 'N/A')],
+            ['Naive Baseline MAE', ((ts_result.get('naive_baseline') or {}).get('metrics') or {}).get('mae', 'N/A')],
+            ['MAE Improvement vs Naive', f"{(ts_result.get('naive_baseline') or {}).get('mae_improvement_pct', 'N/A')}%"],
             ['Volatility', metric_text(ts_profile.get('volatility'))],
             ['Stationarity Verdict', stationarity.get('verdict', 'N/A')],
             ['Stationarity Note', stationarity.get('note', 'N/A')],
             ['MAE / RMSE / MAPE', f"{metric_text(ts_metrics.get('mae'))} / {metric_text(ts_metrics.get('rmse'))} / {metric_text(ts_metrics.get('mape'))}"],
         ], [content_width * 0.28, content_width * 0.68], header_bg='#134e4a')
+        if ts_result.get('model_comparison'):
+            elements.append(Spacer(1, 8))
+            comparison_rows = [['Candidate', 'Status', 'MAE', 'RMSE', 'MAPE']]
+            for item in ts_result.get('model_comparison', [])[:8]:
+                metrics = item.get('metrics') or {}
+                comparison_rows.append([item.get('model_name', 'N/A'), item.get('status', 'N/A'), metric_text(metrics.get('mae')), metric_text(metrics.get('rmse')), metric_text(metrics.get('mape'))])
+            add_table(comparison_rows, [content_width * 0.22, content_width * 0.18, content_width * 0.16, content_width * 0.16, content_width * 0.16], header_bg='#0f766e')
+        if ts_result.get('assumptions_audit'):
+            elements.append(Spacer(1, 8))
+            add_callout('Methodology & Assumptions', '<br/>'.join(str(item) for item in ts_result.get('assumptions_audit', [])[:8]))
         elements.append(Spacer(1, 8))
         elements.append(build_line_chart_image('Time Series Forecast', ts_result.get('history', []), ts_result.get('test_forecast', []), ts_result.get('future_forecast', []), include_interval=True))
         if ts_result.get('future_forecast'):
@@ -6066,10 +6839,23 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
             ['Target Column', ml_forecast_result.get('target_column', 'N/A')],
             ['Detected Frequency', ml_profile.get('detected_frequency', 'N/A')],
             ['Usable Periods', ml_profile.get('usable_periods', 'N/A')],
+            ['Data Quality Score', (ml_forecast_result.get('data_quality') or {}).get('score', 'N/A')],
+            ['Naive Baseline MAE', ((ml_forecast_result.get('naive_baseline') or {}).get('metrics') or {}).get('mae', 'N/A')],
+            ['MAE Improvement vs Naive', f"{(ml_forecast_result.get('naive_baseline') or {}).get('mae_improvement_pct', 'N/A')}%"],
             ['MAE / RMSE / MAPE', f"{metric_text(ml_metrics.get('mae'))} / {metric_text(ml_metrics.get('rmse'))} / {metric_text(ml_metrics.get('mape'))}"],
         ], [content_width * 0.28, content_width * 0.68], header_bg='#134e4a')
+        if ml_forecast_result.get('model_comparison'):
+            elements.append(Spacer(1, 8))
+            comparison_rows = [['Candidate', 'Status', 'MAE', 'RMSE', 'MAPE']]
+            for item in ml_forecast_result.get('model_comparison', [])[:8]:
+                metrics = item.get('metrics') or {}
+                comparison_rows.append([item.get('model_name', 'N/A'), item.get('status', 'N/A'), metric_text(metrics.get('mae')), metric_text(metrics.get('rmse')), metric_text(metrics.get('mape'))])
+            add_table(comparison_rows, [content_width * 0.22, content_width * 0.18, content_width * 0.16, content_width * 0.16, content_width * 0.16], header_bg='#0f766e')
+        if ml_forecast_result.get('assumptions_audit'):
+            elements.append(Spacer(1, 8))
+            add_callout('Methodology & Assumptions', '<br/>'.join(str(item) for item in ml_forecast_result.get('assumptions_audit', [])[:8]))
         elements.append(Spacer(1, 8))
-        elements.append(build_line_chart_image('ML Forecast', ml_forecast_result.get('history', []), ml_forecast_result.get('test_forecast', []), ml_forecast_result.get('future_forecast', []), include_interval=False))
+        elements.append(build_line_chart_image('ML Forecast', ml_forecast_result.get('history', []), ml_forecast_result.get('test_forecast', []), ml_forecast_result.get('future_forecast', []), include_interval=True))
         shap_items = ml_forecast_result.get('shap_feature_importance', [])
         if shap_items:
             elements.append(Spacer(1, 8))
@@ -6698,6 +7484,8 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
 
     try:
         if lower_file_name.endswith('.parquet'):
+            if pq is None:
+                raise IngestionFormatError('Parquet support is unavailable because pyarrow is not installed in the backend environment.', issue='pyarrow_unavailable')
             parquet_file = pq.ParquetFile(cached_path)
             total_rows = int(parquet_file.metadata.num_rows)
             column_count = len(parquet_file.schema.names)
@@ -6707,16 +7495,22 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             column_info = build_column_info_from_polars_frame(frame)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         elif lower_file_name.endswith('.csv') or lower_file_name.endswith('.tsv'):
-            sep = sniff_delimited_separator(cached_path)
-            frame = pl.read_csv(cached_path, separator=sep, n_rows=DATASET_PREVIEW_ROW_LIMIT, infer_schema_length=1000, ignore_errors=True)
-            total_rows = count_csv_rows_from_path(cached_path, sep=sep)
-            column_count = frame.width
-            dataset_entry.update({'csv_path': str(cached_path), 'separator': sep})
-            rows = frame.to_dicts()
-            column_info = build_column_info_from_polars_frame(frame)
-            preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
+            delimited_options = sniff_delimited_options(cached_path)
+            frame = read_delimited_frame(cached_path, n_rows=DATASET_PREVIEW_ROW_LIMIT, options=delimited_options)
+            total_rows = count_delimited_rows_from_path(cached_path, delimited_options)
+            column_count = len(frame.columns)
+            dataset_entry.update({
+                'csv_path': str(cached_path),
+                'separator': delimited_options['separator'],
+                'encoding': delimited_options['encoding'],
+                'header_row': int(delimited_options.get('header_row') or 0),
+            })
+            rows = frame.where(pd.notna(frame), None).to_dict(orient='records')
+            column_info = build_column_info_from_frame(frame)
+            preview_duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
         else:
-            available_sheets = get_excel_sheet_names(cached_path)
+            sheet_summaries = build_excel_sheet_summaries(cached_path)
+            available_sheets = [str(sheet['name']) for sheet in sheet_summaries]
             selected_sheets = resolve_selected_excel_sheets([], available_sheets)
             selection_payload = build_excel_selection_payload(
                 excel_path=cached_path,
@@ -6730,19 +7524,6 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             rows = selection_payload['rows']
             column_info = selection_payload['column_info']
             preview_duplicate_rows = int(selection_payload['duplicate_rows'])
-            sheet_summaries: list[dict[str, Any]] = []
-            for sheet_name in available_sheets:
-                try:
-                    sheet_preview = pd.read_excel(cached_path, sheet_name=sheet_name, nrows=min(50, DATASET_PREVIEW_ROW_LIMIT))
-                    sheet_columns = [str(column) for column in sheet_preview.columns]
-                except Exception:
-                    sheet_columns = []
-                sheet_summaries.append({
-                    'name': sheet_name,
-                    'rowCount': int(count_excel_rows_for_sheet(cached_path, sheet_name)),
-                    'columnCount': int(len(sheet_columns)),
-                    'columns': sheet_columns,
-                })
 
             dataset_entry.update({
                 'excel_path': str(cached_path),
@@ -6796,7 +7577,8 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
     except HTTPException:
         raise
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f'Failed to parse dataset file: {error}') from error
+        logger.exception('Dataset ingestion failed for %s', file_name)
+        raise HTTPException(status_code=400, detail=friendly_format_error(error, 'dataset file')) from error
 
 
 
@@ -6813,32 +7595,35 @@ async def parse_parquet(http_request: Request, file: UploadFile = File(...)) -> 
 
 @router.post('/parse-dataset-sheet-selection')
 def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_request: Request) -> JSONResponse:
-    dataset_entry = DATASET_CACHE.get(request.dataset_id)
-    if dataset_entry is None:
-        raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
-    if not dataset_entry.get('excel_path'):
-        raise HTTPException(status_code=400, detail='Sheet selection is only available for Excel workbooks.')
+    try:
+        dataset_entry = DATASET_CACHE.get(request.dataset_id)
+        if dataset_entry is None:
+            raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
+        if not dataset_entry.get('excel_path'):
+            raise HTTPException(status_code=400, detail='Sheet selection is only available for Excel workbooks.')
 
-    excel_path = Path(str(dataset_entry['excel_path']))
-    available_sheet_rows = dataset_entry.get('workbook_sheets') or []
-    available_sheets = [str(item.get('name')) for item in available_sheet_rows if item.get('name')]
-    if not available_sheets:
-        available_sheets = get_excel_sheet_names(excel_path)
-        dataset_entry['workbook_sheets'] = [
-            {'name': sheet, 'rowCount': int(count_excel_rows_for_sheet(excel_path, sheet))}
-            for sheet in available_sheets
-        ]
+        excel_path = Path(str(dataset_entry['excel_path']))
+        available_sheet_rows = dataset_entry.get('workbook_sheets') or []
+        available_sheets = [str(item.get('name')) for item in available_sheet_rows if item.get('name')]
+        if not available_sheets:
+            dataset_entry['workbook_sheets'] = build_excel_sheet_summaries(excel_path)
+            available_sheets = [str(item.get('name')) for item in dataset_entry['workbook_sheets'] if item.get('name')]
 
-    selected_sheets = resolve_selected_excel_sheets(request.selected_sheets, available_sheets)
-    merge_mode: Literal['single', 'stack'] = request.merge_mode
-    if merge_mode == 'single':
-        selected_sheets = [selected_sheets[0]]
+        selected_sheets = resolve_selected_excel_sheets(request.selected_sheets, available_sheets)
+        merge_mode: Literal['single', 'stack'] = request.merge_mode
+        if merge_mode == 'single':
+            selected_sheets = [selected_sheets[0]]
 
-    selection_payload = build_excel_selection_payload(
-        excel_path=excel_path,
-        selected_sheets=selected_sheets,
-        merge_mode=merge_mode,
-    )
+        selection_payload = build_excel_selection_payload(
+            excel_path=excel_path,
+            selected_sheets=selected_sheets,
+            merge_mode=merge_mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Excel sheet selection failed for dataset_id=%s', request.dataset_id)
+        raise HTTPException(status_code=400, detail=friendly_format_error(error, 'Excel workbook')) from error
 
     frame = selection_payload['frame']
     rows = selection_payload['rows']
@@ -7023,6 +7808,114 @@ def generate_report(payload: ReportPayload, http_request: Request, format: Liter
         content=report_bytes,
         media_type='application/pdf' if format == 'pdf' else 'application/msword',
         headers={'Content-Disposition': f'attachment; filename="{file_stem}_analysis_report.{"pdf" if format == "pdf" else "doc"}"'},
+    )
+
+
+@router.get('/forecast/export/excel/{session_id}')
+def export_forecast_excel(session_id: str, http_request: Request) -> Response:
+    state = ensure_session_state(session_id)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        sheets = {
+            'ts_history': (state.get('time_series_result') or {}).get('history', []),
+            'ts_future': (state.get('time_series_result') or {}).get('future_forecast', []),
+            'ts_model_comparison': (state.get('time_series_result') or {}).get('model_comparison', []),
+            'ml_history': (state.get('ml_forecast_result') or {}).get('history', []),
+            'ml_future': (state.get('ml_forecast_result') or {}).get('future_forecast', []),
+            'ml_model_comparison': (state.get('ml_forecast_result') or {}).get('model_comparison', []),
+            'loss_forecast': state.get('loss_forecast_result') or [],
+            'profit_baseline': (state.get('profit_scenarios') or {}).get('baseline', []),
+            'forecast_versions': state.get('forecast_history_versions') or [],
+        }
+        for sheet_name, rows in sheets.items():
+            serialized_rows = safe_serialize(rows)
+            if sheet_name.endswith('model_comparison') and isinstance(serialized_rows, list):
+                serialized_rows = [
+                    {
+                        **{key: value for key, value in row.items() if key not in {'metrics', 'tuning'}},
+                        'mae': (row.get('metrics') or {}).get('mae'),
+                        'rmse': (row.get('metrics') or {}).get('rmse'),
+                        'mape': (row.get('metrics') or {}).get('mape'),
+                        'optuna_enabled': (row.get('tuning') or {}).get('enabled'),
+                        'tuning_note': (row.get('tuning') or {}).get('note'),
+                    }
+                    for row in serialized_rows
+                    if isinstance(row, dict)
+                ]
+            frame = pd.DataFrame(serialized_rows)
+            if frame.empty:
+                frame = pd.DataFrame([{'status': 'not_available'}])
+            frame.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+        try:
+            from openpyxl.chart import BarChart, LineChart, Reference
+        except Exception as error:  # pragma: no cover - dependency is declared and validated at runtime
+            raise HTTPException(status_code=500, detail='openpyxl chart support is required to build the forecast workbook charts.') from error
+
+        workbook = writer.book
+        chart_sheet = workbook.create_sheet('charts')
+        chart_sheet['A1'] = 'Forecast Workbook Charts'
+        chart_sheet['A2'] = 'Charts are generated from the raw forecast sheets in this workbook.'
+
+        def numeric_chart(
+            source_sheet: str,
+            title: str,
+            value_columns: list[str],
+            anchor: str,
+            *,
+            chart_type: str = 'line',
+        ) -> None:
+            if source_sheet not in workbook.sheetnames:
+                return
+            worksheet = workbook[source_sheet]
+            if worksheet.max_row < 3:
+                return
+            headers = [str(cell.value) if cell.value is not None else '' for cell in worksheet[1]]
+            if 'period' in headers:
+                category_column = headers.index('period') + 1
+            elif 'model_name' in headers:
+                category_column = headers.index('model_name') + 1
+            else:
+                category_column = 1
+            chart = BarChart() if chart_type == 'bar' else LineChart()
+            chart.title = title
+            chart.y_axis.title = 'Value'
+            chart.x_axis.title = headers[category_column - 1] or 'Category'
+            added_series = False
+            for column_name in value_columns:
+                if column_name not in headers:
+                    continue
+                column_index = headers.index(column_name) + 1
+                values = Reference(worksheet, min_col=column_index, min_row=1, max_row=worksheet.max_row)
+                chart.add_data(values, titles_from_data=True)
+                added_series = True
+            if not added_series:
+                return
+            categories = Reference(worksheet, min_col=category_column, min_row=2, max_row=worksheet.max_row)
+            chart.set_categories(categories)
+            chart.height = 8
+            chart.width = 18
+            chart_sheet.add_chart(chart, anchor)
+
+        numeric_chart('ts_future', 'Time Series Future Forecast', ['predicted', 'lower', 'upper'], 'A4')
+        numeric_chart('ml_future', 'Machine Learning Future Forecast', ['predicted', 'lower', 'upper'], 'J4')
+        numeric_chart('loss_forecast', 'Loss Forecast by Driver', ['revenue_loss', 'operational_loss', 'inventory_loss', 'discount_loss', 'total_loss'], 'A22')
+        numeric_chart('profit_baseline', 'Baseline Profit Forecast', ['forecasted_revenue', 'gross_profit', 'net_profit'], 'J22')
+        numeric_chart('ts_model_comparison', 'Time Series Model MAE Comparison', ['mae', 'rmse', 'mape'], 'A40', chart_type='bar')
+        numeric_chart('ml_model_comparison', 'ML Forecast Model MAE Comparison', ['mae', 'rmse', 'mape'], 'J40', chart_type='bar')
+
+    buffer.seek(0)
+    record_activity(
+        request=http_request,
+        action='export_forecast_excel',
+        status='success',
+        dataset_id=session_id,
+        server_session_id=session_id,
+        detail='Exported forecast workbook with raw numbers, comparisons, and version history.',
+    )
+    return Response(
+        content=buffer.getvalue(),
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="{session_id}_forecast_workbook.xlsx"'},
     )
 
 

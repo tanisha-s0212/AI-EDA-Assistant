@@ -453,13 +453,26 @@ def execute_ml_forecast(session_id: str, request: Request) -> Any:
 
 def execute_loss_forecast(session_id: str, request: Request) -> Any:
     backend = get_backend_module()
-    payload = backend.ForecastRunRequest(session_id=session_dataset_id(session_id), forecast_periods=30)
+    payload = backend.ForecastRunRequest(
+        session_id=session_dataset_id(session_id),
+        forecast_periods=30,
+        confirmed_assumptions=True,
+    )
     return backend.run_loss_forecast(payload, request)
 
 
 def execute_profit_forecast(session_id: str, request: Request) -> Any:
     backend = get_backend_module()
-    payload = backend.ForecastRunRequest(session_id=session_dataset_id(session_id), forecast_periods=30)
+    payload = backend.ForecastRunRequest(
+        session_id=session_dataset_id(session_id),
+        forecast_periods=30,
+        confirmed_assumptions=True,
+        scenario_parameters={
+            'optimistic': {'revenue': 1.1, 'cogs': 0.97, 'loss': 0.8},
+            'baseline': {'revenue': 1.0, 'cogs': 1.0, 'loss': 1.0},
+            'pessimistic': {'revenue': 0.9, 'cogs': 1.05, 'loss': 1.2},
+        },
+    )
     return backend.run_profit_forecast(payload, request)
 
 

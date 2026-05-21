@@ -7,6 +7,7 @@ numpy
 pydantic
 joblib
 python-multipart
+python-dateutil
 reportlab
 pyarrow
 matplotlib
@@ -15,3 +16,8 @@ kaleido
 openpyxl
 xlrd
 psycopg[binary]
+xgboost
+lightgbm
+optuna
+prophet
+statsmodels
