@@ -7,6 +7,8 @@ import mimetypes
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,15 +41,100 @@ def resolve_agentic_layer_root() -> Path:
 
 
 AGENTIC_LAYER_ROOT = resolve_agentic_layer_root()
-if str(AGENTIC_LAYER_ROOT) not in sys.path:
-    sys.path.append(str(AGENTIC_LAYER_ROOT))
 
-from server.agent import respond as core_chat_respond  # noqa: E402
-from server.automation import RUNS_ROOT as CORE_RUNS_ROOT, create_run as core_create_run, record_decision as core_record_decision  # noqa: E402
-from server.config import AGENTIC_ROOT as CORE_AGENTIC_ROOT, Settings as CoreSettings  # noqa: E402
-
+CORE_AGENTIC_ROOT = AGENTIC_LAYER_ROOT
 CORE_UI_ROOT = CORE_AGENTIC_ROOT / 'ui'
+CORE_RUNS_ROOT = CORE_AGENTIC_ROOT / 'runs'
 CORE_ACTIVITY_LOG = CORE_AGENTIC_ROOT / 'logs' / 'activity.jsonl'
+
+
+class CoreSettings:
+    primary_provider = os.getenv('LLM_PRIMARY_PROVIDER', 'longcat').lower()
+    fallback_providers = [
+        provider.strip().lower()
+        for provider in os.getenv('LLM_FALLBACK_PROVIDERS', 'gemini,groq').split(',')
+        if provider.strip()
+    ]
+    default_mode = os.getenv('LLM_DEFAULT_MODE', 'fast').lower()
+
+    longcat_api_key = os.getenv('LONGCAT_API_KEY', '')
+    longcat_base_url = os.getenv('LONGCAT_BASE_URL', 'https://api.longcat.chat/openai/v1').rstrip('/')
+    longcat_fast_model = os.getenv('LONGCAT_FAST_MODEL', 'LongCat-Flash-Chat')
+    longcat_balanced_model = os.getenv('LONGCAT_BALANCED_MODEL', 'LongCat-Flash-Chat')
+    longcat_deep_model = os.getenv('LONGCAT_DEEP_MODEL', 'LongCat-Flash-Thinking')
+
+    gemini_api_key = os.getenv('GEMINI_API_KEY', '')
+    gemini_stable_model = os.getenv('GEMINI_STABLE_MODEL', 'gemini-3.1-flash-lite')
+    gemini_fast_model = os.getenv('GEMINI_FAST_MODEL', gemini_stable_model)
+    gemini_balanced_model = os.getenv('GEMINI_BALANCED_MODEL', 'gemini-2.5-flash')
+    gemini_deep_model = os.getenv('GEMINI_DEEP_MODEL', 'gemini-2.5-pro')
+
+    groq_api_key = os.getenv('GROQ_API_KEY', '')
+    groq_fallback_model = os.getenv('GROQ_FALLBACK_MODEL', 'llama-3.3-70b-versatile')
+    groq_fast_model = os.getenv('GROQ_FAST_MODEL', 'llama-3.1-8b-instant')
+
+    temperature = float(os.getenv('LLM_TEMPERATURE', '0.2'))
+    max_output_tokens = int(os.getenv('LLM_MAX_OUTPUT_TOKENS', '4096'))
+    timeout_seconds = int(os.getenv('LLM_REQUEST_TIMEOUT_SECONDS', '60'))
+
+    @classmethod
+    def provider_configured(cls, provider: str) -> bool:
+        if provider == 'longcat':
+            return bool(cls.longcat_api_key and not cls.longcat_api_key.startswith('your_'))
+        if provider == 'gemini':
+            return bool(cls.gemini_api_key and not cls.gemini_api_key.startswith('your_'))
+        if provider == 'groq':
+            return bool(cls.groq_api_key and not cls.groq_api_key.startswith('your_'))
+        return False
+
+    @classmethod
+    def longcat_model_for_mode(cls, mode: str) -> str:
+        if mode == 'deep':
+            return cls.longcat_deep_model
+        if mode == 'balanced':
+            return cls.longcat_balanced_model
+        return cls.longcat_fast_model
+
+    @classmethod
+    def gemini_model_for_mode(cls, mode: str) -> str:
+        if mode == 'stable':
+            return cls.gemini_stable_model
+        if mode == 'deep':
+            return cls.gemini_deep_model
+        if mode == 'balanced':
+            return cls.gemini_balanced_model
+        return cls.gemini_fast_model
+
+    @classmethod
+    def groq_model_for_mode(cls, mode: str) -> str:
+        if mode in {'fast', 'stable'}:
+            return cls.groq_fast_model
+        return cls.groq_fallback_model
+
+    @classmethod
+    def model_switching_map(cls) -> dict[str, dict[str, str]]:
+        return {
+            'stable': {
+                'gemini': cls.gemini_model_for_mode('stable'),
+                'longcat': cls.longcat_model_for_mode('fast'),
+                'groq': cls.groq_model_for_mode('stable'),
+            },
+            'fast': {
+                'gemini': cls.gemini_model_for_mode('fast'),
+                'longcat': cls.longcat_model_for_mode('fast'),
+                'groq': cls.groq_model_for_mode('fast'),
+            },
+            'balanced': {
+                'gemini': cls.gemini_model_for_mode('balanced'),
+                'longcat': cls.longcat_model_for_mode('balanced'),
+                'groq': cls.groq_model_for_mode('balanced'),
+            },
+            'deep': {
+                'gemini': cls.gemini_model_for_mode('deep'),
+                'longcat': cls.longcat_model_for_mode('deep'),
+                'groq': cls.groq_model_for_mode('deep'),
+            },
+        }
 
 PIPELINE_STEPS = [
     'Data Understanding',
@@ -86,6 +173,210 @@ class DecisionRequest(BaseModel):
     reasoning: str = ''
 
 
+class ProviderError(RuntimeError):
+    pass
+
+
+MODEL_MODES = {'stable', 'fast', 'balanced', 'deep'}
+SUPPORTED_MODES = {'ask', 'plan', 'review', 'explain', 'search', *MODEL_MODES}
+SUPPORTED_PROVIDERS = {'longcat', 'gemini', 'groq'}
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _model_mode(ui_mode: str) -> str:
+    if ui_mode in MODEL_MODES:
+        return ui_mode
+    if ui_mode in {'plan', 'review'}:
+        return 'balanced'
+    return CoreSettings.default_mode if CoreSettings.default_mode in MODEL_MODES else 'stable'
+
+
+def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: int) -> dict[str, Any]:
+    request = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode('utf-8', errors='ignore')
+        raise ProviderError(f'Provider HTTP {exc.code}: {details[:500]}') from exc
+    except urllib.error.URLError as exc:
+        raise ProviderError(f'Provider request failed: {exc.reason}') from exc
+    except TimeoutError as exc:
+        raise ProviderError('Provider request timed out.') from exc
+
+
+def _call_openai_compatible_model(
+    base_url: str,
+    api_key: str,
+    messages: list[dict[str, str]],
+    model: str,
+    provider_name: str,
+    max_tokens_field: str = 'max_tokens',
+) -> str:
+    payload = {
+        'model': model,
+        'messages': messages,
+        'temperature': CoreSettings.temperature,
+        max_tokens_field: CoreSettings.max_output_tokens,
+    }
+    data = _post_json(
+        f'{base_url}/chat/completions',
+        payload,
+        {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
+        CoreSettings.timeout_seconds,
+    )
+    choices = data.get('choices') or []
+    if not choices:
+        raise ProviderError(f'{provider_name} returned no choices.')
+    text = choices[0].get('message', {}).get('content', '').strip()
+    if not text:
+        raise ProviderError(f'{provider_name} returned an empty response.')
+    return text
+
+
+def call_longcat(messages: list[dict[str, str]], mode: str) -> str:
+    if mode == 'deep':
+        models = _unique([CoreSettings.longcat_deep_model, CoreSettings.longcat_balanced_model, CoreSettings.longcat_fast_model])
+    elif mode == 'balanced':
+        models = _unique([CoreSettings.longcat_balanced_model, CoreSettings.longcat_fast_model, CoreSettings.longcat_deep_model])
+    else:
+        models = _unique([CoreSettings.longcat_fast_model, CoreSettings.longcat_balanced_model])
+    errors = []
+    for model in models:
+        try:
+            return _call_openai_compatible_model(CoreSettings.longcat_base_url, CoreSettings.longcat_api_key, messages, model, 'LongCat')
+        except ProviderError as exc:
+            errors.append(f'{model}: {exc}')
+    raise ProviderError('LongCat model attempts failed. ' + ' | '.join(errors))
+
+
+def call_gemini(messages: list[dict[str, str]], mode: str) -> str:
+    if mode == 'stable':
+        models = _unique([CoreSettings.gemini_stable_model, CoreSettings.gemini_fast_model])
+    elif mode == 'deep':
+        models = _unique([CoreSettings.gemini_deep_model, CoreSettings.gemini_balanced_model, CoreSettings.gemini_stable_model, CoreSettings.gemini_fast_model])
+    elif mode == 'balanced':
+        models = _unique([CoreSettings.gemini_balanced_model, CoreSettings.gemini_stable_model, CoreSettings.gemini_fast_model, CoreSettings.gemini_deep_model])
+    else:
+        models = _unique([CoreSettings.gemini_fast_model, CoreSettings.gemini_stable_model, CoreSettings.gemini_balanced_model])
+    errors = []
+    system_parts = [message['content'] for message in messages if message['role'] == 'system']
+    user_parts = [message['content'] for message in messages if message['role'] != 'system']
+    prompt = '\n\n'.join([*system_parts, *user_parts])
+    for model in models:
+        try:
+            data = _post_json(
+                f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={CoreSettings.gemini_api_key}',
+                {
+                    'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+                    'generationConfig': {
+                        'temperature': CoreSettings.temperature,
+                        'maxOutputTokens': CoreSettings.max_output_tokens,
+                    },
+                },
+                {'Content-Type': 'application/json'},
+                CoreSettings.timeout_seconds,
+            )
+            parts = (data.get('candidates') or [{}])[0].get('content', {}).get('parts', [])
+            text = ''.join(part.get('text', '') for part in parts).strip()
+            if text:
+                return text
+            raise ProviderError('Gemini returned an empty response.')
+        except ProviderError as exc:
+            errors.append(f'{model}: {exc}')
+    raise ProviderError('Gemini model attempts failed. ' + ' | '.join(errors))
+
+
+def call_groq(messages: list[dict[str, str]], mode: str) -> str:
+    models = _unique([CoreSettings.groq_fast_model, CoreSettings.groq_fallback_model]) if mode in {'fast', 'stable'} else _unique([CoreSettings.groq_fallback_model, CoreSettings.groq_fast_model])
+    errors = []
+    for model in models:
+        try:
+            return _call_openai_compatible_model(
+                'https://api.groq.com/openai/v1',
+                CoreSettings.groq_api_key,
+                messages,
+                model,
+                'Groq',
+                'max_completion_tokens',
+            )
+        except ProviderError as exc:
+            errors.append(f'{model}: {exc}')
+    raise ProviderError('Groq model attempts failed. ' + ' | '.join(errors))
+
+
+def call_provider(provider: str, messages: list[dict[str, str]], mode: str) -> str:
+    if provider == 'longcat':
+        if not CoreSettings.provider_configured('longcat'):
+            raise ProviderError('LongCat API key is not configured.')
+        return call_longcat(messages, mode)
+    if provider == 'gemini':
+        if not CoreSettings.provider_configured('gemini'):
+            raise ProviderError('Gemini API key is not configured.')
+        return call_gemini(messages, mode)
+    if provider == 'groq':
+        if not CoreSettings.provider_configured('groq'):
+            raise ProviderError('Groq API key is not configured.')
+        return call_groq(messages, mode)
+    raise ProviderError(f'Unsupported provider: {provider}')
+
+
+def _core_workflow_knowledge() -> str:
+    path = CORE_AGENTIC_ROOT / 'knowledge' / 'application-workflow.md'
+    if not path.exists():
+        return 'No workflow knowledge file is available.'
+    return path.read_text(encoding='utf-8', errors='ignore')
+
+
+def _core_chat_context() -> str:
+    return 'Confirmed application workflow knowledge:\n' + _core_workflow_knowledge()
+
+
+def core_chat_respond(message: str, ui_mode: str = 'ask', provider: str = 'auto') -> dict[str, Any]:
+    ui_mode = ui_mode if ui_mode in SUPPORTED_MODES else 'ask'
+    model_mode = _model_mode(ui_mode)
+    provider = provider.lower()
+    messages = [
+        {
+            'role': 'system',
+            'content': (
+                'You are the embedded Agentic Core for this FastAPI backend. '
+                'Use the local workflow context, do not reveal API keys, and keep answers concise.'
+            ),
+        },
+        {'role': 'user', 'content': f'User request:\n{message}\n\nLocal context:\n{_core_chat_context()}'},
+    ]
+    providers = [provider] if provider in SUPPORTED_PROVIDERS else [
+        CoreSettings.primary_provider,
+        *CoreSettings.fallback_providers,
+        'longcat',
+        'gemini',
+        'groq',
+    ]
+    errors = []
+    for index, current_provider in enumerate(dict.fromkeys(providers)):
+        try:
+            answer = call_provider(current_provider, messages, model_mode)
+            return {'answer': answer, 'provider': current_provider, 'mode': model_mode, 'fallback_used': index > 0}
+        except ProviderError as exc:
+            errors.append(f'{current_provider}: {exc}')
+    answer = (
+        'The configured cloud model providers are unavailable for this request, so I am answering from local workflow context.\n\n'
+        f'{_core_chat_context()}\n\nProvider status summary:\n'
+        + '\n'.join(f'- {error}' for error in errors)
+    )
+    return {'answer': answer, 'provider': 'local', 'mode': model_mode, 'fallback_used': False}
+
+
 def core_json_error(message: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse(content={'error': message}, status_code=status_code)
 
@@ -98,6 +389,160 @@ def core_rewrite_json_links(value: Any) -> Any:
     if isinstance(value, str) and value.startswith('/runs/'):
         return f'/api/agentic/core{value}'
     return value
+
+
+def _safe_core_id(value: str) -> str:
+    cleaned = re.sub(r'[^a-zA-Z0-9_.-]+', '-', value).strip('-')
+    return cleaned[:80] or 'dataset'
+
+
+def _core_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _core_json_write(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding='utf-8')
+
+
+def _core_default_suggestions(has_numeric: bool = True) -> list[dict[str, str]]:
+    return [
+        {
+            'id': 'understanding',
+            'title': 'Profile Dataset',
+            'recommended_action': 'Accept and Continue',
+            'reason': 'Confirm columns, row sample size, missing values, and likely target fields before analysis.',
+        },
+        {
+            'id': 'eda',
+            'title': 'Run EDA Summary',
+            'recommended_action': 'Accept and Continue',
+            'reason': 'Generate distributions, missing-value tables, correlation candidates, and quality warnings.',
+        },
+        {
+            'id': 'cleaning',
+            'title': 'Prepare Clean Dataset',
+            'recommended_action': 'Optional',
+            'reason': 'Handle missing values, normalize data types, and persist a cleaned version for downstream models.',
+        },
+        {
+            'id': 'ml_forecast',
+            'title': 'Evaluate ML Forecast',
+            'recommended_action': 'Accept and Continue' if has_numeric else 'Skip Until Target Is Selected',
+            'reason': 'Train baseline forecast candidates and compare performance before prediction.',
+        },
+        {
+            'id': 'report',
+            'title': 'Generate Complete Flow Report',
+            'recommended_action': 'Accept and Continue',
+            'reason': 'Package performed steps, assumptions, results, model metrics, and download-ready summaries.',
+        },
+    ]
+
+
+def core_create_run(payload: dict[str, Any]) -> dict[str, Any]:
+    dataset_name = str(payload.get('dataset_name') or payload.get('dataset_id') or payload.get('dataset_path') or 'uploaded dataset')
+    columns = payload.get('dataset_columns') if isinstance(payload.get('dataset_columns'), list) else []
+    numeric_columns = payload.get('numeric_columns') if isinstance(payload.get('numeric_columns'), list) else []
+    rows_sampled = int(payload.get('row_count') or payload.get('loaded_row_count') or 0)
+    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{_safe_core_id(Path(dataset_name).name)}-{uuid.uuid4().hex[:6]}"
+    run_root = CORE_RUNS_ROOT / run_id
+    for folder in ('models', 'performance', 'results', 'reports', 'decisions'):
+        (run_root / folder).mkdir(parents=True, exist_ok=True)
+    manifest = {
+        'run_id': run_id,
+        'created_at': _core_now(),
+        'application': 'Intelligent Data Assistant',
+        'agent': 'IDA Agentic Core',
+        'workflow': ['understanding', 'eda', 'cleaning', 'ml_forecast', 'report'],
+        'dataset': {
+            'file_name': Path(dataset_name).name,
+            'rows_sampled': rows_sampled,
+            'columns': [str(column) for column in columns],
+            'numeric_columns': [str(column) for column in numeric_columns],
+            'missing_counts': {str(column): 0 for column in columns},
+            'notes': ['Dataset metadata was received from the main Intelligent Data Assistant application.'],
+        },
+        'suggestions': _core_default_suggestions(bool(numeric_columns)),
+        'status': 'suggested',
+    }
+    _core_json_write(run_root / 'manifest.json', manifest)
+    _core_json_write(run_root / 'results' / 'dataset_profile.json', manifest['dataset'])
+    return manifest
+
+
+def _core_render_report(run_root: Path, manifest: dict[str, Any], step_id: str, decision: str) -> dict[str, Any]:
+    report_path = run_root / 'reports' / 'workflow_report.html'
+    dataset = manifest.get('dataset', {})
+    report_html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{html.escape(str(dataset.get('file_name', 'Dataset')))} - Agentic Workflow Report</title>
+  <style>
+    body {{ margin: 0; background: #f5f7fb; color: #172033; font-family: Arial, sans-serif; }}
+    main {{ max-width: 900px; margin: 0 auto; padding: 40px 24px; }}
+    header, section {{ background: #fff; border: 1px solid #dbe3ec; border-radius: 8px; padding: 20px; margin-bottom: 14px; }}
+    h1 {{ margin: 0 0 8px; font-size: 28px; }}
+    h2 {{ margin: 0 0 8px; font-size: 18px; }}
+    p {{ color: #5b6678; }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Agentic Workflow Report</h1>
+      <p>Run {html.escape(str(manifest.get('run_id', '')))} for {html.escape(str(dataset.get('file_name', 'dataset')))}.</p>
+    </header>
+    <section>
+      <h2>Decision</h2>
+      <p>{html.escape(decision.title())} recorded for {html.escape(step_id)} at {html.escape(_core_now())}.</p>
+    </section>
+    <section>
+      <h2>Dataset</h2>
+      <p>{int(dataset.get('rows_sampled', 0)):,} rows sampled, {len(dataset.get('columns', []))} columns, {len(dataset.get('numeric_columns', []))} numeric columns.</p>
+    </section>
+  </main>
+</body>
+</html>"""
+    report_path.write_text(report_html, encoding='utf-8')
+    return {
+        'step_id': 'report',
+        'status': 'completed',
+        'completed_at': _core_now(),
+        'summary': 'Generated a local HTML report for download.',
+        'download_url': f"/runs/{manifest.get('run_id', '')}/reports/workflow_report.html",
+    }
+
+
+def core_record_decision(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _safe_core_id(str(payload.get('run_id', '')).strip())
+    step_id = _safe_core_id(str(payload.get('step_id', '')).strip())
+    decision = str(payload.get('decision', '')).strip().lower()
+    if not run_id or not step_id:
+        raise ValueError('run_id and step_id are required.')
+    if decision not in {'accept', 'skip'}:
+        raise ValueError('decision must be accept or skip.')
+    run_root = (CORE_RUNS_ROOT / run_id).resolve()
+    if not str(run_root).startswith(str(CORE_RUNS_ROOT.resolve())):
+        raise ValueError('Invalid run_id.')
+    manifest_path = run_root / 'manifest.json'
+    if not manifest_path.exists():
+        raise FileNotFoundError(run_id)
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    record = {
+        'run_id': run_id,
+        'step_id': step_id,
+        'decision': decision,
+        'recorded_at': _core_now(),
+        'status': 'completed' if decision == 'accept' else 'skipped',
+        'note': str(payload.get('note', '')).strip()[:500],
+        'executed_steps': [{'step_id': step_id, 'status': 'completed', 'summary': 'Decision recorded by the embedded backend agentic adapter.'}] if decision == 'accept' else [],
+    }
+    if decision == 'accept':
+        record['report'] = _core_render_report(run_root, manifest, step_id, decision)
+    _core_json_write(run_root / 'decisions' / f'{step_id}.json', record)
+    return record
 
 
 def core_record_activity(payload: dict[str, Any]) -> None:
@@ -707,10 +1152,10 @@ async def core_chat(request: Request) -> JSONResponse:
         result = core_chat_respond(message=message, ui_mode=mode, provider=provider)
         return JSONResponse(
             content={
-                'answer': result.answer,
-                'provider': result.provider,
-                'mode': result.mode,
-                'fallback_used': result.fallback_used,
+                'answer': result['answer'],
+                'provider': result['provider'],
+                'mode': result['mode'],
+                'fallback_used': result['fallback_used'],
             }
         )
     except json.JSONDecodeError:
