@@ -21,7 +21,24 @@ from agentic.run_artifacts import append_audit_log, read_session_summary, write_
 
 agentic_router = APIRouter(prefix='/api/agentic')
 
-AGENTIC_LAYER_ROOT = Path(__file__).resolve().parents[2] / 'agentic-layer'
+
+def resolve_agentic_layer_root() -> Path:
+    configured_root = os.getenv('AGENTIC_LAYER_ROOT')
+    candidates = []
+    if configured_root:
+        candidates.append(Path(configured_root))
+    candidates.extend([
+        Path(__file__).resolve().parents[2] / 'agentic-layer',
+        Path('/agentic-layer'),
+        Path(__file__).resolve().parents[1] / 'agentic-layer',
+    ])
+    for candidate in candidates:
+        if (candidate / 'server' / 'agent.py').exists():
+            return candidate
+    return candidates[0]
+
+
+AGENTIC_LAYER_ROOT = resolve_agentic_layer_root()
 if str(AGENTIC_LAYER_ROOT) not in sys.path:
     sys.path.append(str(AGENTIC_LAYER_ROOT))
 
