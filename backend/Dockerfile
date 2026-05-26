@@ -11,6 +11,7 @@ RUN apt-get update \
 
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir lightgbm pmdarima
 COPY backend/ ./
 COPY agentic-layer/ /agentic-layer/
 EXPOSE 3004

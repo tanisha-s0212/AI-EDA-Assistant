@@ -80,6 +80,11 @@ except Exception:  # pragma: no cover - optional production dependency
     SARIMAX = None
 
 try:
+    from pmdarima import auto_arima
+except Exception:  # pragma: no cover - optional production dependency
+    auto_arima = None
+
+try:
     import optuna
 except Exception:  # pragma: no cover - optional production dependency
     optuna = None
@@ -2839,8 +2844,10 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
     series_frame['sales'] = series_frame['sales'].astype(float)
     series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales')
 
-    if len(series_frame) < 6:
-        raise HTTPException(status_code=400, detail=f'Sales forecasting needs at least 6 {period_label} periods after aggregation.')
+    minimum_periods = 2 * seasonal_period_for_label(period_label)
+    if len(series_frame) < minimum_periods:
+        needed = minimum_periods - len(series_frame)
+        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.')
 
     return series_frame, freq, period_label
 
@@ -2888,6 +2895,14 @@ def infer_sales_time_frequency(dates: pd.Series) -> tuple[str, str]:
     return 'YS', 'year'
 
 
+def seasonal_period_for_label(period_label: str) -> int:
+    return {'day': 365, 'week': 52, 'month': 12, 'quarter': 4, 'year': 1}.get(period_label, 12)
+
+
+def statsmodels_frequency_for_label(period_label: str) -> str:
+    return {'day': 'D', 'week': 'W', 'month': 'MS', 'quarter': 'QS', 'year': 'YS'}.get(period_label, 'MS')
+
+
 def format_forecast_period(value: pd.Timestamp, period_label: str) -> str:
     timestamp = pd.Timestamp(value)
     if period_label == 'day':
@@ -2912,8 +2927,13 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
         raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
 
     freq, period_label = infer_sales_time_frequency(working[date_column])
-    period_freq = {'MS': 'M', 'QS': 'Q', 'YS': 'Y'}.get(freq, freq)
-    period_index = working[date_column].dt.to_period(period_freq).dt.to_timestamp()
+    if freq == 'W-MON':
+        period_index = working[date_column].dt.to_period('W').dt.start_time
+    elif freq == 'D':
+        period_index = working[date_column].dt.floor('D')
+    else:
+        period_freq = {'MS': 'M', 'QS': 'Q', 'YS': 'Y'}.get(freq, freq)
+        period_index = working[date_column].dt.to_period(period_freq).dt.to_timestamp()
     working = working.assign(period=period_index)
     series_frame = working.groupby('period', as_index=False)[target_column].sum(min_count=1).sort_values('period')
     series_frame = series_frame.rename(columns={target_column: 'sales'})
@@ -2923,8 +2943,10 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
     series_frame['sales'] = series_frame['sales'].astype(float)
     series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales')
 
-    if len(series_frame) < 6:
-        raise HTTPException(status_code=400, detail=f'Sales forecasting needs at least 6 {period_label} periods after aggregation.')
+    minimum_periods = 2 * seasonal_period_for_label(period_label)
+    if len(series_frame) < minimum_periods:
+        needed = minimum_periods - len(series_frame)
+        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.')
 
     return series_frame, freq, period_label
 
@@ -3064,7 +3086,7 @@ def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -
     if usable_periods > 1 and float(abs(values.fillna(0).mean())) > 0:
         volatility = float(values.fillna(0).std() / abs(values.fillna(0).mean()))
 
-    minimum_required = {'day': 30, 'week': 16, 'month': 12, 'quarter': 8, 'year': 6}.get(period_label, 12)
+    minimum_required = 2 * seasonal_period_for_label(period_label)
     period_score = min(1.0, usable_periods / minimum_required)
     completeness_score = max(0.0, 1.0 - missing_share)
     signal_score = max(0.0, 1.0 - min(0.7, zero_share))
@@ -3092,8 +3114,10 @@ def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -
 
 def ensure_forecast_data_sufficiency(series_frame: pd.DataFrame, period_label: str, require_quality_gate: bool = True) -> dict[str, Any]:
     quality = build_forecast_data_quality(series_frame, period_label)
-    if len(series_frame) < 6:
-        raise HTTPException(status_code=422, detail=f'Forecasting needs at least 6 {period_label} periods after aggregation.')
+    minimum_required = 2 * seasonal_period_for_label(period_label)
+    if len(series_frame) < minimum_required:
+        needed = minimum_required - len(series_frame)
+        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_required} {period_label} rows after aggregation. Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.')
     if require_quality_gate and quality['status'] == 'fail':
         raise HTTPException(status_code=422, detail=f'Data quality gate failed: {"; ".join(quality["issues"]) or "insufficient usable signal"}.')
     return quality
@@ -3143,7 +3167,10 @@ def compute_stationarity_check(values: list[float]) -> dict[str, Any]:
     residuals = y_t - x @ beta
     dof = max(len(y_t) - x.shape[1], 1)
     sigma2 = float(np.sum(residuals ** 2) / dof)
-    cov = sigma2 * np.linalg.inv(x.T @ x)
+    try:
+        cov = sigma2 * np.linalg.inv(x.T @ x)
+    except np.linalg.LinAlgError:
+        cov = sigma2 * np.linalg.pinv(x.T @ x)
     se = float(np.sqrt(max(cov[1, 1], 1e-9)))
     test_stat = float((beta[1] - 1.0) / se)
     p_value = round(min(1.0, max(0.0, 2 * normal_tail_probability(test_stat))), 4)
@@ -3153,6 +3180,17 @@ def compute_stationarity_check(values: list[float]) -> dict[str, Any]:
         'p_value': p_value,
         'verdict': 'Likely stationary' if stationary else 'Trend or seasonality still present',
         'note': 'The series looks stationary enough for difference-based models.' if stationary else 'The series still shows a trend or seasonal structure, so seasonal statistical models are favored.',
+    }
+
+
+def with_fitted_order_note(stationarity: dict[str, Any], order: tuple[int, int, int] | None, seasonal_order: tuple[int, int, int, int] | None) -> dict[str, Any]:
+    order_text = order or 'unknown'
+    seasonal_text = seasonal_order or 'unknown'
+    return {
+        **stationarity,
+        'note': f'{stationarity.get("note", "Stationarity diagnostic completed.")} SARIMA fitted order {order_text} and seasonal order {seasonal_text}.',
+        'fitted_order': order,
+        'fitted_seasonal_order': seasonal_order,
     }
 
 
@@ -3170,7 +3208,7 @@ def build_dataset_profile(series_frame: pd.DataFrame, period_label: str) -> dict
 
 
 def infer_season_length(period_label: str, total_periods: int) -> int:
-    default = {'day': 7, 'week': 4, 'month': 12, 'quarter': 4, 'year': 1}.get(period_label, 1)
+    default = seasonal_period_for_label(period_label)
     return max(1, min(default, max(1, total_periods // 2)))
 
 
@@ -3310,6 +3348,7 @@ def production_model_name(model_type: str) -> str:
     return {
         'prophet': 'Prophet',
         'sarima': 'SARIMA',
+        'gradient_boosting': 'Gradient Boosting',
         'xgboost': 'XGBoost',
         'lightgbm': 'LightGBM',
     }.get(model_type, model_type.replace('_', ' ').title())
@@ -3319,12 +3358,67 @@ def model_availability_note(model_type: str) -> str:
     if model_type == 'prophet':
         return 'Prophet package available.' if Prophet is not None else 'Prophet package unavailable; candidate skipped.'
     if model_type == 'sarima':
-        return 'statsmodels SARIMAX available.' if SARIMAX is not None else 'statsmodels SARIMAX unavailable; candidate skipped.'
+        if SARIMAX is None:
+            return 'statsmodels SARIMAX unavailable; candidate skipped.'
+        return 'pmdarima.auto_arima available for SARIMA order selection.' if auto_arima is not None else 'pmdarima.auto_arima unavailable; simplified SARIMA fallback will be attempted.'
     if model_type == 'xgboost' and XGBRegressor is None:
         return 'XGBoost package unavailable; candidate skipped.'
     if model_type == 'lightgbm' and LGBMRegressor is None:
-        return 'LightGBM package unavailable; candidate skipped.'
+        return 'LightGBM unavailable after install; candidate failed. Rebuild the backend image or check native LightGBM dependencies.'
     return 'Candidate available.'
+
+
+def fit_sarima_forecast(history: list[float], forecast_periods: int, period_label: str) -> tuple[list[float], dict[str, Any]]:
+    if SARIMAX is None:
+        raise RuntimeError('statsmodels SARIMAX is unavailable.')
+
+    seasonal_period = seasonal_period_for_label(period_label)
+    mapped_freq = statsmodels_frequency_for_label(period_label)
+    index = pd.date_range(start='2000-01-01', periods=len(history), freq=mapped_freq)
+    endog = pd.Series(np.asarray(history, dtype=float), index=index)
+    attempts: list[dict[str, Any]] = []
+
+    if auto_arima is not None:
+        try:
+            auto_model = auto_arima(
+                endog,
+                seasonal=seasonal_period > 1,
+                m=seasonal_period,
+                start_p=0,
+                start_q=0,
+                max_p=3,
+                max_q=3,
+                max_P=2,
+                max_Q=2,
+                d=None,
+                D=None,
+                trace=False,
+                error_action='raise',
+                suppress_warnings=True,
+                stepwise=True,
+            )
+            order = tuple(int(value) for value in auto_model.order)
+            seasonal_order = tuple(int(value) for value in auto_model.seasonal_order)
+            fitted = SARIMAX(endog, order=order, seasonal_order=seasonal_order, freq=mapped_freq, enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+            predictions = [max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
+            return predictions, {'order': order, 'seasonal_order': seasonal_order, 'selection': 'auto_arima', 'attempts': attempts}
+        except (ValueError, np.linalg.LinAlgError) as error:
+            attempts.append({'selection': 'auto_arima', 'error': str(error)})
+        except Exception as error:
+            attempts.append({'selection': 'auto_arima', 'error': str(error)})
+
+    try:
+        fallback_order = (1, 1, 1)
+        fallback_seasonal_order = (1, 1, 1, seasonal_period) if seasonal_period > 1 else (0, 0, 0, 0)
+        fitted = SARIMAX(endog, order=fallback_order, seasonal_order=fallback_seasonal_order, freq=mapped_freq, enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+        predictions = [max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
+        return predictions, {'order': fallback_order, 'seasonal_order': fallback_seasonal_order, 'selection': 'simplified_retry', 'attempts': attempts}
+    except (ValueError, np.linalg.LinAlgError) as error:
+        attempts.append({'selection': 'simplified_retry', 'error': str(error)})
+        raise RuntimeError(f'SARIMA fitting failed after auto_arima and simplified retry: {attempts}') from error
+    except Exception as error:
+        attempts.append({'selection': 'simplified_retry', 'error': str(error)})
+        raise RuntimeError(f'SARIMA fitting failed after auto_arima and simplified retry: {attempts}') from error
 
 
 def walk_forward_splits(total_periods: int, requested_test_periods: int, lag_periods: int) -> list[tuple[int, int]]:
@@ -3368,10 +3462,7 @@ def evaluate_statistical_candidate(
                 raise RuntimeError(f'Prophet training failed during walk-forward validation: {error}') from error
         elif model_type == 'sarima':
             try:
-                seasonal_order = (1, 0, 1, max(1, min(season_length, max(1, train_end // 2)))) if season_length > 1 else (0, 0, 0, 0)
-                sarima_model = SARIMAX(history, order=(1, 1, 1), seasonal_order=seasonal_order, enforce_stationarity=False, enforce_invertibility=False)
-                fitted = sarima_model.fit(disp=False)
-                fitted_predictions = [max(0.0, float(value)) for value in fitted.forecast(fold_periods)]
+                fitted_predictions, tuning_details = fit_sarima_forecast(history, fold_periods, period_label)
             except Exception as error:
                 raise RuntimeError(f'SARIMA training failed during walk-forward validation: {error}') from error
         if len(fitted_predictions) < fold_periods:
@@ -3400,7 +3491,7 @@ def evaluate_statistical_candidate(
         'feature_importance': [],
         'generated_features': [],
         'feature_preview_rows': [],
-        'tuning': {'enabled': optuna is not None, 'note': 'Optuna available.' if optuna is not None else 'Optuna package unavailable; stable model defaults used.'},
+        'tuning': tuning_details if model_type == 'sarima' else {'enabled': optuna is not None, 'note': 'Optuna available.' if optuna is not None else 'Optuna package unavailable; stable model defaults used.'},
         'availability_note': f'{production_model_name(model_type)} trained successfully on walk-forward validation folds.',
     }
 
@@ -3417,7 +3508,7 @@ def evaluate_ml_candidate(
     if model_type == 'xgboost' and XGBRegressor is None:
         return {'model_type': model_type, 'model_name': 'XGBoost', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
     if model_type == 'lightgbm' and LGBMRegressor is None:
-        return {'model_type': model_type, 'model_name': 'LightGBM', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
+        return {'model_type': model_type, 'model_name': 'LightGBM', 'status': 'failed', 'skip_reason': model_availability_note(model_type)}
 
     values = series_frame['sales'].astype(float).tolist()
     periods = series_frame['period'].tolist()
@@ -3429,6 +3520,9 @@ def evaluate_ml_candidate(
     for train_end, fold_periods in walk_forward_splits(len(values), requested_test_periods, lag_periods):
         train_frame = series_frame.iloc[:train_end].copy()
         train_X, train_y = build_ml_forecast_training_frame(train_frame, lag_periods, feature_groups)
+        non_zero_feature_count = int((train_X.var(numeric_only=True) > 1e-9).sum())
+        if non_zero_feature_count < 3:
+            raise RuntimeError(f'Only {non_zero_feature_count} generated features have non-zero variance; at least 3 are required for ML forecasting.')
         model = build_forecast_regressor(model_type)
         model.fit(train_X, train_y)
         fold_predictions = recursive_ml_forecast(
@@ -3506,10 +3600,8 @@ def build_future_for_selected_model(
                 raise RuntimeError(f'Prophet training failed while building the final future forecast: {error}') from error
         if model_type == 'sarima' and SARIMAX is not None:
             try:
-                seasonal_order = (1, 0, 1, max(1, min(season_length, max(1, len(history) // 2)))) if season_length > 1 else (0, 0, 0, 0)
-                sarima_model = SARIMAX(history, order=(1, 1, 1), seasonal_order=seasonal_order, enforce_stationarity=False, enforce_invertibility=False)
-                fitted = sarima_model.fit(disp=False)
-                predictions = [max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
+                predictions, tuning_details = fit_sarima_forecast(history, forecast_periods, period_label)
+                selected['tuning'] = tuning_details
                 rows = []
                 for prediction in predictions:
                     rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std))
@@ -3520,6 +3612,9 @@ def build_future_for_selected_model(
         raise RuntimeError(f'{production_model_name(model_type)} is unavailable and cannot build a production forecast.')
 
     full_X, full_y = build_ml_forecast_training_frame(series_frame, lag_periods, feature_groups)
+    non_zero_feature_count = int((full_X.var(numeric_only=True) > 1e-9).sum())
+    if non_zero_feature_count < 3:
+        raise RuntimeError(f'Only {non_zero_feature_count} generated features have non-zero variance; at least 3 are required for ML forecasting.')
     model = build_forecast_regressor(model_type)
     model.fit(full_X, full_y)
     return [append_interval(point, residual_std) for point in recursive_ml_forecast(
@@ -3542,26 +3637,39 @@ def auto_select_forecast_model(
     feature_groups: list[str],
     freq: str,
     period_label: str,
+    candidates: list[str] | None = None,
 ) -> dict[str, Any]:
-    candidates = ['prophet', 'sarima', 'xgboost', 'lightgbm']
+    candidates = candidates or ['prophet', 'sarima', 'xgboost', 'lightgbm']
     comparison: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(4, len(candidates))) as executor:
-        futures = {
-            executor.submit(evaluate_statistical_candidate, series_frame, candidate, requested_test_periods, freq, period_label): candidate
-            for candidate in ['prophet', 'sarima']
-        }
-        for candidate in ['xgboost', 'lightgbm']:
+        futures = {}
+        for candidate in [item for item in candidates if item in {'prophet', 'sarima'}]:
+            futures[executor.submit(evaluate_statistical_candidate, series_frame, candidate, requested_test_periods, freq, period_label)] = candidate
+        for candidate in [item for item in candidates if item not in {'prophet', 'sarima'}]:
             futures[executor.submit(evaluate_ml_candidate, series_frame, candidate, requested_test_periods, lag_periods, feature_groups, freq, period_label)] = candidate
         for future in as_completed(futures):
             try:
-                comparison.append(future.result())
+                result = future.result()
+                metrics = result.get('metrics') or {}
+                if result.get('status') == 'completed' and float(metrics.get('mae') or 0) == 0.0 and float(metrics.get('rmse') or 0) == 0.0:
+                    result = {
+                        **result,
+                        'status': 'failed',
+                        'metrics': None,
+                        'skip_reason': 'Training produced zero MAE and RMSE; metrics are unreliable, so this candidate was rejected.',
+                    }
+                comparison.append(result)
             except Exception as error:
                 candidate = futures[future]
                 comparison.append({'model_type': candidate, 'model_name': production_model_name(candidate), 'status': 'failed', 'skip_reason': str(error)})
 
-    completed = [item for item in comparison if item.get('status') == 'completed']
+    completed = [
+        item for item in comparison
+        if item.get('status') == 'completed'
+        and not (float((item.get('metrics') or {}).get('mae') or 0) == 0.0 and float((item.get('metrics') or {}).get('rmse') or 0) == 0.0)
+    ]
     if not completed:
-        raise HTTPException(status_code=422, detail='No forecast candidate could be trained. Install Prophet/XGBoost/LightGBM or provide more history.')
+        raise HTTPException(status_code=422, detail='No forecast candidate could be trained with reliable validation metrics. Select a different target column or provide more history.')
 
     selected = min(completed, key=lambda item: (float(item['metrics'].get('mae', np.inf)), float(item['metrics'].get('rmse', np.inf)), float(item['metrics'].get('mape', np.inf))))
     future = build_future_for_selected_model(selected, series_frame, forecast_periods, lag_periods, feature_groups, freq, period_label)
@@ -3579,40 +3687,32 @@ def auto_select_forecast_model(
     naive_metrics = calculate_forecast_metrics(naive_actuals, naive_predictions)
     selected_mae = float(selected['metrics'].get('mae') or 0)
     naive_mae = float(naive_metrics.get('mae') or 0)
+    target_mean = float(series_frame['sales'].astype(float).mean() or 0.0)
+    validation_warnings: list[str] = []
+    if selected_mae < 0.001 and target_mean > 1.0:
+        validation_warnings.append('Model metrics appear unreliable — check target column selection.')
 
     return {
         'selected': selected,
         'future_forecast': future,
         'test_forecast': test_forecast,
-        'model_comparison': sorted(comparison, key=lambda item: item.get('metrics', {}).get('mae', np.inf) if item.get('status') == 'completed' else np.inf),
+        'model_comparison': sorted(comparison, key=lambda item: (item.get('metrics') or {}).get('mae', np.inf) if item.get('status') == 'completed' else np.inf),
         'naive_baseline': {
             'model_name': 'Naive last-observation baseline',
             'metrics': naive_metrics,
             'mae_improvement_pct': round(((naive_mae - selected_mae) / naive_mae) * 100, 2) if naive_mae else 0.0,
         },
+        'validation_warnings': validation_warnings,
     }
 
 
 def build_time_series_model_recommendations(profile: dict[str, Any], stationarity: dict[str, Any]) -> list[dict[str, Any]]:
-    has_seasonality = profile['usable_periods'] >= (12 if profile['detected_frequency'] == 'month' else 8 if profile['detected_frequency'] == 'quarter' else 10)
     return [
         {
             'model_type': 'sarima',
             'model_name': 'SARIMA',
-            'recommended': has_seasonality,
-            'recommendation_reason': 'Recommended due to detected seasonality.' if has_seasonality else 'Seasonal baseline when recurring cycles are expected.',
-        },
-        {
-            'model_type': 'prophet',
-            'model_name': 'Prophet',
-            'recommended': not has_seasonality and stationarity['p_value'] >= 0.05,
-            'recommendation_reason': 'Recommended when smooth trend movement is more obvious than repeating seasonal blocks.',
-        },
-        {
-            'model_type': 'arima',
-            'model_name': 'ARIMA',
-            'recommended': stationarity['p_value'] < 0.05,
-            'recommendation_reason': 'Useful for shorter or more stable series with weaker seasonal structure.',
+            'recommended': True,
+            'recommendation_reason': 'Required for the Time Series Forecast tab; pmdarima.auto_arima selects the fitted order for the detected frequency.',
         },
     ]
 
@@ -3627,16 +3727,22 @@ def build_ml_model_recommendations(feature_names: list[str]) -> list[dict[str, A
             'recommendation_reason': f'Excellent for capturing non-linear patterns across the {feature_count} generated features.',
         },
         {
-            'model_type': 'random_forest',
-            'model_name': 'Random Forest',
+            'model_type': 'xgboost',
+            'model_name': 'XGBoost',
             'recommended': feature_count < 6,
-            'recommendation_reason': 'Robust option when feature interactions matter but you want a steady ensemble baseline.',
+            'recommendation_reason': 'Strong tree boosting candidate when engineered lag and calendar features interact.',
         },
         {
-            'model_type': 'ridge_regression',
-            'model_name': 'Ridge Regression',
+            'model_type': 'lightgbm',
+            'model_name': 'LightGBM',
             'recommended': False,
-            'recommendation_reason': 'Simpler baseline when you want linear behavior across generated features.',
+            'recommendation_reason': 'Fast gradient boosting candidate; import failures are surfaced in the comparison table.',
+        },
+        {
+            'model_type': 'prophet',
+            'model_name': 'Prophet',
+            'recommended': False,
+            'recommendation_reason': 'Trend and seasonality candidate used for comparison against engineered ML learners.',
         },
     ]
 
@@ -4117,8 +4223,10 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
         ['trend', 'calendar', 'lags', 'rolling'],
         freq,
         period_label,
+        ['sarima'],
     )
     selected = auto_result['selected']
+    stationarity = with_fitted_order_note(stationarity, tuple(selected.get('tuning', {}).get('order') or ()) or None, tuple(selected.get('tuning', {}).get('seasonal_order') or ()) or None)
     model_name = selected['model_name']
     backtest = auto_result['test_forecast']
     future_forecast = auto_result['future_forecast']
@@ -4129,7 +4237,7 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
     session_id = get_session_id(request.dataset_id, request.session_id)
     session_state = ensure_session_state(session_id)
     assumptions = [
-        'Forecast candidates are compared with walk-forward validation using MAE, RMSE, and MAPE.',
+        'SARIMA is the time-series forecasting model and uses pmdarima.auto_arima for order selection.',
         'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
         'A naive last-observation baseline is always calculated for comparison.',
     ]
@@ -4162,12 +4270,13 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
         },
         'model_comparison': auto_result['model_comparison'],
         'naive_baseline': auto_result['naive_baseline'],
+        'validation_warnings': auto_result.get('validation_warnings', []),
         'assumptions_audit': assumptions,
         'recommended_models': build_time_series_model_recommendations(profile, stationarity),
         'model_details': {
             'model_type': selected['model_type'],
             'model_name': model_name,
-            'rationale': f'{model_name} was auto-selected from Prophet, SARIMA, XGBoost, and LightGBM candidates using walk-forward MAE/RMSE/MAPE.',
+            'rationale': f'{model_name} used pmdarima.auto_arima order selection with simplified SARIMA retry protection when needed.',
         },
         'analysis': (
             f'{model_name} was auto-selected and forecasted {request.forecast_periods} future {period_label}{"s" if request.forecast_periods != 1 else ""}. '
@@ -4212,9 +4321,16 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
 
     total_periods = len(series_frame)
     data_quality = ensure_forecast_data_sufficiency(series_frame, period_label, request.require_quality_gate)
+    target_std = float(series_frame['sales'].astype(float).std() or 0.0)
+    if target_std < 1.0:
+        raise HTTPException(status_code=422, detail='Selected target has near-zero variance (std < 1.0). Please select a different revenue or sales target column before running ML Forecast.')
     effective_test_periods = min(max(1, int(round(total_periods * (request.test_percentage / 100)))), max(1, total_periods - 4))
     train_periods = total_periods - effective_test_periods
     effective_lag_periods = min(request.lag_periods, max(1, train_periods - 1), max(1, total_periods - 2))
+    preview_X, _preview_y = build_ml_forecast_training_frame(series_frame.iloc[:train_periods].copy(), effective_lag_periods, request.feature_groups)
+    non_zero_feature_count = int((preview_X.var(numeric_only=True) > 1e-9).sum())
+    if non_zero_feature_count < 3:
+        raise HTTPException(status_code=422, detail=f'Only {non_zero_feature_count} generated features have non-zero variance; at least 3 are required. Select a stronger target column or provide more varied training data.')
     auto_result = auto_select_forecast_model(
         series_frame,
         request.forecast_periods,
@@ -4223,6 +4339,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         request.feature_groups,
         freq,
         period_label,
+        ['gradient_boosting', 'xgboost', 'lightgbm', 'prophet'],
     )
     selected = auto_result['selected']
     metrics = selected['metrics']
@@ -4237,8 +4354,8 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
     session_id = get_session_id(request.dataset_id, request.session_id)
     session_state = ensure_session_state(session_id)
     assumptions = [
-        'Forecast candidates are compared with walk-forward validation using MAE, RMSE, and MAPE.',
-        'XGBoost and LightGBM require optional production packages; unavailable engines are reported in model comparison.',
+        'Gradient Boosting, Prophet, XGBoost, and LightGBM candidates are compared with walk-forward validation using MAE, RMSE, and MAPE.',
+        'LightGBM availability is reported as a named failure if the installed backend cannot import it.',
         'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
         'A naive last-observation baseline is always calculated for comparison.',
     ]
@@ -4274,12 +4391,13 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'shap_feature_importance': importance,
         'model_comparison': auto_result['model_comparison'],
         'naive_baseline': auto_result['naive_baseline'],
+        'validation_warnings': auto_result.get('validation_warnings', []),
         'assumptions_audit': assumptions,
         'recommended_models': build_ml_model_recommendations(generated_features),
         'model_details': {
             'model_type': selected['model_type'],
             'model_name': selected['model_name'],
-            'rationale': f'{selected["model_name"]} was auto-selected from Prophet, SARIMA, XGBoost, and LightGBM candidates using walk-forward MAE/RMSE/MAPE.',
+            'rationale': f'{selected["model_name"]} was auto-selected from Gradient Boosting, Prophet, XGBoost, and LightGBM candidates using walk-forward MAE/RMSE/MAPE.',
         },
         'analysis': (
             f'ML forecasting auto-selected {selected["model_name"]} after comparing production candidates. '
@@ -4323,6 +4441,7 @@ LOSS_COLUMN_PATTERNS = {
     'quantity': re.compile(r'quantity|qty|units', re.IGNORECASE),
     'unit_cost': re.compile(r'unit_cost|cost_per_unit|unit_cogs|cost_each', re.IGNORECASE),
     'cost': re.compile(r'\bcogs\b|cost_of_goods|total_cost|direct_cost|cost_amount|purchase_cost|material_cost|cost\b', re.IGNORECASE),
+    'universal_cost': re.compile(r'cost|cogs|expense|opex|operational|discount|inventory|stock', re.IGNORECASE),
     'operating_cost': re.compile(r'operating_cost|operating_expense|opex|expense|overhead|admin_cost|fixed_cost', re.IGNORECASE),
     'gross_profit': re.compile(r'gross_profit|gross_margin_value|gross_income', re.IGNORECASE),
     'net_profit': re.compile(r'net_profit|profit_after|net_income|earnings', re.IGNORECASE),
@@ -4431,12 +4550,12 @@ def repair_zero_period_values_with_seasonal_interpolation(
 
     periods = pd.to_datetime(repaired_frame[period_column], errors='coerce')
     period_label = infer_sales_time_frequency(periods.dropna())[1] if periods.notna().sum() >= 2 else 'month'
-    repair_season_length = {'day': 7, 'week': 52, 'month': 12, 'quarter': 4, 'year': 1}.get(period_label, 1)
+    repair_season_length = seasonal_period_for_label(period_label)
     season_length = max(1, min(repair_season_length, max(1, len(repaired_frame) - 1)))
 
     repaired = values.copy()
     repaired.iloc[run_start:] = np.nan
-    if period_label in {'month', 'quarter'} and season_length > 1 and len(prior_history) >= season_length:
+    if period_label in {'day', 'week', 'month', 'quarter'} and season_length > 1 and len(prior_history) >= season_length:
         seasonal_positions = np.arange(len(prior_history)) % season_length
         seasonal_means = prior_history.groupby(seasonal_positions).mean()
         overall_mean = max(float(prior_history.mean()), 1e-9)
@@ -4614,7 +4733,15 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
             ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
             return cogs, f'gross margin column "{margin_column}"', ratio
 
-    return (revenue * 0.58).clip(lower=0), 'standard 58% revenue-to-COGS assumption', 0.58
+    universal_cost_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['universal_cost'], exclude={str(revenue_column)} if revenue_column else set())
+    if universal_cost_columns:
+        cogs = numeric_columns_sum(frame, universal_cost_columns, 0.0).clip(lower=0)
+        if float(cogs.sum()) > 0:
+            ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.60)
+            joined_columns = '", "'.join(universal_cost_columns)
+            return cogs, f'universal cost scan column(s) "{joined_columns}"', ratio
+
+    return (revenue * 0.60).clip(lower=0), 'fallback assumption: approximate cost is 60% of forecasted revenue', 0.60
 
 
 def resolve_operating_expense_series(frame: pd.DataFrame, revenue_column: str | None, gross_profit: pd.Series | None = None) -> tuple[pd.Series, str, float]:
@@ -4695,7 +4822,7 @@ def get_cached_clean_frame(session_id: str) -> pd.DataFrame:
     return frame.copy()
 
 
-def fetch_upstream_forecasts(session_id: str) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any], pd.DataFrame]:
+def fetch_upstream_forecasts(session_id: str, workflow_name: str = 'Loss Forecast') -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any], pd.DataFrame]:
     session_state = ensure_session_state(session_id)
     ts_result = session_state.get('time_series_result')
     ml_result = session_state.get('ml_forecast_result')
@@ -4714,6 +4841,8 @@ def fetch_upstream_forecasts(session_id: str) -> tuple[pd.DataFrame, dict[str, A
     period_label = ts_result.get('period_label') or 'month'
     clean_frame = repair_revenue_column_for_forecast_context(clean_frame, date_column, revenue_column, period_label)
     merged = repair_forecast_revenue_from_history(merged, clean_frame, date_column, revenue_column, period_label)
+    if merged.empty or not (pd.to_numeric(merged.get('forecasted_revenue', pd.Series(dtype='float64')), errors='coerce').fillna(0.0) > 0).any():
+        raise HTTPException(status_code=422, detail=f'{workflow_name} requires valid revenue forecast values. Please re-run TS or ML Forecast with a revenue or sales column as the target.')
     cogs_series, cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
     ml_target_column = str(ml_result.get('target_column') or '')
     if column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['cost']) or column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['unit_cost']):
@@ -4753,7 +4882,7 @@ def build_loss_base_frame(
     column_mapping: dict[str, str] | None = None,
     confirmed_assumptions: bool = False,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]], dict[str, float], list[str]]:
-    forecast_frame, ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id)
+    forecast_frame, ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id, 'Loss Forecast')
     forecast_frame = forecast_frame.head(forecast_periods).copy()
     if forecast_frame.empty:
         raise HTTPException(status_code=422, detail='No forecast periods are available for loss forecasting.')
@@ -4876,7 +5005,7 @@ def build_loss_base_frame(
         'Discount loss basis falls back to bounded historical exposure when explicit discount fields are absent.',
     ]
     audit_trail.extend(assumption_notes)
-    requires_confirmation = any('standard' in note.lower() or 'falls back' in note.lower() for note in assumption_notes)
+    requires_confirmation = any('standard' in note.lower() or 'falls back' in note.lower() or 'fallback assumption' in note.lower() for note in assumption_notes)
     if requires_confirmation and not confirmed_assumptions:
         raise HTTPException(
             status_code=428,
@@ -5023,7 +5152,7 @@ def build_profit_rows(
     column_mapping: dict[str, str] | None = None,
     confirmed_assumptions: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
-    forecast_frame, _ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id)
+    forecast_frame, _ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id, 'Profit Forecast')
     loss_rows = query_loss_results(session_id)
     if not loss_rows:
         loss_frame, segments, driver_weights, loss_audit = build_loss_base_frame(session_id, forecast_periods, column_mapping, confirmed_assumptions)
@@ -5067,9 +5196,9 @@ def build_profit_rows(
     uses_ml_cogs_forecast = 'ML forecast target' in str(forecast_frame.attrs.get('cogs_source') or '')
 
     scenario_config: dict[str, dict[str, float]] = {
-        'optimistic': {'revenue': 1.10, 'cogs': 0.97, 'loss': 0.80},
+        'optimistic': {'revenue': 1.15, 'cogs': 0.97, 'loss': 0.80},
         'baseline': {'revenue': 1.0, 'cogs': 1.0, 'loss': 1.0},
-        'pessimistic': {'revenue': 0.90, 'cogs': 1.05, 'loss': 1.20},
+        'pessimistic': {'revenue': 0.85, 'cogs': 1.05, 'loss': 1.20},
     }
     for scenario, overrides in (scenario_parameters or {}).items():
         if scenario in scenario_config:

@@ -126,6 +126,7 @@ export interface TimeSeriesForecastResult {
   training_summary: ForecastTrainingSummary;
   model_comparison?: ForecastModelComparison[];
   naive_baseline?: ForecastNaiveBaseline;
+  validation_warnings?: string[];
   assumptions_audit?: string[];
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };
@@ -149,6 +150,7 @@ export interface MlForecastResult {
   shap_feature_importance: ForecastFeatureImportance[];
   model_comparison?: ForecastModelComparison[];
   naive_baseline?: ForecastNaiveBaseline;
+  validation_warnings?: string[];
   assumptions_audit?: string[];
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };

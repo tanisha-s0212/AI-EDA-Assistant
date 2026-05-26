@@ -2,11 +2,34 @@
 
 import React from 'react';
 import axios from 'axios';
-import { AlertCircle, Check, CheckCircle2, Download, Loader2, Play, SkipForward } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  AlertCircle,
+  BarChart3,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock3,
+  Database,
+  Download,
+  Eye,
+  FileText,
+  Loader2,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Send,
+  SkipForward,
+  Sparkles,
+  TrendingDown,
+  TrendingUp,
+  Upload,
+  Wand2,
+  X,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import type { AgenticStepStatus, ColumnInfo, Recommendation } from '@/lib/store';
@@ -17,7 +40,7 @@ const agenticApiClient = axios.create({
   withCredentials: true,
 });
 
-const PIPELINE_STEPS = [
+const EXECUTABLE_STEPS = [
   'Data Understanding',
   'EDA',
   'Data Cleaning',
@@ -30,6 +53,22 @@ const PIPELINE_STEPS = [
   'Report Generation',
 ];
 
+const UI_STEPS = [
+  { id: 'upload', label: 'Data Upload', handler: null, description: 'Confirm the active dataset and cached workspace context.', icon: Upload },
+  { id: 'understanding', label: 'Data Understanding', handler: 'Data Understanding', description: 'Profile column roles, data types, row counts, and quality signals.', icon: Database },
+  { id: 'eda', label: 'EDA', handler: 'EDA', description: 'Summarize distributions, correlations, and exploratory findings.', icon: BarChart3 },
+  { id: 'cleaning', label: 'Data Cleaning', handler: 'Data Cleaning', description: 'Repair missing values, duplicates, date columns, and inferred data types.', icon: Sparkles },
+  { id: 'ts', label: 'TS Forecast', handler: 'Time Series Forecast', description: 'Fit a statistical time-series forecast using detected date and target columns.', icon: TrendingUp },
+  { id: 'mlf', label: 'ML Forecast', handler: 'ML Forecast', description: 'Train a feature-engineered forecast model and compare predictive quality.', icon: TrendingUp },
+  { id: 'loss', label: 'Loss Forecast', handler: 'Loss Forecast', description: 'Estimate future loss pressure, risk scores, and top loss drivers.', icon: TrendingDown },
+  { id: 'profit', label: 'Profit Forecast', handler: 'Profit Forecast', description: 'Generate optimistic, baseline, and pessimistic profit scenarios.', icon: TrendingUp },
+  { id: 'ml', label: 'ML Assistant', handler: 'ML Assistant', description: 'Train a supervised model for the strongest available target and features.', icon: Wand2 },
+  { id: 'report', label: 'Report', handler: 'Report Generation', description: 'Compile the approved workflow outputs into a final run artifact.', icon: FileText },
+] as const;
+
+type UiStep = (typeof UI_STEPS)[number];
+type HandlerStep = NonNullable<UiStep['handler']>;
+
 type AgenticHealth = {
   agentic_enabled: boolean;
   db_connected: boolean;
@@ -41,16 +80,15 @@ type SuggestResponse = {
   recommendations: Recommendation[];
 };
 
-type ExecuteResponse = {
-  status: AgenticStepStatus | 'not_yet_wired';
-  output_summary: string | null;
-  error?: string;
-  next_recommendations?: Recommendation[];
-};
-
 type StatusResponse = {
   steps: Record<string, AgenticStepStatus>;
   recommendations?: Recommendation[];
+};
+
+type ChatResponse = {
+  answer?: string;
+  error?: string;
+  provider?: string;
 };
 
 type AgenticWorkspaceProps = {
@@ -58,78 +96,39 @@ type AgenticWorkspaceProps = {
   fileName: string | null;
 };
 
-function statusProgress(statuses: Record<string, AgenticStepStatus>) {
-  const completed = PIPELINE_STEPS.filter((step) => ['completed', 'skipped'].includes(statuses[step])).length;
-  return Math.round((completed / PIPELINE_STEPS.length) * 100);
-}
+type StepSnapshot = {
+  rows: number;
+  columns: number;
+  nulls: number;
+  duplicates: number;
+  cleanedRows: number | null;
+};
 
-function statusRank(status: AgenticStepStatus | undefined) {
-  if (status === 'completed' || status === 'skipped') return 1;
-  return 0;
-}
+type StepArtifact = {
+  step: string;
+  summary: string;
+  completedAt: number;
+  before: StepSnapshot;
+  after: StepSnapshot;
+};
 
-function HighlightedText({ text }: { text: string }) {
-  const pattern = /(MAE|RMSE|MAPE|forecast|prediction|predicted|value|result)\s*[:=]?\s*([₹$€£]?\s*-?\d[\d,]*(?:\.\d+)?%?)/gi;
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
+type UndoState = {
+  step: HandlerStep;
+  expiresAt: number;
+  previousState: Partial<ReturnType<typeof useAppStore.getState>>;
+};
 
-  for (const match of text.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > lastIndex) parts.push(text.slice(lastIndex, index));
-    parts.push(
-      <span key={`${match[0]}-${index}`} className="rounded-md bg-blue-500/10 px-1.5 py-0.5 font-mono text-[0.92em] font-semibold text-blue-100 ring-1 ring-blue-300/20">
-        {match[0]}
-      </span>,
-    );
-    lastIndex = index + match[0].length;
-  }
+type StructuredError = {
+  step: string;
+  reason: string;
+  detail?: unknown;
+};
 
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-  return <>{parts}</>;
-}
-
-function AgenticWorkspaceStyles() {
-  return (
-    <style jsx global>{`
-      @keyframes ida-agent-pulse-blue {
-        0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.42), 0 0 34px rgba(59, 130, 246, 0.2); }
-        50% { box-shadow: 0 0 0 9px rgba(59, 130, 246, 0), 0 0 44px rgba(99, 102, 241, 0.34); }
-      }
-      @keyframes ida-agent-pulse-green {
-        0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.44), 0 0 30px rgba(34, 197, 94, 0.22); }
-        50% { box-shadow: 0 0 0 9px rgba(34, 197, 94, 0), 0 0 42px rgba(16, 185, 129, 0.32); }
-      }
-      @keyframes ida-agent-ring-spin {
-        to { transform: rotate(360deg); }
-      }
-      @keyframes ida-agent-fade-in {
-        from { opacity: 0; transform: translateY(8px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      @keyframes ida-agent-active-step {
-        0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.42); }
-        50% { transform: scale(1.06); box-shadow: 0 0 0 7px rgba(59, 130, 246, 0); }
-      }
-      @keyframes ida-agent-download-bob {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(2px); }
-      }
-      .ida-agent-fade-in { animation: ida-agent-fade-in 240ms ease-out both; }
-      .ida-agent-idle { animation: ida-agent-pulse-blue 2.4s ease-in-out infinite; }
-      .ida-agent-complete { animation: ida-agent-pulse-green 2s ease-in-out infinite; }
-      .ida-agent-processing::before {
-        content: "";
-        position: absolute;
-        inset: -3px;
-        border-radius: 9999px;
-        background: conic-gradient(from 0deg, #2563eb, #7c3aed, #06b6d4, #2563eb);
-        animation: ida-agent-ring-spin 900ms linear infinite;
-        z-index: -1;
-      }
-      .ida-agent-download:hover svg { animation: ida-agent-download-bob 650ms ease-in-out infinite; }
-    `}</style>
-  );
-}
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+};
 
 type StoreTabId = ReturnType<typeof useAppStore.getState>['activeTab'];
 
@@ -146,21 +145,109 @@ const STEP_TO_TAB: Record<string, StoreTabId> = {
   'Report Generation': 'report',
 };
 
-function getNextRecommendation(completedStep: string, findings: string[] = []): Recommendation[] {
-  const currentIndex = PIPELINE_STEPS.indexOf(completedStep);
+function AgenticWorkspaceStyles() {
+  return (
+    <style jsx global>{`
+      @keyframes ida-memory-scroll {
+        from { transform: translateX(0); }
+        to { transform: translateX(-50%); }
+      }
+      .ida-memory-marquee {
+        animation: ida-memory-scroll 32s linear infinite;
+      }
+      .ida-agent-terminal {
+        scrollbar-width: thin;
+        scrollbar-color: #22c55e #0a0a0a;
+      }
+      .ida-agent-terminal::-webkit-scrollbar { width: 8px; }
+      .ida-agent-terminal::-webkit-scrollbar-track { background: #0a0a0a; }
+      .ida-agent-terminal::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 999px; }
+    `}</style>
+  );
+}
+
+function normalizeStepName(step: string) {
+  return step === 'Report' ? 'Report Generation' : step;
+}
+
+function getUiStatus(step: UiStep, statuses: Record<string, AgenticStepStatus>, datasetId: string | null): AgenticStepStatus {
+  if (step.id === 'upload') return datasetId ? 'completed' : 'pending';
+  return statuses[step.handler ?? ''] ?? 'pending';
+}
+
+function completedUiCount(statuses: Record<string, AgenticStepStatus>, datasetId: string | null) {
+  return UI_STEPS.filter((step) => {
+    const status = getUiStatus(step, statuses, datasetId);
+    return status === 'completed' || status === 'skipped';
+  }).length;
+}
+
+function statusDotClass(status: AgenticStepStatus, active: boolean) {
+  if (status === 'completed' || status === 'skipped') return 'bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.45)]';
+  if (active || status === 'running') return 'bg-blue-400 shadow-[0_0_18px_rgba(96,165,250,0.55)]';
+  if (status === 'failed') return 'bg-red-400 shadow-[0_0_18px_rgba(248,113,113,0.45)]';
+  return 'bg-slate-500';
+}
+
+function formatDuration(ms?: number) {
+  if (!ms) return null;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatNumber(value: number | null | undefined, digits = 2) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'N/A';
+  return value.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function getSnapshot(): StepSnapshot {
   const state = useAppStore.getState();
-  const nextStep = PIPELINE_STEPS.slice(currentIndex + 1).find((step) => {
-    const status = state.agenticStepStatuses[step];
-    return status !== 'completed' && status !== 'skipped';
-  });
+  const data = state.cleanedData ?? state.rawData ?? [];
+  const nulls = data.reduce((total, row) => total + Object.values(row).filter((value) => value === null || value === undefined || value === '').length, 0);
+  return {
+    rows: state.totalRows || data.length,
+    columns: state.columns.length,
+    nulls,
+    duplicates: state.duplicates ?? 0,
+    cleanedRows: state.cleanedRowCount,
+  };
+}
 
-  if (!nextStep) return [];
-
-  return [{
-    step: nextStep,
-    reason: 'The previous approved action finished, so the assistant is ready to continue the application workflow.',
-    findings: findings.length ? findings : [`${completedStep} completed.`, 'The next action will run only after approval.'],
-  }];
+function getRollbackState(): Partial<ReturnType<typeof useAppStore.getState>> {
+  const state = useAppStore.getState();
+  return {
+    rawData: state.rawData,
+    cleanedData: state.cleanedData,
+    columns: state.columns,
+    cleaningLogs: state.cleaningLogs,
+    cleaningDone: state.cleaningDone,
+    cleanedRowCount: state.cleanedRowCount,
+    loadedRowCount: state.loadedRowCount,
+    previewLoaded: state.previewLoaded,
+    duplicates: state.duplicates,
+    timeSeriesForecastResult: state.timeSeriesForecastResult,
+    mlForecastResult: state.mlForecastResult,
+    lossForecast: state.lossForecast,
+    profitForecast: state.profitForecast,
+    lossSegments: state.lossSegments,
+    lossSummary: state.lossSummary,
+    scenarios: state.scenarios,
+    breakevenPeriod: state.breakevenPeriod,
+    targetColumn: state.targetColumn,
+    problemType: state.problemType,
+    selectedFeatures: state.selectedFeatures,
+    selectedModel: state.selectedModel,
+    modelId: state.modelId,
+    modelMetrics: state.modelMetrics,
+    modelTrained: state.modelTrained,
+    featureImportance: state.featureImportance,
+    uploadedModel: state.uploadedModel,
+    predictionResult: state.predictionResult,
+    predictionAnalysis: state.predictionAnalysis,
+    predictionProbabilities: state.predictionProbabilities,
+    predictionHistory: state.predictionHistory,
+    reportGenerated: state.reportGenerated,
+    reportUrl: state.reportUrl,
+  };
 }
 
 function getPreferredDateColumn() {
@@ -209,6 +296,238 @@ function normalizePredictionFeatures(features: string[]) {
   }));
 }
 
+function getNextRecommendation(completedStep: string, findings: string[] = []): Recommendation[] {
+  const currentIndex = EXECUTABLE_STEPS.indexOf(completedStep);
+  const state = useAppStore.getState();
+  const nextStep = EXECUTABLE_STEPS.slice(currentIndex + 1).find((step) => {
+    const status = state.agenticStepStatuses[step];
+    return status !== 'completed' && status !== 'skipped';
+  });
+
+  if (!nextStep) return [];
+
+  return [{
+    step: nextStep,
+    reason: 'The previous approved action finished, so the assistant is ready to continue the application workflow.',
+    findings: findings.length ? findings : [`${completedStep} completed.`, 'Sequential auto-advance is waiting for explicit approval.'],
+  }];
+}
+
+function buildMemoryFacts(fileName: string | null) {
+  const state = useAppStore.getState();
+  const facts = [
+    fileName ? `Dataset: ${fileName}` : null,
+    state.totalRows || state.rawData?.length ? `${(state.totalRows || state.rawData?.length || 0).toLocaleString()} rows` : null,
+    state.columns.length ? `${state.columns.length} columns` : null,
+    state.timeSeriesForecastResult?.frequency ? `${state.timeSeriesForecastResult.frequency} frequency` : null,
+    state.timeSeriesForecastResult?.dataset_profile?.volatility ? `Volatility ${formatNumber(state.timeSeriesForecastResult.dataset_profile.volatility)}` : null,
+    state.mlForecastResult?.training_summary?.model_name ? `${state.mlForecastResult.training_summary.model_name} best` : null,
+    state.mlForecastResult?.metrics?.mae ? `ML MAE ${formatNumber(state.mlForecastResult.metrics.mae)}` : null,
+    state.timeSeriesForecastResult?.metrics?.mae ? `TS MAE ${formatNumber(state.timeSeriesForecastResult.metrics.mae)}` : null,
+    state.lossSummary?.top_loss_driver ? `Top loss driver ${state.lossSummary.top_loss_driver}` : null,
+    state.lossForecast?.some((row) => Number(row.total_loss) === 0) ? 'Zero-tail detected' : null,
+    state.predictionResult !== null ? `Prediction ${String(state.predictionResult)}` : null,
+  ].filter(Boolean) as string[];
+  return facts.length ? facts : ['Awaiting dataset profile', 'Agent memory will update after each step'];
+}
+
+function buildInsight(activeStep: UiStep | null) {
+  const state = useAppStore.getState();
+  if (state.mlForecastResult?.analysis) return state.mlForecastResult.analysis;
+  if (state.timeSeriesForecastResult?.analysis) return state.timeSeriesForecastResult.analysis;
+  if (state.cleaningDone) return 'The cleaned dataset is now the safest base layer for forecasting and model training. Continue with forecasting to compare statistical and ML approaches.';
+  if (state.columns.length) return `The agent has profiled ${state.columns.length} columns. Review missing values and type inference before committing to forecasts.`;
+  return activeStep ? `Start with ${activeStep.label} so the agent can ground every later decision in the active dataset.` : 'Upload or select a dataset to activate the agentic run.';
+}
+
+function buildConfidence(step: UiStep | null, completedCount: number) {
+  const state = useAppStore.getState();
+  const qualityScores = [
+    state.timeSeriesForecastResult?.data_quality?.score,
+    state.mlForecastResult?.data_quality?.score,
+  ].filter((score): score is number => typeof score === 'number' && Number.isFinite(score));
+  const base = qualityScores.length ? qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length : 0.78;
+  const historyBoost = Math.min(0.16, completedCount * 0.018);
+  const stepPenalty = step?.handler && state.agenticStepStatuses[step.handler] === 'failed' ? 0.22 : 0;
+  return Math.max(42, Math.min(99, Math.round((base + historyBoost - stepPenalty) * 100)));
+}
+
+function getStepContext(step: UiStep | null, artifacts: StepArtifact[]) {
+  const state = useAppStore.getState();
+  const latest = artifacts.at(-1);
+  const findings = [
+    latest ? `${latest.step} finished: ${latest.summary}` : null,
+    state.columns.length ? `${state.columns.length} columns available for downstream reasoning.` : null,
+    state.cleaningDone ? `${state.cleaningLogs.length} cleaning actions recorded.` : null,
+    state.mlForecastResult ? `ML forecast selected ${state.mlForecastResult.training_summary.model_name}.` : null,
+    state.timeSeriesForecastResult ? `TS forecast MAE is ${formatNumber(state.timeSeriesForecastResult.metrics.mae)}.` : null,
+  ].filter(Boolean) as string[];
+  const issues = [
+    !state.rawData?.length ? 'No dataset rows are loaded in the workspace preview.' : null,
+    step?.handler?.includes('Forecast') && !getPreferredDateColumn() ? 'A date-like column is required for forecasting.' : null,
+    step?.handler?.includes('Forecast') && !getPreferredTargetColumn() ? 'A numeric target column is required for forecasting.' : null,
+  ].filter(Boolean) as string[];
+  return { findings: findings.slice(0, 4), issues: issues.slice(0, 3) };
+}
+
+function StepDiffCard({ artifact }: { artifact: StepArtifact | null }) {
+  if (!artifact) return null;
+  const rowDelta = artifact.after.rows - artifact.before.rows;
+  const columnDelta = artifact.after.columns - artifact.before.columns;
+  const nullDelta = artifact.after.nulls - artifact.before.nulls;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Step Diff</h3>
+        <Badge variant="outline" className="dark:border-slate-700 dark:text-slate-300">{artifact.step}</Badge>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <DiffMetric label="Rows affected" before={artifact.before.rows} after={artifact.after.rows} delta={rowDelta} />
+        <DiffMetric label="Columns changed" before={artifact.before.columns} after={artifact.after.columns} delta={columnDelta} />
+        <DiffMetric label="Values repaired/imputed" before={artifact.before.nulls} after={artifact.after.nulls} delta={nullDelta * -1} positiveMeans="increase" />
+      </div>
+    </div>
+  );
+}
+
+function DiffMetric({
+  label,
+  before,
+  after,
+  delta,
+  positiveMeans = 'decrease',
+}: {
+  label: string;
+  before: number;
+  after: number;
+  delta: number;
+  positiveMeans?: 'increase' | 'decrease';
+}) {
+  const good = positiveMeans === 'increase' ? delta > 0 : delta < 0;
+  const bad = positiveMeans === 'increase' ? delta < 0 : delta > 0;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950">
+      <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
+      <p className="mt-2 font-mono text-sm text-slate-700 dark:text-slate-300">{before.toLocaleString()} {'->'} {after.toLocaleString()}</p>
+      <p className={cn('mt-1 text-xs font-semibold', good && 'text-emerald-600 dark:text-emerald-400', bad && 'text-red-600 dark:text-red-400', !good && !bad && 'text-slate-500')}>
+        {delta > 0 ? '+' : ''}{delta.toLocaleString()}
+      </p>
+    </div>
+  );
+}
+
+function DataPreviewTable() {
+  const state = useAppStore();
+  const data = (state.cleanedData ?? state.rawData ?? []).slice(0, 5);
+  const columns = state.columns.slice(0, 8).map((column) => column.name);
+  if (!data.length || !columns.length) return null;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <h3 className="mb-3 text-sm font-semibold text-slate-950 dark:text-slate-100">Live Data Preview</h3>
+      <div className="max-h-56 overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
+        <table className="w-full min-w-[720px] border-collapse font-mono text-xs">
+          <thead className="sticky top-0 bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            <tr>
+              {columns.map((column) => <th key={column} className="border-b border-slate-200 px-3 py-2 text-left dark:border-slate-700">{column}</th>)}
+            </tr>
+          </thead>
+          <tbody className="text-slate-700 dark:text-slate-300">
+            {data.map((row, index) => (
+              <tr key={index} className="odd:bg-slate-50 dark:odd:bg-slate-950/60">
+                {columns.map((column) => <td key={column} className="max-w-40 truncate border-b border-slate-100 px-3 py-2 dark:border-slate-800">{String(row[column] ?? '')}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ForecastResultsCard() {
+  const { timeSeriesForecastResult, mlForecastResult } = useAppStore();
+  const result = mlForecastResult ?? timeSeriesForecastResult;
+  if (!result?.future_forecast?.length) return null;
+  const points = [
+    ...result.history.slice(-8).map((point) => ({ period: point.period, value: point.actual, kind: 'actual' as const })),
+    ...result.future_forecast.map((point) => ({ period: point.period, value: point.predicted, kind: 'forecast' as const })),
+  ];
+  const values = points.map((point) => point.value).filter((value) => Number.isFinite(value));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const coords = points.map((point, index) => {
+    const x = points.length === 1 ? 8 : 8 + (index / (points.length - 1)) * 284;
+    const y = 82 - ((point.value - min) / range) * 64;
+    return `${x},${y}`;
+  }).join(' ');
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Forecast Results</h3>
+        <Badge className="bg-blue-600 text-white">{mlForecastResult ? 'ML Forecast' : 'TS Forecast'}</Badge>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {result.future_forecast.slice(0, 3).map((point) => (
+          <div key={point.period} className="rounded-lg border border-blue-100 bg-blue-50 p-3 dark:border-blue-500/30 dark:bg-blue-950/30">
+            <p className="text-xs text-blue-700 dark:text-blue-300">{point.period}</p>
+            <p className="mt-1 text-lg font-bold text-blue-950 dark:text-blue-100">{formatNumber(point.predicted)}</p>
+          </div>
+        ))}
+      </div>
+      <svg viewBox="0 0 300 92" className="mt-4 h-28 w-full overflow-visible">
+        <polyline points={coords} fill="none" stroke="#2563eb" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((point, index) => {
+          const [x, y] = coords.split(' ')[index].split(',').map(Number);
+          return <circle key={`${point.period}-${index}`} cx={x} cy={y} r="3" fill={point.kind === 'forecast' ? '#22c55e' : '#2563eb'} />;
+        })}
+      </svg>
+      <div className="flex justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+        <span>{points[0]?.period}</span>
+        <span>{points.at(-1)?.period}</span>
+      </div>
+    </div>
+  );
+}
+
+function ShapPanel() {
+  const { mlForecastResult } = useAppStore();
+  const features = mlForecastResult?.shap_feature_importance?.slice(0, 5) ?? [];
+  if (!features.length) return null;
+  const max = Math.max(...features.map((feature) => Math.abs(feature.importance)), 1);
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <h3 className="mb-4 text-sm font-semibold text-slate-950 dark:text-slate-100">SHAP Feature Importance</h3>
+      <div className="space-y-3">
+        {features.map((feature) => (
+          <div key={feature.name}>
+            <div className="mb-1 flex justify-between gap-3 text-xs">
+              <span className="truncate text-slate-600 dark:text-slate-300">{feature.name}</span>
+              <span className="font-mono text-slate-500 dark:text-slate-400">{formatNumber(feature.importance, 4)}</span>
+            </div>
+            <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800">
+              <div className="h-2 rounded-full bg-blue-600" style={{ width: `${Math.max(4, (Math.abs(feature.importance) / max) * 100)}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ExecutionLog({ logs, running }: { logs: string[]; running: boolean }) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    ref.current?.scrollTo({ top: ref.current.scrollHeight });
+  }, [logs]);
+  if (!running && logs.length === 0) return null;
+  return (
+    <div ref={ref} className="ida-agent-terminal max-h-[120px] overflow-auto rounded-xl border border-green-500/20 bg-[#0a0a0a] p-3 font-mono text-xs leading-5 text-green-400 shadow-inner">
+      {(logs.length ? logs : ['waiting for execution...']).map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}
+    </div>
+  );
+}
+
 export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspaceProps) {
   const {
     agenticSessionId,
@@ -219,28 +538,59 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     setAgenticRecommendations,
     setAgenticLastSyncedAt,
   } = useAppStore();
+  const store = useAppStore();
   const [health, setHealth] = React.useState<AgenticHealth | null>(null);
   const [isSuggesting, setIsSuggesting] = React.useState(false);
   const [runningStep, setRunningStep] = React.useState<string | null>(null);
+  const [runningAll, setRunningAll] = React.useState(false);
   const [banner, setBanner] = React.useState<string | null>(null);
-  const [lastSummary, setLastSummary] = React.useState<string | null>(null);
+  const [executionLogs, setExecutionLogs] = React.useState<string[]>([]);
+  const [artifacts, setArtifacts] = React.useState<StepArtifact[]>([]);
+  const [stepDurations, setStepDurations] = React.useState<Record<string, number>>({});
+  const [expandedDetails, setExpandedDetails] = React.useState(false);
+  const [undoState, setUndoState] = React.useState<UndoState | null>(null);
+  const [structuredError, setStructuredError] = React.useState<StructuredError | null>(null);
+  const [chatOpen, setChatOpen] = React.useState(false);
+  const [chatInput, setChatInput] = React.useState('');
+  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = React.useState(false);
   const lastSuggestedDatasetRef = React.useRef<string | null>(null);
 
   const activeRecommendation = agenticRecommendations[0] ?? null;
-  const progress = statusProgress(agenticStepStatuses);
-  const workflowComplete = PIPELINE_STEPS.every((step) => ['completed', 'skipped'].includes(agenticStepStatuses[step]));
-  const hasFailure = PIPELINE_STEPS.some((step) => agenticStepStatuses[step] === 'failed');
-  const activeTimelineStep = runningStep ?? activeRecommendation?.step ?? null;
-  const completedStepCount = PIPELINE_STEPS.filter((step) => ['completed', 'skipped'].includes(agenticStepStatuses[step])).length;
+  const completedCount = completedUiCount(agenticStepStatuses, datasetId);
+  const pendingCount = UI_STEPS.length - completedCount;
+  const progress = Math.round((completedCount / UI_STEPS.length) * 100);
+  const workflowComplete = completedCount === UI_STEPS.length;
+  const activeHandlerStep = normalizeStepName(activeRecommendation?.step ?? runningStep ?? '') || null;
+  const activeUiStep = UI_STEPS.find((step) => step.handler === activeHandlerStep) ?? UI_STEPS.find((step) => getUiStatus(step, agenticStepStatuses, datasetId) === 'pending') ?? UI_STEPS[0];
+  const latestArtifact = artifacts.at(-1) ?? null;
+  const confidence = buildConfidence(activeUiStep, completedCount);
+  const context = getStepContext(activeUiStep, artifacts);
+  const memoryFacts = buildMemoryFacts(fileName);
+  const insight = buildInsight(activeUiStep);
+  const bestModel = store.mlForecastResult?.training_summary?.model_name ?? store.selectedModel ?? store.timeSeriesForecastResult?.training_summary?.model_name ?? 'Pending';
+  const forecastMae = store.mlForecastResult?.metrics?.mae ?? store.timeSeriesForecastResult?.metrics?.mae;
+  const previewReady = ['Data Understanding', 'EDA', 'Data Cleaning'].some((step) => agenticStepStatuses[step] === 'completed');
+
+  const appendLog = React.useCallback((line: string) => {
+    const stamp = new Date().toLocaleTimeString([], { hour12: false });
+    setExecutionLogs((current) => [...current.slice(-80), `[${stamp}] ${line}`]);
+  }, []);
+
+  React.useEffect(() => {
+    if (!undoState) return;
+    const timeout = window.setTimeout(() => setUndoState(null), Math.max(0, undoState.expiresAt - Date.now()));
+    return () => window.clearTimeout(timeout);
+  }, [undoState]);
 
   const refreshHealth = React.useCallback(async () => {
     try {
       const response = await agenticApiClient.get<AgenticHealth>('/health');
       setHealth(response.data);
-      setBanner(response.data.db_connected ? null : 'Running in offline mode — decisions will not persist across sessions');
+      setBanner(response.data.db_connected ? null : 'Running in offline mode - decisions will not persist across sessions');
     } catch {
       setHealth(null);
-      setBanner('Agentic layer unavailable — manual mode active');
+      setBanner('Agentic layer unavailable - manual mode active');
     }
   }, []);
 
@@ -261,41 +611,37 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
         });
         if (response.data.recommendations) {
           const hasActiveLocalRecommendation = useAppStore.getState().agenticRecommendations.length > 0;
-          if (!hasActiveLocalRecommendation) {
-            setAgenticRecommendations(response.data.recommendations.slice(0, 1));
-          }
+          if (!hasActiveLocalRecommendation) setAgenticRecommendations(response.data.recommendations.slice(0, 1));
         }
         setAgenticLastSyncedAt(Date.now());
       } catch {
-        setBanner('Agentic layer unavailable — manual mode active');
+        setBanner('Agentic layer unavailable - manual mode active');
       }
     };
-
     void pollStatus();
-    const interval = window.setInterval(() => {
-      void pollStatus();
-    }, 3000);
+    const interval = window.setInterval(() => void pollStatus(), 3000);
     return () => window.clearInterval(interval);
   }, [agenticSessionId, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticStepStatus]);
 
   const suggestNextSteps = React.useCallback(async () => {
-    if (!datasetId) return;
+    if (!datasetId) return null;
     setIsSuggesting(true);
     setBanner(null);
     try {
-      const response = await agenticApiClient.post<SuggestResponse>('/suggest-next-steps', {
-        dataset_path: datasetId,
-      });
+      const response = await agenticApiClient.post<SuggestResponse>('/suggest-next-steps', { dataset_path: datasetId });
       setAgenticSessionId(response.data.session_id);
       setAgenticRecommendations(response.data.recommendations.slice(0, 1));
-      PIPELINE_STEPS.forEach((step) => setAgenticStepStatus(step, 'pending'));
+      EXECUTABLE_STEPS.forEach((step) => setAgenticStepStatus(step, 'pending'));
       setAgenticLastSyncedAt(Date.now());
+      appendLog(`suggested next action: ${response.data.recommendations[0]?.step ?? 'none'}`);
+      return response.data.session_id;
     } catch (error) {
-      setBanner(getApiErrorMessage(error, 'Agentic layer unavailable — manual mode active'));
+      setBanner(getApiErrorMessage(error, 'Agentic layer unavailable - manual mode active'));
+      return null;
     } finally {
       setIsSuggesting(false);
     }
-  }, [datasetId, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticSessionId, setAgenticStepStatus]);
+  }, [appendLog, datasetId, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticSessionId, setAgenticStepStatus]);
 
   React.useEffect(() => {
     if (!datasetId || health?.agentic_enabled === false || lastSuggestedDatasetRef.current === datasetId) return;
@@ -303,12 +649,12 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     void suggestNextSteps();
   }, [datasetId, health?.agentic_enabled, suggestNextSteps]);
 
-  const downloadReport = async (sessionId: string) => {
+  const downloadReport = async (sessionId: string, partial = false) => {
     const response = await agenticApiClient.get(`/session/${sessionId}/report`, { responseType: 'blob' });
     const url = URL.createObjectURL(response.data);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `agentic_run_${sessionId}.html`;
+    link.download = partial ? `agentic_partial_results_${sessionId}.html` : `agentic_run_${sessionId}.html`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -329,7 +675,6 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
         useAppStore.setState({ cleanedData: state.rawData, cleaningDone: true, cleanedRowCount: state.rawData?.length ?? 0 });
         return 'Cleaning marked complete for the in-browser dataset preview.';
       }
-
       const response = await apiClient.post('/clean-dataset', {
         dataset_id: state.datasetId,
         remove_duplicates: true,
@@ -359,10 +704,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       const latest = useAppStore.getState();
       const dateColumn = getPreferredDateColumn();
       const targetColumn = getPreferredTargetColumn();
-      if (!dateColumn || !targetColumn) {
-        throw new Error('A date-like column and numeric target are required for automated forecasting.');
-      }
-
+      if (!dateColumn || !targetColumn) throw new Error('A date-like column and numeric target are required for automated forecasting.');
       const isMlForecast = stepName === 'ML Forecast';
       const response = await apiClient.post(isMlForecast ? '/forecast/ml/run' : '/forecast/ts/run', {
         dataset_id: latest.datasetId ?? null,
@@ -398,10 +740,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       const latest = useAppStore.getState();
       const targetColumn = getPreferredTargetColumn();
       const featureColumns = getAutoFeatureColumns(targetColumn);
-      if (!targetColumn || featureColumns.length === 0) {
-        throw new Error('Automated model training needs one target and at least one feature column.');
-      }
-
+      if (!targetColumn || featureColumns.length === 0) throw new Error('Automated model training needs one target and at least one feature column.');
       const problemType = inferProblemType(targetColumn);
       const modelType = problemType === 'regression' ? 'ridge_regression' : 'random_forest';
       const response = await apiClient.post('/train', {
@@ -472,230 +811,359 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     return `${stepName} completed.`;
   };
 
-  const acceptRecommendation = async () => {
-    if (!activeRecommendation || !agenticSessionId) return;
-
-    setRunningStep(activeRecommendation.step);
-    setAgenticStepStatus(activeRecommendation.step, 'running');
+  const executeStep = async (stepName: HandlerStep, sessionId: string, options?: { createUndo?: boolean }) => {
+    const before = getSnapshot();
+    const rollbackState = getRollbackState();
+    const startedAt = performance.now();
+    setStructuredError(null);
+    setRunningStep(stepName);
+    setAgenticStepStatus(stepName, 'running');
+    appendLog(`starting ${stepName}`);
     try {
-      const outputSummary = await runApprovedStep(activeRecommendation.step);
+      appendLog(`opening module context for ${stepName}`);
+      const outputSummary = await runApprovedStep(stepName);
+      appendLog(`module completed: ${outputSummary}`);
       await agenticApiClient.post('/decision', {
-        session_id: agenticSessionId,
-        step_name: activeRecommendation.step,
+        session_id: sessionId,
+        step_name: stepName,
         decision: 'accepted',
         reasoning: outputSummary,
       });
-      setAgenticStepStatus(activeRecommendation.step, 'completed');
-      setLastSummary(outputSummary);
-      setAgenticRecommendations(getNextRecommendation(activeRecommendation.step, [outputSummary]));
+      setAgenticStepStatus(stepName, 'completed');
+      const duration = performance.now() - startedAt;
+      setStepDurations((current) => ({ ...current, [stepName]: duration }));
+      const artifact = { step: stepName, summary: outputSummary, completedAt: Date.now(), before, after: getSnapshot() };
+      setArtifacts((current) => [...current, artifact]);
+      setAgenticRecommendations(getNextRecommendation(stepName, [outputSummary]));
+      if (options?.createUndo !== false) {
+        setUndoState({ step: stepName, previousState: rollbackState, expiresAt: Date.now() + 10_000 });
+      }
+      appendLog(`recorded decision for ${stepName}`);
+      return outputSummary;
     } catch (error) {
-      setAgenticStepStatus(activeRecommendation.step, 'failed');
-      setBanner(getApiErrorMessage(error, 'Agentic layer unavailable — manual mode active'));
+      const reason = getApiErrorMessage(error, `${stepName} failed.`);
+      setAgenticStepStatus(stepName, 'failed');
+      setStructuredError({ step: stepName, reason, detail: error });
+      setBanner(reason);
+      appendLog(`error: ${reason}`);
+      throw error;
     } finally {
       setRunningStep(null);
     }
   };
 
-  const skipRecommendation = async () => {
-    if (!activeRecommendation || !agenticSessionId) return;
+  const acceptRecommendation = async () => {
+    if (!activeRecommendation) return;
+    const sessionId = agenticSessionId ?? await suggestNextSteps();
+    if (!sessionId) return;
+    await executeStep(normalizeStepName(activeRecommendation.step) as HandlerStep, sessionId);
+  };
+
+  const skipStep = async (stepName?: string) => {
+    const target = normalizeStepName(stepName ?? activeRecommendation?.step ?? '');
+    if (!target || !agenticSessionId) return;
     try {
       const response = await agenticApiClient.post<{ next_recommendations?: Recommendation[] }>('/decision', {
         session_id: agenticSessionId,
-        step_name: activeRecommendation.step,
+        step_name: target,
         decision: 'skipped',
         reasoning: 'Skipped from agentic workspace.',
       });
-      setAgenticStepStatus(activeRecommendation.step, 'skipped');
-      setAgenticRecommendations(response.data.next_recommendations ?? []);
+      setAgenticStepStatus(target, 'skipped');
+      setAgenticRecommendations(response.data.next_recommendations ?? getNextRecommendation(target, [`${target} skipped by user.`]));
+      appendLog(`skipped ${target}`);
     } catch (error) {
-      setBanner(getApiErrorMessage(error, 'Agentic layer unavailable — manual mode active'));
+      setBanner(getApiErrorMessage(error, 'Agentic layer unavailable - manual mode active'));
     }
   };
 
+  const runAll = async () => {
+    const sessionId = agenticSessionId ?? await suggestNextSteps();
+    if (!sessionId) return;
+    setRunningAll(true);
+    try {
+      for (const step of EXECUTABLE_STEPS) {
+        const status = useAppStore.getState().agenticStepStatuses[step];
+        if (status === 'completed' || status === 'skipped') continue;
+        await executeStep(step as HandlerStep, sessionId, { createUndo: false });
+      }
+    } finally {
+      setRunningAll(false);
+    }
+  };
+
+  const rollbackUndo = () => {
+    if (!undoState) return;
+    useAppStore.setState(undoState.previousState);
+    setAgenticStepStatus(undoState.step, 'pending');
+    setArtifacts((current) => current.filter((artifact) => artifact.step !== undoState.step));
+    setAgenticRecommendations([{ step: undoState.step, reason: 'The last step was rolled back. Review and rerun it when ready.', findings: ['Undo restored the previous workspace state.'] }]);
+    appendLog(`rolled back ${undoState.step}`);
+    setUndoState(null);
+  };
+
+  const askAgent = async (message: string) => {
+    setChatOpen(true);
+    setChatLoading(true);
+    const userMessage: ChatMessage = { id: `${Date.now()}-user`, role: 'user', content: message };
+    setChatMessages((current) => [...current, userMessage]);
+    try {
+      const response = await agenticApiClient.post<ChatResponse>('/core/chat', { message, mode: 'ask', provider: 'auto' });
+      setChatMessages((current) => [...current, { id: `${Date.now()}-assistant`, role: 'assistant', content: response.data.answer ?? response.data.error ?? 'No answer returned.' }]);
+    } catch (error) {
+      setChatMessages((current) => [...current, { id: `${Date.now()}-assistant`, role: 'assistant', content: getApiErrorMessage(error, 'The agent could not answer right now.') }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const sendChat = async () => {
+    const message = chatInput.trim();
+    if (!message) return;
+    setChatInput('');
+    await askAgent(message);
+  };
+
+  const askAgentToFix = async () => {
+    if (!structuredError) return;
+    await askAgent(`Codex repair request: The IDA Agentic Core step "${structuredError.step}" failed with "${structuredError.reason}". Provide a targeted fix plan using the current dataset ${fileName ?? datasetId ?? 'unknown dataset'} and the completed step context.`);
+  };
+
+  const applyInsightFix = async () => {
+    await askAgent(`Turn this dataset insight into an executable next action for the IDA workflow: ${insight}`);
+  };
+
   return (
-    <section className="relative mb-5 overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(145deg,#0f172a_0%,#172033_48%,#1e293b_100%)] p-4 text-slate-100 shadow-[0_30px_90px_-44px_rgba(2,8,23,0.9)] ring-1 ring-white/10">
+    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xl dark:border-slate-800 dark:bg-slate-950">
       <AgenticWorkspaceStyles />
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_0%,rgba(59,130,246,0.18),transparent_34%),radial-gradient(circle_at_88%_20%,rgba(124,58,237,0.14),transparent_30%)]" />
-      <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/35 to-transparent" />
-      {banner && (
-        <Alert className="ida-agent-fade-in relative z-10 mb-4 border-amber-300/25 bg-amber-300/10 text-amber-50 shadow-[0_18px_42px_-30px_rgba(251,191,36,0.8)] backdrop-blur-xl">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{banner}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="relative z-10 grid gap-4 lg:grid-cols-[1fr_19rem]">
-        <div className="min-w-0 space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="flex items-center gap-3">
-                <span
-                  className={cn(
-                    'relative grid h-9 w-9 place-items-center rounded-full bg-slate-950 text-[10px] font-black text-white ring-1 ring-white/20',
-                    runningStep || isSuggesting ? 'ida-agent-processing' : workflowComplete ? 'ida-agent-complete' : 'ida-agent-idle',
-                  )}
-                >
-                  IDA
-                </span>
-                <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-blue-200/70">Agent Workspace</p>
-                  <p className="mt-1 text-xs text-slate-400">{runningStep ? `Processing ${runningStep}` : workflowComplete ? 'Workflow complete' : 'Idle and ready'}</p>
-                </div>
-              </div>
-              <h2 className="mt-4 truncate text-xl font-semibold tracking-normal text-white">
-                {fileName ?? 'No dataset selected'}
-              </h2>
+      <header className="flex flex-col gap-3 border-b border-slate-800 bg-[#0f172a] p-4 text-white lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-blue-600 text-sm font-black text-white ring-2 ring-blue-300/30">IDA</div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">{fileName ?? 'No dataset selected'}</p>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <Badge className={cn('rounded-full border px-2.5 py-0.5 text-xs', runningStep ? 'border-blue-400/40 bg-blue-500/15 text-blue-200' : health?.agentic_enabled === false ? 'border-red-400/40 bg-red-500/15 text-red-200' : 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200')}>
+                {runningStep ? `Running ${runningStep}` : health?.agentic_enabled === false ? 'Agent offline' : 'Live agent ready'}
+              </Badge>
+              <span className="text-xs text-slate-400">{completedCount}/{UI_STEPS.length} completed</span>
             </div>
-            <Button
-              size="sm"
-              onClick={suggestNextSteps}
-              disabled={!datasetId || isSuggesting || health?.agentic_enabled === false}
-              className="rounded-lg border border-white/10 bg-blue-500/90 text-white shadow-[0_14px_34px_-22px_rgba(59,130,246,0.8)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-blue-400 hover:shadow-[0_20px_42px_-22px_rgba(59,130,246,0.95)]"
-            >
-              {isSuggesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-              Suggest Next Steps
-            </Button>
           </div>
-
-          {activeRecommendation ? (
-            <Card
-              className={cn(
-                'ida-agent-fade-in gap-4 rounded-xl border border-white/15 bg-white/[0.075] py-4 text-slate-100 shadow-[0_24px_70px_-45px_rgba(15,23,42,0.95)] backdrop-blur-2xl transition-all duration-200 ease-out',
-                hasFailure
-                  ? 'bg-[linear-gradient(#1e293b,#1e293b)_padding-box,linear-gradient(135deg,#ef4444,#f97316)_border-box]'
-                  : 'bg-[linear-gradient(rgba(30,41,59,0.78),rgba(15,23,42,0.78))_padding-box,linear-gradient(135deg,#2563eb,#7c3aed)_border-box]',
-              )}
-            >
-              <CardHeader className="px-4">
-                <div className="flex items-start justify-between gap-3">
-                  <CardTitle className="text-base font-semibold text-white">{activeRecommendation.step}</CardTitle>
-                  <Badge variant="outline" className="rounded-md border-blue-300/30 bg-blue-400/10 text-blue-100">Recommended</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3 px-4">
-                <p className="text-sm font-normal text-slate-300">{activeRecommendation.reason}</p>
-                <div className="space-y-1">
-                  {activeRecommendation.findings.map((finding) => (
-                    <div key={finding} className="flex gap-2 text-sm font-normal text-slate-100">
-                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
-                      <span><HighlightedText text={finding} /></span>
-                    </div>
-                  ))}
-                </div>
-                {lastSummary && (
-                  <p className="ida-agent-fade-in rounded-lg border border-white/10 bg-white/[0.075] p-3 text-sm font-normal text-slate-300 backdrop-blur-xl">
-                    <HighlightedText text={lastSummary} />
-                  </p>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    onClick={acceptRecommendation}
-                    disabled={Boolean(runningStep)}
-                    className="rounded-lg border-l-4 border-l-blue-300 bg-blue-500 text-white shadow-[0_12px_30px_-22px_rgba(37,99,235,0.9)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-blue-400 hover:shadow-[0_22px_46px_-24px_rgba(37,99,235,1)]"
-                  >
-                    {runningStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : activeRecommendation.step === 'Report Generation' ? <Download className="mr-2 h-4 w-4" /> : <Check className="mr-2 h-4 w-4" />}
-                    Accept & Continue
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={skipRecommendation}
-                    disabled={Boolean(runningStep)}
-                    className="rounded-lg border-white/15 border-l-slate-400 bg-white/[0.075] text-slate-100 backdrop-blur-xl transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-white/12 hover:text-white hover:shadow-[0_20px_42px_-30px_rgba(148,163,184,0.9)]"
-                  >
-                    <SkipForward className="mr-2 h-4 w-4" />
-                    Skip
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
-            <div
-              className={cn(
-                'ida-agent-fade-in rounded-xl border border-white/15 bg-white/[0.07] p-4 text-sm font-normal text-slate-300 shadow-[0_24px_60px_-44px_rgba(15,23,42,0.9)] backdrop-blur-2xl',
-                workflowComplete
-                  ? 'bg-[linear-gradient(rgba(30,41,59,0.72),rgba(15,23,42,0.72))_padding-box,linear-gradient(135deg,#2563eb,#7c3aed)_border-box]'
-                  : 'border-dashed',
-              )}
-            >
-              {workflowComplete && agenticSessionId ? (
-                <div className="flex flex-col gap-3">
-                  <span>The approved agentic flow is complete. Download the consolidated run report when you are ready.</span>
-                  <Button
-                    size="sm"
-                    onClick={() => void downloadReport(agenticSessionId)}
-                    className="ida-agent-download w-full rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-[0_18px_44px_-24px_rgba(79,70,229,0.95)] transition-all duration-200 ease-out hover:brightness-110"
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    Download Report
-                  </Button>
-                </div>
-              ) : (
-                'Upload or select a dataset, then ask the agent for the next approved step.'
-              )}
-            </div>
-          )}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={() => void runAll()} disabled={!datasetId || Boolean(runningStep) || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
+            {runningAll ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+            Run All
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void suggestNextSteps()} disabled={!datasetId || isSuggesting} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
+            {isSuggesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+            Suggest Next
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => agenticSessionId && void downloadReport(agenticSessionId, true)} disabled={!agenticSessionId || completedCount <= 1} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
+            <Download className="mr-2 h-4 w-4" />
+            Download Current Results
+          </Button>
+        </div>
+      </header>
 
-        <aside className="rounded-xl border border-white/15 bg-white/[0.075] p-4 shadow-[0_24px_70px_-48px_rgba(15,23,42,0.95)] backdrop-blur-2xl">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-200/70">Pipeline</p>
-            <span className="rounded-md bg-white/10 px-2 py-1 font-mono text-xs font-semibold text-blue-100">{progress}%</span>
+      <div className="grid min-h-[720px] lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="border-r border-slate-800 bg-slate-950 p-4 text-slate-200">
+          <div className="mb-4">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="font-semibold uppercase tracking-wide text-slate-400">Pipeline</span>
+              <span className="font-mono text-blue-300">{completedCount}/{UI_STEPS.length}</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${progress}%` }} />
+            </div>
           </div>
-          <div className="relative">
-            <div className="absolute left-[0.875rem] top-4 h-[calc(100%-2rem)] w-px bg-slate-600/60" />
-            <div
-              className="absolute left-[0.875rem] top-4 w-px bg-gradient-to-b from-blue-400 to-indigo-400 transition-all duration-500 ease-out"
-              style={{ height: `calc((100% - 2rem) * ${Math.max(0, completedStepCount - 1)} / ${Math.max(1, PIPELINE_STEPS.length - 1)})` }}
-            />
-            <div className="space-y-3">
-              {PIPELINE_STEPS.map((step) => {
-              const status = agenticStepStatuses[step] ?? 'pending';
-              const isCompleted = status === 'completed' || status === 'skipped';
-              const isActive = status === 'running' || step === activeTimelineStep;
+          <div className="space-y-1.5">
+            {UI_STEPS.map((step) => {
+              const status = getUiStatus(step, agenticStepStatuses, datasetId);
+              const active = activeUiStep?.id === step.id || runningStep === step.handler;
+              const duration = step.handler ? formatDuration(stepDurations[step.handler]) : datasetId ? '0.1s' : null;
+              const Icon = step.icon;
               return (
-                <div key={step} className="relative grid grid-cols-[1.75rem_1fr_auto] items-start gap-3 text-sm">
-                  <span
-                    className={cn(
-                      'relative z-10 grid h-7 w-7 place-items-center rounded-full border text-[10px] transition-all duration-300 ease-out',
-                      isCompleted && 'border-blue-300 bg-blue-500 text-white shadow-[0_0_24px_rgba(59,130,246,0.42)]',
-                      isActive && !isCompleted && 'border-blue-300 bg-blue-400/20 text-blue-100',
-                      status === 'failed' && 'border-red-300 bg-red-500/20 text-red-100',
-                      !isCompleted && !isActive && status !== 'failed' && 'border-slate-500 bg-slate-700/70 text-slate-400',
-                    )}
-                    style={isActive && !isCompleted ? { animation: 'ida-agent-active-step 1.5s ease-in-out infinite' } : undefined}
-                  >
-                    {isCompleted ? <CheckCircle2 className="h-4 w-4" /> : statusRank(status) ? <Check className="h-3.5 w-3.5" /> : ''}
-                  </span>
-                  <div className="min-w-0 pb-1">
-                    <p className={cn('truncate font-semibold', isCompleted ? 'text-white' : isActive ? 'text-blue-100' : 'text-slate-400')}>
-                      {step}
-                    </p>
-                    <p className="mt-0.5 truncate text-xs font-normal text-slate-500">
-                      {isCompleted ? 'Completed' : isActive ? 'Active step' : status === 'failed' ? 'Needs attention' : 'Pending'}
-                    </p>
+                <div key={step.id} className={cn('rounded-lg border border-transparent px-3 py-2 transition', active && 'border-l-4 border-l-blue-500 bg-blue-500/10')}>
+                  <div className="flex items-center gap-2">
+                    <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', statusDotClass(status, active))} />
+                    <Icon className="h-4 w-4 shrink-0 text-slate-400" />
+                    <span className={cn('min-w-0 flex-1 truncate text-sm font-medium', active ? 'text-white' : 'text-slate-300')}>{step.label}</span>
+                    {duration && <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{duration}</span>}
                   </div>
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      'rounded-md px-2 py-0.5 text-[10px] font-medium',
-                      status === 'completed' && 'border-blue-300/30 bg-blue-400/10 text-blue-100',
-                      status === 'running' && 'border-blue-300/30 bg-blue-400/10 text-blue-100',
-                      status === 'failed' && 'border-red-300/30 bg-red-400/10 text-red-100',
-                      status === 'skipped' && 'border-slate-400/30 bg-slate-400/10 text-slate-300',
-                      status === 'pending' && 'border-slate-500/30 bg-slate-600/10 text-slate-400',
-                    )}
-                  >
-                    {status}
-                  </Badge>
                 </div>
               );
             })}
-            </div>
           </div>
         </aside>
+
+        <main className="flex min-w-0 flex-col bg-slate-100 dark:bg-slate-950">
+          <div className="border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+            <div className="overflow-hidden">
+              <div className="ida-memory-marquee flex w-max gap-2">
+                {[...memoryFacts, ...memoryFacts].map((fact, index) => (
+                  <span key={`${fact}-${index}`} className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 dark:border-blue-500/30 dark:bg-blue-950/40 dark:text-blue-200">{fact}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4 pb-24">
+            {banner && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200">
+                <AlertCircle className="mr-2 inline h-4 w-4" />
+                {banner}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-l-4 border-slate-200 border-l-blue-600 bg-white p-4 shadow-sm dark:border-slate-700 dark:border-l-blue-500 dark:bg-slate-900">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-lg font-semibold text-slate-950 dark:text-slate-100">{activeUiStep?.label ?? 'Agentic Step'}</h2>
+                    <Badge className="bg-blue-600 text-white">{confidence}% confidence</Badge>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{activeUiStep?.description}</p>
+                </div>
+                <Button variant="ghost" size="icon" onClick={() => setExpandedDetails((value) => !value)} className="shrink-0 dark:text-slate-200 dark:hover:bg-slate-800">
+                  <Eye className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  {context.findings.map((finding) => (
+                    <div key={finding} className="flex gap-2 text-sm text-slate-700 dark:text-slate-300">
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                      <span>{finding}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  {context.issues.length ? context.issues.map((issue) => (
+                    <div key={issue} className="flex gap-2 text-sm text-amber-700 dark:text-amber-300">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{issue}</span>
+                    </div>
+                  )) : (
+                    <div className="flex gap-2 text-sm text-slate-500 dark:text-slate-400">
+                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
+                      <span>No blocking issues detected for this step.</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {expandedDetails && (
+                <pre className="mt-4 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
+                  {JSON.stringify({ activeStep: activeUiStep, recommendation: activeRecommendation, context, confidence }, null, 2)}
+                </pre>
+              )}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || Boolean(runningStep)} className="bg-blue-600 text-white hover:bg-blue-500">
+                  {runningStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                  Accept & Continue
+                </Button>
+                <Button variant="outline" onClick={() => void skipStep()} disabled={!activeRecommendation || Boolean(runningStep)} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                  <SkipForward className="mr-2 h-4 w-4" />
+                  Skip
+                </Button>
+              </div>
+            </div>
+
+            <ExecutionLog logs={executionLogs} running={Boolean(runningStep)} />
+
+            {undoState && (
+              <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700 shadow-sm dark:border-blue-500/30 dark:bg-blue-950/40 dark:text-blue-200">
+                <RotateCcw className="h-4 w-4" />
+                <span>{undoState.step} accepted</span>
+                <button className="font-semibold underline" onClick={rollbackUndo}>Undo</button>
+                <button onClick={() => setUndoState(null)} aria-label="Dismiss undo"><X className="h-4 w-4" /></button>
+              </div>
+            )}
+
+            {structuredError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-500/30 dark:bg-red-950/30">
+                <h3 className="font-semibold text-red-800 dark:text-red-200">{structuredError.step} failed</h3>
+                <p className="mt-1 text-sm text-red-700 dark:text-red-300">{structuredError.reason}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" onClick={() => agenticSessionId && void executeStep(structuredError.step as HandlerStep, agenticSessionId)}><RefreshCw className="mr-2 h-4 w-4" />Retry</Button>
+                  <Button size="sm" variant="outline" onClick={() => void skipStep(structuredError.step)} className="dark:border-slate-700 dark:text-slate-200">Skip</Button>
+                  <Button size="sm" variant="outline" onClick={() => void askAgentToFix()} className="dark:border-slate-700 dark:text-slate-200"><Wand2 className="mr-2 h-4 w-4" />Ask agent to fix</Button>
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <MetricCard label="Steps Completed" value={String(completedCount)} />
+              <MetricCard label="Steps Pending" value={String(pendingCount)} />
+              <MetricCard label="Best Model Selected" value={bestModel} />
+              <MetricCard label="Forecast MAE" value={formatNumber(forecastMae)} />
+            </div>
+
+            <StepDiffCard artifact={latestArtifact} />
+
+            {previewReady && <DataPreviewTable />}
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <ForecastResultsCard />
+              <ShapPanel />
+            </div>
+
+            <div className="rounded-xl border border-l-4 border-amber-200 border-l-amber-500 bg-white p-4 shadow-sm dark:border-slate-700 dark:border-l-amber-400 dark:bg-slate-900">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="font-semibold text-slate-950 dark:text-slate-100">Agent Insight</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">{insight}</p>
+                </div>
+                <Button variant="outline" onClick={() => void applyInsightFix()} className="shrink-0 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                  <Wand2 className="mr-2 h-4 w-4" />
+                  Apply Fix
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+            <button className="mb-2 flex w-full items-center justify-between text-sm font-semibold text-slate-700 dark:text-slate-200" onClick={() => setChatOpen((value) => !value)}>
+              <span className="inline-flex items-center gap-2"><MessageSquare className="h-4 w-4" /> Ask about completed steps</span>
+              <ChevronDown className={cn('h-4 w-4 transition', chatOpen && 'rotate-180')} />
+            </button>
+            {chatOpen && (
+              <div className="space-y-3">
+                <div className="max-h-48 space-y-2 overflow-auto rounded-lg bg-slate-50 p-3 dark:bg-slate-950">
+                  {chatMessages.length ? chatMessages.map((message) => (
+                    <div key={message.id} className={cn('rounded-lg px-3 py-2 text-sm', message.role === 'user' ? 'ml-auto max-w-[85%] bg-blue-600 text-white' : 'mr-auto max-w-[90%] bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-200')}>
+                      {message.content}
+                    </div>
+                  )) : <p className="text-sm text-slate-500 dark:text-slate-400">Ask why a model was selected, what changed during cleaning, or what the agent recommends next.</p>}
+                  {chatLoading && <div className="text-sm text-slate-500 dark:text-slate-400">Agent is thinking...</div>}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void sendChat();
+                    }}
+                    placeholder="Why did you choose XGBoost?"
+                    className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  />
+                  <Button onClick={() => void sendChat()} disabled={chatLoading || !chatInput.trim()} className="bg-blue-600 text-white hover:bg-blue-500">
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
       </div>
     </section>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
+      <p className="mt-2 truncate text-xl font-bold text-slate-950 dark:text-slate-100">{value}</p>
+    </div>
   );
 }

@@ -19,6 +19,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
 
 const DEFAULT_FEATURE_GROUPS: FeatureGroupId[] = ['trend', 'calendar', 'lags', 'rolling'];
+const TARGET_EXCLUSION_PATTERN = /id|no|number|count|index|code|key|batch|seq|row/i;
+const HORIZON_OPTIONS = [3, 6, 12, 24] as const;
 
 const FEATURE_GROUPS: { id: FeatureGroupId; label: string; description: string }[] = [
   { id: 'trend', label: 'Trend index', description: 'Numeric step counter that lets the model learn growth or decay.' },
@@ -47,9 +49,18 @@ function modelStatusClass(status: string) {
   return 'border-red-200 bg-red-50 text-red-700';
 }
 
-function getPreferredSalesColumn(columns: ColumnInfo[]) {
-  const numeric = columns.filter((column) => column.role === 'numeric');
-  return numeric.find((column) => /sales|revenue|amount|profit|price|total|qty/i.test(column.name))?.name ?? numeric[0]?.name ?? '';
+function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
+  const scored = columns
+    .filter((column) => column.role === 'numeric' && !TARGET_EXCLUSION_PATTERN.test(column.name))
+    .map((column) => {
+      const values = data.map((row) => Number(row[column.name])).filter(Number.isFinite);
+      const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+      const variance = values.length ? values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length : 0;
+      return { name: column.name, variance };
+    })
+    .filter((item) => item.variance > 0)
+    .sort((left, right) => right.variance - left.variance);
+  return scored[0]?.name ?? '';
 }
 
 function getPreferredDateColumn(columns: ColumnInfo[]) {
@@ -102,16 +113,22 @@ function buildModelRecommendations(featureCount: number) {
       recommendation_reason: `Excellent for capturing non-linear patterns across the ${featureCount} generated features.`,
     },
     {
-      model_type: 'random_forest',
-      model_name: 'Random Forest',
+      model_type: 'xgboost',
+      model_name: 'XGBoost',
       recommended: featureCount < 6,
-      recommendation_reason: 'Robust baseline when generated features are fewer and interactions still matter.',
+      recommendation_reason: 'Strong tree boosting candidate when engineered lag and calendar features interact.',
     },
     {
-      model_type: 'ridge_regression',
-      model_name: 'Ridge Regression',
+      model_type: 'lightgbm',
+      model_name: 'LightGBM',
       recommended: false,
-      recommendation_reason: 'Useful when you want a simpler, more stable relationship across engineered forecast features.',
+      recommendation_reason: 'Fast gradient boosting candidate; import failures are surfaced in the comparison table.',
+    },
+    {
+      model_type: 'prophet',
+      model_name: 'Prophet',
+      recommended: false,
+      recommendation_reason: 'Trend and seasonality candidate used for comparison against engineered ML learners.',
     },
   ];
 }
@@ -135,6 +152,7 @@ export default function MlForecastTab() {
 
   const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
   const dateColumns = useMemo(() => columns.filter((column) => column.role === 'datetime' || /date|month|time|period/i.test(column.name)), [columns]);
+  const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [dateColumn, setDateColumn] = useState('');
@@ -149,8 +167,8 @@ export default function MlForecastTab() {
 
   useEffect(() => {
     if (!dateColumn) setDateColumn(getPreferredDateColumn(columns));
-    if (!targetColumn) setTargetColumn(getPreferredSalesColumn(columns));
-  }, [columns, dateColumn, targetColumn]);
+    if (!targetColumn && smartTargetColumn) setTargetColumn(smartTargetColumn);
+  }, [columns, dateColumn, targetColumn, smartTargetColumn]);
 
   useEffect(() => {
     if (featureGroups.length === 0 && currentStep > 1) {
@@ -206,12 +224,12 @@ export default function MlForecastTab() {
 
   const handleRun = async () => {
     const resolvedDateColumn = dateColumn || getPreferredDateColumn(columns);
-    const resolvedTargetColumn = targetColumn || getPreferredSalesColumn(columns);
+    const resolvedTargetColumn = targetColumn || smartTargetColumn;
     const resolvedFeatureGroups = featureGroups.length ? featureGroups : DEFAULT_FEATURE_GROUPS;
 
     if (!resolvedDateColumn || !resolvedTargetColumn) {
       setCurrentStep(1);
-      toast({ title: 'Configuration incomplete', description: 'Choose the date column and sales target before training.', variant: 'destructive' });
+      toast({ title: 'Configuration incomplete', description: smartTargetColumn ? 'Choose the date column and sales target before training.' : 'No suitable numeric target was auto-detected. Please manually select the target column before running ML Forecast.', variant: 'destructive' });
       return;
     }
 
@@ -281,7 +299,7 @@ export default function MlForecastTab() {
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary">{dateColumn || 'Pick a date column'}</Badge>
-                <Badge variant="secondary">{targetColumn || 'Pick a target column'}</Badge>
+                <Badge variant="secondary">{targetColumn ? `Target: ${targetColumn}` : 'Pick a target column'}</Badge>
                 <Badge variant="secondary">{generatedFeatures.length} generated features</Badge>
                 <Badge variant="secondary">{forecastPeriods} future periods</Badge>
               </div>
@@ -348,12 +366,16 @@ export default function MlForecastTab() {
                         <SelectTrigger><SelectValue placeholder="Select sales target" /></SelectTrigger>
                         <SelectContent>{numericColumns.map((column) => <SelectItem key={column.name} value={column.name}>{column.name}</SelectItem>)}</SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">{smartTargetColumn ? `Smart default: ${smartTargetColumn}` : 'No suitable default found. Select the target manually.'}</p>
                     </div>
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label>Future Periods</Label>
-                      <Input type="number" min={1} max={24} value={forecastPeriods} onChange={(event) => setForecastPeriods(Math.max(1, Math.min(24, Number(event.target.value) || 1)))} />
+                      <Select value={String(forecastPeriods)} onValueChange={(value) => setForecastPeriods(Number(value))}>
+                        <SelectTrigger><SelectValue placeholder="Select horizon" /></SelectTrigger>
+                        <SelectContent>{HORIZON_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value} periods</SelectItem>)}</SelectContent>
+                      </Select>
                     </div>
                     <div className="space-y-2">
                       <Label>Lag Depth</Label>
@@ -501,9 +523,14 @@ export default function MlForecastTab() {
                       <Card>
                         <CardHeader>
                           <CardTitle>Model Comparison</CardTitle>
-                          <CardDescription>Walk-forward validation across Prophet, SARIMA, XGBoost, and LightGBM candidates.</CardDescription>
+                          <CardDescription>Walk-forward validation across Gradient Boosting, Prophet, XGBoost, and LightGBM candidates.</CardDescription>
                         </CardHeader>
                         <CardContent>
+                          {result.validation_warnings?.length ? (
+                            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                              {result.validation_warnings.join(' ')}
+                            </div>
+                          ) : null}
                           <Table>
                             <TableHeader><TableRow><TableHead>Model</TableHead><TableHead>Status</TableHead><TableHead>MAE</TableHead><TableHead>RMSE</TableHead><TableHead>MAPE</TableHead><TableHead>Availability / Training Note</TableHead></TableRow></TableHeader>
                             <TableBody>
@@ -594,43 +621,51 @@ export default function MlForecastTab() {
                                 <CardTitle>SHAP Feature Importance</CardTitle>
                                 <CardDescription>Which generated forecast features most influenced the model output.</CardDescription>
                               </div>
-                              <Badge variant="outline" className="border-primary/20 bg-primary/5 text-primary">Top {shapData.length}</Badge>
+                              <Badge variant="outline" className="border-primary/20 bg-primary/5 text-primary">{shapData.length ? `Top ${shapData.length}` : 'Diagnostic'}</Badge>
                             </div>
                           </CardHeader>
                           <CardContent className="space-y-4">
-                            <div className="grid gap-3 sm:grid-cols-2">
-                              <div className="rounded-2xl border bg-gradient-to-br from-primary/8 to-background p-4">
-                                <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Top Driver</p>
-                                <p className="mt-2 text-lg font-semibold text-primary">{shapData[0]?.name ?? 'N/A'}</p>
+                            {shapData.length ? (
+                              <>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <div className="rounded-2xl border bg-gradient-to-br from-primary/8 to-background p-4">
+                                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Top Driver</p>
+                                    <p className="mt-2 text-lg font-semibold text-primary">{shapData[0].name}</p>
+                                  </div>
+                                  <div className="rounded-2xl border bg-gradient-to-br from-muted/20 to-background p-4 dark:border-slate-800 dark:from-slate-900 dark:to-slate-950">
+                                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Importance</p>
+                                    <p className="mt-2 text-lg font-semibold text-foreground">{shapData[0].display.toFixed(3)}</p>
+                                  </div>
+                                </div>
+                                <div className="h-[380px] w-full rounded-2xl border bg-gradient-to-br from-muted/20 to-background p-3 dark:border-slate-800 dark:from-slate-950 dark:to-slate-900">
+                                  <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={shapData} layout="vertical" margin={{ left: 28, right: 16, top: 10, bottom: 10 }}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke={ML_FORECAST_CHART_COLORS.grid} horizontal={false} opacity={0.25} />
+                                      <XAxis type="number" tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                                      <YAxis type="category" dataKey="name" width={140} tickLine={false} axisLine={false} tick={{ fill: '#475569', fontSize: 12 }} />
+                                      <RechartsTooltip
+                                        formatter={(value: number | string) => typeof value === 'number' ? value.toFixed(3) : value}
+                                        contentStyle={{
+                                          borderRadius: '14px',
+                                          border: '1px solid rgba(148, 163, 184, 0.25)',
+                                          backgroundColor: 'rgba(255,255,255,0.96)',
+                                          boxShadow: '0 18px 45px rgba(15, 23, 42, 0.12)',
+                                        }}
+                                      />
+                                      <Bar dataKey="display" name="Importance" radius={[0, 6, 6, 0]} isAnimationActive={false}>
+                                        {shapData.map((_, index) => (
+                                          <Cell key={`shap-bar-${index}`} fill={ML_FORECAST_CHART_COLORS.shap[index % ML_FORECAST_CHART_COLORS.shap.length]} />
+                                        ))}
+                                      </Bar>
+                                    </BarChart>
+                                  </ResponsiveContainer>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                                Feature importance unavailable — model produced constant output, likely due to low-variance target or insufficient training data.
                               </div>
-                              <div className="rounded-2xl border bg-gradient-to-br from-muted/20 to-background p-4 dark:border-slate-800 dark:from-slate-900 dark:to-slate-950">
-                                <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Importance</p>
-                                <p className="mt-2 text-lg font-semibold text-foreground">{shapData[0] ? shapData[0].display.toFixed(3) : 'N/A'}</p>
-                              </div>
-                            </div>
-                            <div className="h-[380px] w-full rounded-2xl border bg-gradient-to-br from-muted/20 to-background p-3 dark:border-slate-800 dark:from-slate-950 dark:to-slate-900">
-                              <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={shapData} layout="vertical" margin={{ left: 28, right: 16, top: 10, bottom: 10 }}>
-                                  <CartesianGrid strokeDasharray="3 3" stroke={ML_FORECAST_CHART_COLORS.grid} horizontal={false} opacity={0.25} />
-                                  <XAxis type="number" tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
-                                  <YAxis type="category" dataKey="name" width={140} tickLine={false} axisLine={false} tick={{ fill: '#475569', fontSize: 12 }} />
-                                  <RechartsTooltip
-                                    formatter={(value: number | string) => typeof value === 'number' ? value.toFixed(3) : value}
-                                    contentStyle={{
-                                      borderRadius: '14px',
-                                      border: '1px solid rgba(148, 163, 184, 0.25)',
-                                      backgroundColor: 'rgba(255,255,255,0.96)',
-                                      boxShadow: '0 18px 45px rgba(15, 23, 42, 0.12)',
-                                    }}
-                                  />
-                                  <Bar dataKey="display" name="Importance" radius={[0, 6, 6, 0]} isAnimationActive={false}>
-                                    {shapData.map((_, index) => (
-                                      <Cell key={`shap-bar-${index}`} fill={ML_FORECAST_CHART_COLORS.shap[index % ML_FORECAST_CHART_COLORS.shap.length]} />
-                                    ))}
-                                  </Bar>
-                                </BarChart>
-                              </ResponsiveContainer>
-                            </div>
+                            )}
                           </CardContent>
                         </Card>
 

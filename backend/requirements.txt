@@ -21,3 +21,4 @@ lightgbm
 optuna
 prophet
 statsmodels
+pmdarima

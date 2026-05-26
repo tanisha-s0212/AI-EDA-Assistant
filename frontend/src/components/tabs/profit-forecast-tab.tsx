@@ -210,9 +210,9 @@ export default function ProfitForecastTab() {
       await runProfitForecast(datasetId, periods, {
         confirmedAssumptions: true,
         scenarioParameters: {
-          optimistic: { revenue: 1.1, cogs: 0.97, loss: 0.8 },
+          optimistic: { revenue: 1.15, cogs: 0.97, loss: 0.8 },
           baseline: { revenue: 1, cogs: 1, loss: 1 },
-          pessimistic: { revenue: 0.9, cogs: 1.05, loss: 1.2 },
+          pessimistic: { revenue: 0.85, cogs: 1.05, loss: 1.2 },
         },
       });
       toast({ title: 'Profit forecast ready', description: 'Generated optimistic, baseline, and pessimistic P&L scenarios.' });

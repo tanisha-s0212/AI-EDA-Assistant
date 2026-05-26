@@ -31,6 +31,8 @@ const TS_CHART_COLORS = {
 } as const;
 
 const transition = { duration: 0.28, ease: 'easeOut' } as const;
+const TARGET_EXCLUSION_PATTERN = /id|no|number|count|index|code|key|batch|seq|row/i;
+const HORIZON_OPTIONS = [3, 6, 12, 24] as const;
 
 function formatChartValue(value: number | null | undefined) {
   return value == null || Number.isNaN(value) ? 'N/A' : value.toLocaleString();
@@ -79,9 +81,18 @@ function ForecastTooltip({
   );
 }
 
-function getPreferredSalesColumn(columns: ColumnInfo[]) {
-  const numeric = columns.filter((column) => column.role === 'numeric');
-  return numeric.find((column) => /sales|revenue|amount|profit|price|total|qty/i.test(column.name))?.name ?? numeric[0]?.name ?? '';
+function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
+  const scored = columns
+    .filter((column) => column.role === 'numeric' && !TARGET_EXCLUSION_PATTERN.test(column.name))
+    .map((column) => {
+      const values = data.map((row) => Number(row[column.name])).filter(Number.isFinite);
+      const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+      const variance = values.length ? values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length : 0;
+      return { name: column.name, variance };
+    })
+    .filter((item) => item.variance > 0)
+    .sort((left, right) => right.variance - left.variance);
+  return scored[0]?.name ?? '';
 }
 
 function getPreferredDateColumn(columns: ColumnInfo[]) {
@@ -117,25 +128,12 @@ function inferSeriesProfile(data: DataRow[], dateColumn: string, targetColumn: s
 }
 
 function buildModelRecommendations(profile: ReturnType<typeof inferSeriesProfile>) {
-  const hasSeasonality = profile.usable_periods >= (profile.detected_frequency === 'month' ? 12 : profile.detected_frequency === 'quarter' ? 8 : 10);
   return [
     {
       model_type: 'sarima',
       model_name: 'SARIMA',
-      recommended: hasSeasonality,
-      recommendation_reason: hasSeasonality ? 'Recommended due to recurring seasonality and enough historical periods.' : 'Useful when you want an explicit seasonal statistical baseline.',
-    },
-    {
-      model_type: 'prophet',
-      model_name: 'Prophet',
-      recommended: !hasSeasonality,
-      recommendation_reason: !hasSeasonality ? 'Recommended when the series shows smoother trend movement and flexible seasonality.' : 'Alternative when you want trend-focused decomposition.',
-    },
-    {
-      model_type: 'arima',
-      model_name: 'ARIMA',
-      recommended: false,
-      recommendation_reason: 'Good fallback for short or relatively stable series without strong seasonal structure.',
+      recommended: true,
+      recommendation_reason: 'Time Series Forecast uses SARIMA only; pmdarima.auto_arima selects the fitted order for the detected frequency.',
     },
   ];
 }
@@ -153,6 +151,7 @@ export default function TimeSeriesForecastTab() {
 
   const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
   const dateColumns = useMemo(() => columns.filter((column) => column.role === 'datetime' || /date|month|time|period/i.test(column.name)), [columns]);
+  const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [dateColumn, setDateColumn] = useState('');
@@ -165,8 +164,8 @@ export default function TimeSeriesForecastTab() {
 
   useEffect(() => {
     if (!dateColumn) setDateColumn(getPreferredDateColumn(columns));
-    if (!targetColumn) setTargetColumn(getPreferredSalesColumn(columns));
-  }, [columns, dateColumn, targetColumn]);
+    if (!targetColumn && smartTargetColumn) setTargetColumn(smartTargetColumn);
+  }, [columns, dateColumn, targetColumn, smartTargetColumn]);
 
   useEffect(() => {
     if (storedResult) {
@@ -222,7 +221,7 @@ export default function TimeSeriesForecastTab() {
 
   const handleRun = async () => {
     if (!dateColumn || !targetColumn) {
-      toast({ title: 'Configuration incomplete', description: 'Choose both a date column and a sales target.', variant: 'destructive' });
+      toast({ title: 'Configuration incomplete', description: smartTargetColumn ? 'Choose both a date column and a sales target.' : 'No suitable numeric target was auto-detected. Please manually select the target column before running the forecast.', variant: 'destructive' });
       return;
     }
 
@@ -286,7 +285,7 @@ export default function TimeSeriesForecastTab() {
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary">{dateColumn || 'Pick a date column'}</Badge>
-                <Badge variant="secondary">{targetColumn || 'Pick a target column'}</Badge>
+                <Badge variant="secondary">{targetColumn ? `Target: ${targetColumn}` : 'Pick a target column'}</Badge>
                 <Badge variant="secondary">{forecastPeriods} future periods</Badge>
                 <Badge variant="secondary">{recommendations.find((item) => item.model_type === selectedModelType)?.model_name ?? 'TS model selected'}</Badge>
               </div>
@@ -352,7 +351,7 @@ export default function TimeSeriesForecastTab() {
               <Card>
                 <CardHeader>
                   <CardTitle>Step 1: Data Configuration</CardTitle>
-                  <CardDescription>Choose the date axis, sales target, and future horizon. Training parameters stay hidden until step 3.</CardDescription>
+                  <CardDescription>Choose the date axis, review the smart target default, and set the future horizon. Training parameters stay hidden until step 3.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -369,11 +368,15 @@ export default function TimeSeriesForecastTab() {
                         <SelectTrigger><SelectValue placeholder="Select sales target" /></SelectTrigger>
                         <SelectContent>{numericColumns.map((column) => <SelectItem key={column.name} value={column.name}>{column.name}</SelectItem>)}</SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">{smartTargetColumn ? `Smart default: ${smartTargetColumn}` : 'No suitable default found. Select the target manually.'}</p>
                     </div>
                   </div>
                   <div className="space-y-2">
                     <Label>Future Periods</Label>
-                    <Input type="number" min={1} max={24} value={forecastPeriods} onChange={(event) => setForecastPeriods(Math.max(1, Math.min(24, Number(event.target.value) || 1)))} />
+                    <Select value={String(forecastPeriods)} onValueChange={(value) => setForecastPeriods(Number(value))}>
+                      <SelectTrigger><SelectValue placeholder="Select horizon" /></SelectTrigger>
+                      <SelectContent>{HORIZON_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value} periods</SelectItem>)}</SelectContent>
+                    </Select>
                   </div>
                   <Card className="border border-primary/20 bg-primary/5">
                     <CardHeader className="pb-2">
@@ -486,9 +489,14 @@ export default function TimeSeriesForecastTab() {
                       <Card>
                         <CardHeader>
                           <CardTitle>Model Comparison</CardTitle>
-                          <CardDescription>Walk-forward validation across Prophet, SARIMA, XGBoost, and LightGBM candidates.</CardDescription>
+                          <CardDescription>SARIMA walk-forward validation with pmdarima.auto_arima order selection and simplified retry protection.</CardDescription>
                         </CardHeader>
                         <CardContent>
+                          {result.validation_warnings?.length ? (
+                            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                              {result.validation_warnings.join(' ')}
+                            </div>
+                          ) : null}
                           <Table>
                             <TableHeader><TableRow><TableHead>Model</TableHead><TableHead>Status</TableHead><TableHead>MAE</TableHead><TableHead>RMSE</TableHead><TableHead>MAPE</TableHead><TableHead>Availability / Training Note</TableHead></TableRow></TableHeader>
                             <TableBody>
