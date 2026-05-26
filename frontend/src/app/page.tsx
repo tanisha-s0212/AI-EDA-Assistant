@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import Image from 'next/image';
 import { useAppStore, TabId, AuthenticatedUser } from '@/lib/store';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -241,9 +240,9 @@ function BrandWordmark({
   );
 }
 
-function CompanyLogo({ compact = false }: { compact?: boolean }) {
-  const width = compact ? 112 : 148;
-  const height = compact ? 40 : 52;
+function CompanyLogo({ compact = false, mark = false }: { compact?: boolean; mark?: boolean }) {
+  const width = mark ? 48 : compact ? 112 : 148;
+  const height = mark ? 48 : compact ? 40 : 52;
 
   return (
     <img
@@ -251,44 +250,15 @@ function CompanyLogo({ compact = false }: { compact?: boolean }) {
       alt="Aroha Technologies logo"
       width={width}
       height={height}
-      className="h-auto w-auto shrink-0 object-contain mix-blend-multiply dark:mix-blend-screen"
+      className={cn(
+        'shrink-0 object-contain mix-blend-multiply dark:mix-blend-screen',
+        mark ? 'h-12 w-12' : 'h-auto w-auto'
+      )}
     />
   );
 }
 
-function ApplicationLogo({ compact = false }: { compact?: boolean }) {
-  const size = compact ? 44 : 62;
-
-  return (
-    <div
-      className={cn(
-        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/78 bg-white/94 shadow-[0_22px_52px_-30px_rgba(31,95,168,0.65)] ring-1 ring-white/72 backdrop-blur-2xl before:pointer-events-none before:absolute before:inset-x-2 before:top-0 before:h-px before:bg-white/95',
-        compact ? 'h-11 w-11' : 'h-[58px] w-[58px]'
-      )}
-    >
-      <Image
-        src="/app-logo.svg"
-        alt="Intelligent Data Assistant logo"
-        width={size}
-        height={size}
-        priority={false}
-        sizes={`${size}px`}
-        className="relative h-full w-full object-contain p-1.5 drop-shadow-[0_12px_22px_rgba(31,95,168,0.22)]"
-      />
-    </div>
-  );
-}
-
 function getUserInitials(user?: AuthenticatedUser | null) {
-  const source = user?.username || user?.email || 'User';
-  const parts = source.trim().split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-  }
-  return source.slice(0, 2).toUpperCase();
-}
-
-function getUserMonogram(user?: AuthenticatedUser | null) {
   const displayName = user?.username?.trim() || user?.email?.split('@')[0]?.trim() || 'User';
   const parts = displayName.split(/\s+/).filter(Boolean);
   const firstInitial = parts[0]?.[0] ?? 'U';
@@ -305,11 +275,21 @@ function maskEmail(value?: string | null) {
   return `${visibleName}@${visibleDomain}${domainRest.length ? `.${domainRest.join('.')}` : ''}`;
 }
 
-function UserAvatar({ user, className }: { user?: AuthenticatedUser | null; className?: string }) {
+function UserAvatar({
+  user,
+  className,
+  fallbackClassName,
+}: {
+  user?: AuthenticatedUser | null;
+  className?: string;
+  fallbackClassName?: string;
+}) {
+  const profileImage = user?.profileImageDataUrl?.trim() || undefined;
+  const displayName = user?.username?.trim() || user?.email?.split('@')[0]?.trim() || 'User profile';
   return (
-    <Avatar className={cn('border border-white/70 bg-white shadow-[0_14px_32px_-22px_rgba(31,95,168,0.55)]', className)}>
-      <AvatarImage src={user?.profileImageDataUrl ?? undefined} alt={user?.username ?? 'User profile'} className="object-cover" />
-      <AvatarFallback className="bg-[linear-gradient(135deg,#2f5fa8_0%,#4cb8f0_100%)] text-xs font-bold text-white">
+    <Avatar className={cn('overflow-hidden rounded-full border border-white/70 bg-[#2f5fa8] shadow-[0_14px_32px_-22px_rgba(31,95,168,0.55)]', className)}>
+      {profileImage ? <AvatarImage src={profileImage} alt={displayName} className="h-full w-full rounded-full object-cover" /> : null}
+      <AvatarFallback className={cn('rounded-full bg-[#2f5fa8] text-xs font-bold uppercase text-white', fallbackClassName)}>
         {getUserInitials(user)}
       </AvatarFallback>
     </Avatar>
@@ -345,7 +325,7 @@ function UserProfileDialog({
     setSelectedFile(null);
     setPreviewUrl(null);
     setIsEditing(false);
-  }, [currentUser.email, currentUser.username, open]);
+  }, [currentUser.email, currentUser.profileImageDataUrl, currentUser.username, open]);
 
   React.useEffect(() => {
     if (!selectedFile) {
@@ -358,7 +338,6 @@ function UserProfileDialog({
   }, [selectedFile]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isEditing) return;
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
     if (!file.type.startsWith('image/')) {
@@ -379,6 +358,8 @@ function UserProfileDialog({
       return;
     }
     setSelectedFile(file);
+    setIsEditing(true);
+    event.target.value = '';
   };
 
   const handleSaveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -454,15 +435,11 @@ function UserProfileDialog({
           <section className="grid gap-5 rounded-lg border border-slate-200/90 bg-white p-5 shadow-[0_20px_56px_-42px_rgba(31,95,168,0.42)] dark:border-white/10 dark:bg-white/8 md:grid-cols-[14rem_1fr]">
             <div className="flex flex-col items-center justify-center rounded-lg border border-slate-200/80 bg-[linear-gradient(180deg,#f8fbff,#eef5fb)] p-5 dark:border-white/10 dark:bg-white/5">
               <div className="relative">
-                <UserAvatar user={avatarPreviewUser} className="size-28 border-4 border-white shadow-[0_22px_48px_-28px_rgba(15,23,42,0.72)]" />
+                <UserAvatar user={avatarPreviewUser} className="size-28 border-4 border-white shadow-[0_22px_48px_-28px_rgba(15,23,42,0.72)]" fallbackClassName="text-3xl" />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={!isEditing}
-                  className={cn(
-                    'absolute -bottom-1 -right-1 flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-[linear-gradient(135deg,#1f6fb8_0%,#45b3e7_100%)] text-white shadow-[0_16px_34px_-18px_rgba(31,111,184,0.8)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105',
-                    !isEditing && 'cursor-not-allowed opacity-55 hover:translate-y-0 hover:brightness-100'
-                  )}
+                  className="absolute -bottom-1 -right-1 flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-[linear-gradient(135deg,#1f6fb8_0%,#45b3e7_100%)] text-white shadow-[0_16px_34px_-18px_rgba(31,111,184,0.8)] transition-all duration-300 hover:-translate-y-0.5 hover:brightness-105"
                   aria-label="Upload profile image"
                 >
                   <Camera className="h-4 w-4" />
@@ -509,7 +486,7 @@ function UserProfileDialog({
                 </div>
               </div>
 
-              <Button type="button" variant="outline" className="h-10 rounded-lg" onClick={() => fileInputRef.current?.click()} disabled={!isEditing}>
+              <Button type="button" variant="outline" className="h-10 rounded-lg" onClick={() => fileInputRef.current?.click()}>
                 <Upload className="mr-2 h-4 w-4" />
                 Choose Image
               </Button>
@@ -603,10 +580,9 @@ function SidebarContent({
       <div className="pointer-events-none absolute inset-x-0 top-0 h-44 bg-[radial-gradient(circle_at_24%_10%,rgba(96,165,250,0.22),transparent_44%),linear-gradient(180deg,rgba(255,255,255,0.58),transparent)] dark:bg-[radial-gradient(circle_at_24%_10%,rgba(96,165,250,0.16),transparent_44%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent)]" />
       {/* Logo */}
       <div className="relative px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
-        <div className="group relative overflow-hidden rounded-2xl border border-white/70 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(230,240,255,0.64))] p-4 shadow-[0_22px_58px_-34px_rgba(31,95,168,0.42)] ring-1 ring-blue-100/60 backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/86 hover:shadow-[0_26px_68px_-34px_rgba(31,95,168,0.5)] dark:border-white/10 dark:bg-[linear-gradient(145deg,rgba(255,255,255,0.1),rgba(76,184,240,0.08))] dark:ring-white/10">
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,0.44),transparent_46%,rgba(76,184,240,0.12))]" />
+        <div className="group relative bg-transparent p-0 shadow-none transition-all duration-300 hover:-translate-y-0.5 dark:bg-transparent dark:shadow-none">
           <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="relative flex items-center gap-3">
-            <span className="flex h-16 w-32 shrink-0 items-center justify-center rounded-xl border border-white/80 bg-white/82 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_34px_-26px_rgba(31,95,168,0.5)] transition group-hover:bg-white">
+            <span className="flex h-16 w-32 shrink-0 items-center justify-start bg-transparent shadow-none dark:bg-transparent dark:shadow-none">
               <CompanyLogo compact />
             </span>
             <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-white/70 bg-white/58 text-muted-foreground shadow-sm transition-all duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary dark:border-white/10 dark:bg-white/8">
@@ -704,9 +680,11 @@ function SidebarContent({
         >
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.62),transparent_48%,rgba(76,184,240,0.08))]" />
           <div className="relative flex items-center gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(135deg,#2f5fa8_0%,#4cb8f0_100%)] text-xs font-semibold text-white shadow-[0_12px_26px_-18px_rgba(31,95,168,0.8)] ring-2 ring-white/80 dark:ring-white/15">
-              {getUserMonogram(currentUser)}
-            </div>
+            <UserAvatar
+              user={currentUser}
+              className="h-8 w-8 shrink-0 border-0 shadow-[0_12px_26px_-18px_rgba(31,95,168,0.8)] ring-2 ring-white/80 dark:ring-white/15"
+              fallbackClassName="text-xs"
+            />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium leading-5 text-slate-900 dark:text-slate-50">
                 {displayName}
@@ -1040,11 +1018,13 @@ export default function HomePage() {
                         </Sheet>
                         <div className="min-w-0">
                           <div className="mb-3 text-xs font-semibold text-white/78">{activeTabMeta.label}</div>
-                          <div className="flex items-center gap-3">
-                            <ApplicationLogo />
-                            <div className="min-w-0 border-l border-white/14 pl-3">
-                              <p className="text-xs font-bold uppercase tracking-[0.22em] text-white/72">Aroha Technologies</p>
-                              <BrandWordmark inverted />
+                          <div className="flex items-center gap-4">
+                            <CompanyLogo mark />
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold uppercase tracking-widest text-white/72">AROHA TECHNOLOGIES</p>
+                              <h1 className="mt-1 text-3xl font-black leading-tight tracking-normal text-white sm:text-4xl">
+                                Intelligent Data Assistant
+                              </h1>
                             </div>
                           </div>
                           <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-white/84">
@@ -1174,12 +1154,12 @@ export default function HomePage() {
             </div>
           </div>
         </footer>
-        <div className="border-t border-white/45 bg-[linear-gradient(180deg,rgba(225,235,247,0.96),rgba(214,228,244,0.94))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(14,26,44,0.94),rgba(13,24,40,0.92))] sm:px-6 lg:px-8">
+        <div className="border-t border-white/45 bg-[linear-gradient(180deg,rgba(225,235,247,0.96),rgba(214,228,244,0.94))] px-4 py-3 backdrop-blur-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
-            <div className="relative min-w-0 overflow-hidden rounded-lg border border-[#cad5e4]/80 bg-[linear-gradient(90deg,rgba(255,255,255,0.72),rgba(241,247,255,0.88))] py-2 shadow-[0_14px_46px_-34px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/6">
-              <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(90deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
-              <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(270deg,rgba(18,32,52,0.94),rgba(18,32,52,0))]" />
-              <div className="footer-info-marquee flex w-max items-center gap-8 whitespace-nowrap px-4 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="relative min-w-0 overflow-hidden rounded-lg border border-[#cad5e4]/80 bg-[linear-gradient(90deg,rgba(255,255,255,0.72),rgba(241,247,255,0.88))] py-2 shadow-[0_14px_46px_-34px_rgba(31,95,168,0.38)] dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 dark:shadow-none">
+              <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(90deg,rgb(17,24,39),rgba(17,24,39,0))]" />
+              <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(270deg,rgb(17,24,39),rgba(17,24,39,0))]" />
+              <div className="footer-info-marquee flex w-max items-center gap-8 whitespace-nowrap px-4 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground dark:text-gray-400">
                 {Array.from({ length: 2 }).map((_, index) => (
                   <div key={index} className="flex items-center gap-8">
                     <span>Aroha Technologies</span>
@@ -1188,7 +1168,7 @@ export default function HomePage() {
                     <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
                     <span>AI-guided dataset understanding, analysis, and predictive modeling</span>
                     <span className="h-1.5 w-1.5 rounded-full bg-[#2f5fa8]/55 dark:bg-cyan-300/70" />
-                    <a className="inline-flex items-center gap-2 text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href={AROHA_WEBSITE_URL} target="_blank" rel="noopener noreferrer">
+                    <a className="inline-flex items-center gap-2 text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-blue-400 dark:hover:text-blue-300" href={AROHA_WEBSITE_URL} target="_blank" rel="noopener noreferrer">
                       Aroha Intelligent Platform
                       <ExternalLink className="h-3.5 w-3.5" />
                     </a>

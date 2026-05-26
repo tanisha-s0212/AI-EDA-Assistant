@@ -743,7 +743,7 @@ def summarize_response(response: Any) -> str:
 
 def session_dataset_id(session_id: str) -> str:
     session = ensure_session(session_id)
-    dataset_id = str(session.get('dataset_path') or session.get('dataset_id') or '')
+    dataset_id = str(session.get('dataset_id') or session.get('dataset_path') or '')
     if not dataset_id:
         raise HTTPException(status_code=422, detail='Agentic session is missing dataset context. Run Suggest Next Steps again.')
     return dataset_id
@@ -868,15 +868,74 @@ def execute_eda(session_id: str, request: Request) -> Any:
 
 def execute_data_cleaning(session_id: str, request: Request) -> Any:
     backend = get_backend_module()
-    payload = backend.ParquetCleaningRequest(
-        dataset_id=session_dataset_id(session_id),
-        remove_duplicates=True,
-        handle_missing=True,
-        convert_dates=True,
-        standardize_names=True,
-        infer_dtypes=True,
-    )
-    return backend.clean_dataset(payload, request)
+    dataset_id = session_dataset_id(session_id)
+    try:
+        dataset_cache = getattr(backend, 'DATASET_CACHE', {})
+        if dataset_id not in dataset_cache:
+            backend.logger.warning(
+                'Agentic data cleaning requested uncached dataset session_id=%s dataset_id=%s',
+                session_id,
+                dataset_id,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    'step': 'Data Cleaning',
+                    'code': 'dataset_not_cached',
+                    'message': 'Data Cleaning requires the cached dataset ID from the main upload flow.',
+                    'session_id': session_id,
+                    'dataset_id': dataset_id,
+                },
+            )
+
+        payload = backend.ParquetCleaningRequest(
+            dataset_id=dataset_id,
+            remove_duplicates=True,
+            handle_missing=True,
+            convert_dates=True,
+            standardize_names=True,
+            infer_dtypes=True,
+        )
+        # Route through the same handler used by the main Data Cleaning tab.
+        return backend.clean_dataset(payload, request)
+    except HTTPException as error:
+        backend.logger.warning(
+            'Agentic data cleaning failed session_id=%s dataset_id=%s status_code=%s detail=%s',
+            session_id,
+            dataset_id,
+            error.status_code,
+            error.detail,
+            exc_info=True,
+        )
+        if isinstance(error.detail, dict) and error.detail.get('step') == 'Data Cleaning':
+            raise
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={
+                'step': 'Data Cleaning',
+                'code': 'clean_dataset_failed',
+                'message': error.detail if isinstance(error.detail, str) else 'Dataset cleaning failed.',
+                'details': error.detail if isinstance(error.detail, dict) else None,
+                'session_id': session_id,
+                'dataset_id': dataset_id,
+            },
+        ) from error
+    except Exception as error:
+        backend.logger.exception(
+            'Unhandled agentic data cleaning exception session_id=%s dataset_id=%s',
+            session_id,
+            dataset_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                'step': 'Data Cleaning',
+                'code': 'clean_dataset_exception',
+                'message': f'Dataset cleaning failed: {error}',
+                'session_id': session_id,
+                'dataset_id': dataset_id,
+            },
+        ) from error
 
 
 def execute_time_series_forecast(session_id: str, request: Request) -> Any:
@@ -1253,6 +1312,20 @@ def execute_step(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
         prepare_next_recommendation(payload.session_id, payload.step_name)
         record_agentic_execution(payload.session_id, payload.step_name, 'completed', output_summary, None)
         return JSONResponse(content={'status': 'completed', 'output_summary': output_summary, 'next_recommendations': session['recommendations']})
+    except HTTPException as error:
+        session['steps'][payload.step_name] = 'failed'
+        session['updated_at'] = datetime.utcnow().isoformat()
+        error_detail = error.detail
+        error_message = error_detail.get('message') if isinstance(error_detail, dict) else str(error_detail)
+        record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, str(error_message))
+        return JSONResponse(
+            content={
+                'status': 'failed',
+                'output_summary': None,
+                'error': error_detail,
+            },
+            status_code=error.status_code,
+        )
     except Exception as error:
         session['steps'][payload.step_name] = 'failed'
         session['updated_at'] = datetime.utcnow().isoformat()

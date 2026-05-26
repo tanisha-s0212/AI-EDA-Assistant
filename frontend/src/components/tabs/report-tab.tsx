@@ -2,17 +2,15 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bot, BrainCircuit, Database, FileText, FilePenLine, Loader2, Sparkles, Target, TrendingUp, Upload } from 'lucide-react';
+import { Bot, BrainCircuit, CheckCircle2, Clock3, Database, Download, FileText, FilePenLine, Loader2, MinusCircle, Sparkles, Target, TrendingUp, Upload, type LucideIcon } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAppStore } from '@/lib/store';
 import { computeEdaStats } from '@/lib/eda';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
-import type { ProfitScenario, ReportConfig } from '@/types/forecast';
+import type { ProfitForecastResult, ReportConfig } from '@/types/forecast';
 
 const STEP_TAB_MAP = {
   1: 'upload',
@@ -26,6 +24,15 @@ const STEP_TAB_MAP = {
   9: 'ml',
   10: 'prediction',
 } as const;
+
+const DEFAULT_REPORT_CONFIG: ReportConfig = { includeLoss: true, includeProfit: true, scenario: 'baseline' };
+
+type ForecastSummaryCard = {
+  key: string;
+  title: string;
+  icon: LucideIcon;
+  rows: [string, string][];
+};
 
 function buildReportFileName(fileName: string | null, extension = 'pdf'): string {
   const baseName = (fileName ?? 'dataset')
@@ -103,6 +110,26 @@ function downloadBlobUrl(blobUrl: string, fileName: string) {
   document.body.removeChild(anchor);
 }
 
+function formatMetric(value: number | null | undefined, digits = 2): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: digits }) : 'N/A';
+}
+
+function formatCurrency(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+    : 'N/A';
+}
+
+function sumProfitRows(rows: ProfitForecastResult[] | undefined, key: 'net_profit' | 'gross_profit'): number | null {
+  if (!rows?.length) return null;
+  return rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
+}
+
+function averageGrossMargin(rows: ProfitForecastResult[] | undefined): number | null {
+  if (!rows?.length) return null;
+  return rows.reduce((total, row) => total + (Number(row.gross_margin_pct) || 0), 0) / rows.length;
+}
+
 export default function ReportTab() {
   const store = useAppStore();
   const {
@@ -111,7 +138,7 @@ export default function ReportTab() {
     cleaningLogs, cleaningDone, cleanedRowCount, aiInsights,
     targetColumn, problemType, selectedFeatures, selectedModel, modelMetrics, featureImportance,
     uploadedModel, predictionResult, predictionAnalysis, predictionProbabilities, predictionHistory,
-    timeSeriesForecastResult, mlForecastResult, lossForecast, profitForecast, lossSegments, scenarios, breakevenPeriod, modelTrained,
+    timeSeriesForecastResult, mlForecastResult, lossForecast, profitForecast, lossSegments, lossSummary, scenarios, breakevenPeriod, modelTrained,
     reportGenerated, reportUrl, setReportGenerated, setReportUrl, setActiveTab,
   } = store;
 
@@ -119,7 +146,7 @@ export default function ReportTab() {
   const [generating, setGenerating] = useState(false);
   const [generatingDocument, setGeneratingDocument] = useState(false);
   const [reportFileName, setReportFileName] = useState(() => buildReportFileName(fileName));
-  const [reportConfig, setReportConfig] = useState<ReportConfig>({ includeLoss: true, includeProfit: true, scenario: 'baseline' });
+  const generatedTimestamp = useMemo(() => new Date().toLocaleString(), []);
   const analysisData = cleanedData ?? rawData ?? [];
   const edaStats = useMemo(() => computeEdaStats(analysisData, columns), [analysisData, columns]);
 
@@ -226,34 +253,74 @@ export default function ReportTab() {
     breakevenPeriod, lossForecast, rawData, scenarios, selectedFeatures.length, selectedModel, targetColumn, timeSeriesForecastResult, totalRows,
   ]);
 
-  const reportNarrative = useMemo(() => {
-    const sections = [
-      'The PDF report compiles the application journey from ingestion through final prediction so the document mirrors how the user moved across the product.',
-      previewLoaded && (totalRows || rawData?.length || 0) > loadedRowCount
-        ? `Because this dataset was loaded as a responsive preview in the browser, the report will call out that ${loadedRowCount.toLocaleString()} rows were shown interactively while the backend kept the full ${(totalRows || rawData?.length || 0).toLocaleString()}-row dataset available for cleaning, forecasting, and training.`
-        : 'This dataset was fully loaded in the active workspace, so the report can describe the in-app view and backend processing scope as the same dataset slice.',
-      cleaningDone
-        ? 'Because cleaning was completed, the report can anchor all later steps to the cleaned cached dataset rather than the original raw preview.'
-        : 'Cleaning has not been completed, so the report may contain a less stable workflow narrative.',
-      timeSeriesForecastResult || mlForecastResult
-        ? 'Forecasting sections will be included conditionally based on which forecasting tabs were run in this session.'
-        : 'Forecasting sections will be omitted because no forecast results are currently available.',
-      lossForecast?.length
-        ? 'Loss forecast results can be included as a dedicated risk and value-erosion section.'
-        : 'Loss forecast results are not available yet; run Loss Forecast to include loss risk analysis.',
-      scenarios?.baseline?.length
-        ? 'Profit forecast scenarios can be included with the selected scenario emphasized in the report.'
-        : 'Profit forecast scenarios are not available yet; run Profit Forecast to include P&L projections.',
-      predictionResult !== null
-        ? 'The report will close with the final prediction result and supporting model context.'
-        : 'The report will still generate without a prediction, but the final outcome section will be lighter.',
-    ];
-    return sections;
-  }, [cleaningDone, loadedRowCount, lossForecast?.length, mlForecastResult, predictionResult, previewLoaded, rawData, scenarios?.baseline?.length, timeSeriesForecastResult, totalRows]);
-
   const completedSteps = workflowSteps.filter((step) => step.status === 'Completed').length;
   const pendingSteps = workflowSteps.filter((step) => step.status === 'Pending').length;
   const optionalSteps = workflowSteps.filter((step) => step.status === 'Skipped').length;
+  const forecastSummaries = useMemo(() => {
+    const summaries: ForecastSummaryCard[] = [];
+    if (timeSeriesForecastResult) {
+      summaries.push({
+        key: 'ts',
+        title: 'TS Forecast',
+        icon: TrendingUp,
+        rows: [
+          ['Model', timeSeriesForecastResult.training_summary.model_name],
+          ['MAE', formatMetric(timeSeriesForecastResult.metrics.mae)],
+          ['RMSE', formatMetric(timeSeriesForecastResult.metrics.rmse)],
+          ['Future Periods', String(timeSeriesForecastResult.future_forecast.length || timeSeriesForecastResult.training_summary.forecast_periods)],
+        ],
+      });
+    }
+    if (mlForecastResult) {
+      const forecastValues = mlForecastResult.future_forecast.slice(0, 3).map((point) => formatMetric(point.predicted)).join(', ');
+      const topFeatures = (mlForecastResult.shap_feature_importance?.length
+        ? mlForecastResult.shap_feature_importance.slice(0, 3).map((feature) => feature.name)
+        : mlForecastResult.generated_features.slice(0, 3)
+      ).join(', ');
+      summaries.push({
+        key: 'ml',
+        title: 'ML Forecast',
+        icon: BrainCircuit,
+        rows: [
+          ['Model', mlForecastResult.training_summary.model_name],
+          ['Top Features', topFeatures || 'N/A'],
+          ['Forecast Values', forecastValues || 'N/A'],
+          ['Future Periods', String(mlForecastResult.future_forecast.length)],
+        ],
+      });
+    }
+    if (lossForecast?.length) {
+      const totalLoss = lossSummary?.total_loss ?? lossForecast.reduce((total, row) => total + (Number(row.total_loss) || 0), 0);
+      const averageRisk = lossSummary?.average_risk_score ?? lossForecast.reduce((total, row) => total + (Number(row.loss_risk_score) || 0), 0) / lossForecast.length;
+      summaries.push({
+        key: 'loss',
+        title: 'Loss Forecast',
+        icon: Target,
+        rows: [
+          ['Total Loss', formatCurrency(totalLoss)],
+          ['Top Driver', lossSummary?.top_loss_driver ?? 'N/A'],
+          ['Risk Score', formatMetric(averageRisk)],
+          ['Periods', String(lossForecast.length)],
+        ],
+      });
+    }
+    if (scenarios?.baseline?.length || profitForecast?.length) {
+      const baselineRows = scenarios?.baseline ?? profitForecast ?? [];
+      summaries.push({
+        key: 'profit',
+        title: 'Profit Forecast',
+        icon: Sparkles,
+        rows: [
+          ['Optimistic Net', formatCurrency(sumProfitRows(scenarios?.optimistic, 'net_profit'))],
+          ['Baseline Net', formatCurrency(sumProfitRows(baselineRows, 'net_profit'))],
+          ['Pessimistic Net', formatCurrency(sumProfitRows(scenarios?.pessimistic, 'net_profit'))],
+          ['Gross Margin', averageGrossMargin(baselineRows) === null ? 'N/A' : `${formatMetric(averageGrossMargin(baselineRows), 1)}%`],
+        ],
+      });
+    }
+    return summaries;
+  }, [lossForecast, lossSummary, mlForecastResult, profitForecast, scenarios, timeSeriesForecastResult]);
+
   const reportPayload = useMemo(() => sanitizeForJson({
     datasetId: datasetId ?? null,
     sessionId: datasetId ?? null,
@@ -290,12 +357,12 @@ export default function ReportTab() {
       ...mlForecastResult,
       training_summary: normalizeForecastTrainingSummary(mlForecastResult.training_summary),
     } : null,
-    lossForecast: reportConfig.includeLoss ? lossForecast ?? [] : [],
-    profitForecast: reportConfig.includeProfit ? scenarios?.[reportConfig.scenario] ?? profitForecast ?? [] : [],
-    lossSegments: reportConfig.includeLoss ? lossSegments ?? [] : [],
-    scenarios: reportConfig.includeProfit ? scenarios : null,
+    lossForecast: lossForecast ?? [],
+    profitForecast: scenarios?.[DEFAULT_REPORT_CONFIG.scenario] ?? profitForecast ?? [],
+    lossSegments: lossSegments ?? [],
+    scenarios,
     breakevenPeriod,
-    reportConfig,
+    reportConfig: DEFAULT_REPORT_CONFIG,
     forecastingStepsCompleted: [
       ...(timeSeriesForecastResult ? [5] : []),
       ...(mlForecastResult ? [6] : []),
@@ -310,7 +377,7 @@ export default function ReportTab() {
   }), [
     aiInsights, cleanedData?.length, cleanedRowCount, cleaningDone, cleaningLogs, columns, datasetId, duplicates, edaStats, featureImportance,
     fileName, memoryUsage, mlForecastResult, modelMetrics, predictionAnalysis, predictionHistory, predictionProbabilities, predictionResult,
-    loadedRowCount, lossForecast, lossSegments, previewLoaded, problemType, profitForecast, rawData?.length, reportConfig, scenarios, selectedFeatures,
+    loadedRowCount, lossForecast, lossSegments, previewLoaded, problemType, profitForecast, rawData?.length, scenarios, selectedFeatures,
     selectedModel, targetColumn, timeSeriesForecastResult, totalRows, uploadedModel, breakevenPeriod,
   ]);
 
@@ -414,12 +481,12 @@ export default function ReportTab() {
 
   if (!rawData) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-center">
-        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+      <div className="flex flex-col items-center justify-center py-20 text-center dark:bg-gray-900">
+        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 dark:bg-gray-800 dark:text-blue-300">
           <FileText className="h-10 w-10" />
         </div>
-        <h2 className="mt-6 text-xl font-bold">No Data Available</h2>
-        <p className="mt-2 max-w-md text-sm text-muted-foreground">Upload a dataset and complete the workflow to generate the final report.</p>
+        <h2 className="mt-6 text-xl font-bold text-gray-950 dark:text-gray-100">No Data Available</h2>
+        <p className="mt-2 max-w-md text-sm text-gray-600 dark:text-gray-400">Upload a dataset and complete the workflow to generate the final report.</p>
         <Button onClick={() => setActiveTab('upload')} className="mt-6 gap-2">
           <Database className="h-4 w-4" />
           Go To Upload
@@ -429,74 +496,79 @@ export default function ReportTab() {
   }
 
   return (
-    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-      <Card className="overflow-hidden border-primary/20 bg-primary text-primary-foreground">
-        <CardContent className="p-8">
-          <div className="flex items-start gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-primary-foreground/10 p-2 text-primary-foreground shadow-lg shadow-black/10">
-              <Bot className="h-8 w-8" />
-            </div>
-            <div className="max-w-4xl">
-              <h1 className="text-2xl font-bold tracking-tight">Generate Final Workflow Report</h1>
-              <p className="mt-2 text-sm text-primary-foreground/80">
-                This tab is now focused on one job: generate presentation-ready workflow reports that package the complete application process from data upload through data understanding, exploratory data analysis, data cleaning, forecasting, ML training, and final prediction.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{fileName ?? 'Untitled Dataset'}</Badge>
-                <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{completedSteps}/10 steps completed</Badge>
-                <Badge className="border-primary-foreground/15 bg-primary-foreground/10 text-primary-foreground">{(cleanedRowCount ?? totalRows ?? rawData.length).toLocaleString()} rows in final flow</Badge>
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 dark:bg-gray-900">
+      <Card className="overflow-hidden border-blue-500/20 bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-950/20 dark:border-blue-400/20 dark:shadow-black/30">
+        <CardContent className="p-6 md:p-8">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex gap-4">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-white/15 p-2 text-white shadow-lg shadow-black/10">
+                <Bot className="h-8 w-8" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Intelligent Data Assistant — Analysis Report</h1>
+                <div className="mt-3 flex flex-wrap gap-2 text-sm text-blue-50">
+                  <Badge className="border-white/15 bg-white/10 text-white hover:bg-white/15">{fileName ?? 'Untitled Dataset'}</Badge>
+                  <Badge className="border-white/15 bg-white/10 text-white hover:bg-white/15">Generated {generatedTimestamp}</Badge>
+                  <Badge className="border-white/15 bg-white/10 text-white hover:bg-white/15">{(cleanedRowCount ?? totalRows ?? rawData.length).toLocaleString()} rows</Badge>
+                </div>
               </div>
             </div>
+            <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
+              <Button type="button" onClick={handleDownloadReport} className="gap-2 bg-white text-blue-700 hover:bg-blue-50 dark:bg-gray-100 dark:text-blue-700 dark:hover:bg-white">
+                <Download className="h-4 w-4" />
+                Download PDF
+              </Button>
+              <Button type="button" onClick={handleDownloadForecastWorkbook} className="gap-2 bg-white/10 text-white ring-1 ring-white/25 hover:bg-white/20">
+                <Database className="h-4 w-4" />
+                Download Excel
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-8 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-white/15 bg-white/10 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-emerald-100">
+                <CheckCircle2 className="h-4 w-4 text-emerald-300" />
+                Completed
+              </div>
+              <p className="mt-2 text-3xl font-bold">{completedSteps}</p>
+            </div>
+            <div className="rounded-xl border border-white/15 bg-white/10 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-amber-100">
+                <Clock3 className="h-4 w-4 text-amber-300" />
+                Pending
+              </div>
+              <p className="mt-2 text-3xl font-bold">{pendingSteps}</p>
+            </div>
+            <div className="rounded-xl border border-white/15 bg-white/10 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
+                <MinusCircle className="h-4 w-4 text-slate-300" />
+                Skipped
+              </div>
+              <p className="mt-2 text-3xl font-bold">{optionalSteps}</p>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
         <CardHeader>
-          <CardTitle>Forecast Report Options</CardTitle>
-          <CardDescription>Choose the new forecast sections and the scenario emphasized in the generated report.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
-          <label className="flex items-center gap-3 rounded-2xl border p-4">
-            <Checkbox checked={reportConfig.includeLoss} onCheckedChange={(checked) => setReportConfig((current) => ({ ...current, includeLoss: Boolean(checked) }))} />
-            <span className="font-medium">Include Loss Forecast Section</span>
-          </label>
-          <label className="flex items-center gap-3 rounded-2xl border p-4">
-            <Checkbox checked={reportConfig.includeProfit} onCheckedChange={(checked) => setReportConfig((current) => ({ ...current, includeProfit: Boolean(checked) }))} />
-            <span className="font-medium">Include Profit Forecast Section</span>
-          </label>
-          <div className="space-y-2">
-            <p className="text-sm font-medium">Select scenario for report</p>
-            <Select value={reportConfig.scenario} onValueChange={(value) => setReportConfig((current) => ({ ...current, scenario: value as ProfitScenario }))}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="optimistic">Optimistic</SelectItem>
-                <SelectItem value="baseline">Baseline</SelectItem>
-                <SelectItem value="pessimistic">Pessimistic</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Workflow Steps In Report</CardTitle>
-          <CardDescription>The PDF uses this application storyline so the report reads like the same guided process the user completed inside the product.</CardDescription>
+          <CardTitle className="text-gray-950 dark:text-gray-100">Workflow Steps In Report</CardTitle>
+          <CardDescription className="dark:text-gray-400">The PDF uses this application storyline so the report reads like the same guided process the user completed inside the product.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-border bg-card p-4">
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Completed</p>
-              <p className="mt-2 text-2xl font-semibold text-primary">{completedSteps}</p>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Completed</p>
+              <p className="mt-2 text-2xl font-semibold text-blue-600 dark:text-blue-400">{completedSteps}</p>
             </div>
-            <div className="rounded-2xl border border-border bg-card p-4">
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Pending</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">{pendingSteps}</p>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Pending</p>
+              <p className="mt-2 text-2xl font-semibold text-gray-950 dark:text-gray-100">{pendingSteps}</p>
             </div>
-            <div className="rounded-2xl border border-border bg-card p-4">
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Optional Skipped</p>
-              <p className="mt-2 text-2xl font-semibold text-muted-foreground">{optionalSteps}</p>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Skipped</p>
+              <p className="mt-2 text-2xl font-semibold text-gray-500 dark:text-gray-400">{optionalSteps}</p>
             </div>
           </div>
 
@@ -505,30 +577,30 @@ export default function ReportTab() {
             return (
               <div
                 key={step.step}
-                className={`rounded-2xl border p-4 transition-colors ${
+                className={`rounded-xl border border-l-4 p-4 transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:bg-gray-800 ${
                   step.status === 'Completed'
-                    ? 'border-primary/20 bg-primary/5'
+                    ? 'border-gray-200 border-l-emerald-500 bg-emerald-50/50 dark:border-gray-700 dark:border-l-emerald-400 dark:bg-gray-800'
                     : step.status === 'Skipped'
-                    ? 'border-border bg-secondary/40'
-                    : 'bg-card'
+                    ? 'border-gray-200 border-l-gray-400 bg-gray-50 dark:border-gray-700 dark:border-l-gray-500 dark:bg-gray-800'
+                    : 'border-gray-200 border-l-amber-500 bg-amber-50/40 dark:border-gray-700 dark:border-l-amber-400 dark:bg-gray-800'
                 }`}
               >
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="flex gap-4">
-                    <div className={`flex h-11 w-11 items-center justify-center rounded-xl border ${step.status === 'Completed' ? 'border-primary/20 bg-primary/10 text-primary' : step.status === 'Skipped' ? 'border-border bg-secondary text-secondary-foreground' : 'border-border bg-muted/30 text-muted-foreground'}`}>
+                    <div className={`flex h-11 w-11 items-center justify-center rounded-xl border ${step.status === 'Completed' ? 'border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : step.status === 'Skipped' ? 'border-gray-200 bg-gray-100 text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400' : 'border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300'}`}>
                       <Icon className="h-5 w-5" />
                     </div>
                     <div className="max-w-3xl">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold">{step.title}</p>
-                        <Badge variant={step.status === 'Completed' ? 'secondary' : 'outline'}>{step.status}</Badge>
+                        <p className="text-sm font-semibold text-gray-950 dark:text-gray-100">{step.title}</p>
+                        <Badge variant={step.status === 'Completed' ? 'secondary' : 'outline'} className="dark:border-gray-700 dark:text-gray-100">{step.status}</Badge>
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.detail}</p>
+                      <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">{step.detail}</p>
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2 pl-[60px] lg:pl-0">
-                    <Button variant="ghost" size="sm" className="rounded-xl px-4" onClick={() => setActiveTab(STEP_TAB_MAP[step.step as keyof typeof STEP_TAB_MAP])}>
-                      Open Step
+                    <Button variant="outline" size="sm" className="h-8 rounded-full border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/60" onClick={() => setActiveTab(STEP_TAB_MAP[step.step as keyof typeof STEP_TAB_MAP])}>
+                      View
                     </Button>
                   </div>
                 </div>
@@ -538,19 +610,37 @@ export default function ReportTab() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>What The PDF Will Capture</CardTitle>
-          <CardDescription>This final export is designed to read like an executive presentation deck, not just a raw tab dump.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {reportNarrative.map((line) => (
-            <div key={line} className="rounded-xl border border-border bg-muted/20 p-4 text-sm leading-6 text-muted-foreground">
-              {line}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+      {forecastSummaries.length > 0 && (
+        <Card className="border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+          <CardHeader>
+            <CardTitle className="text-gray-950 dark:text-gray-100">Forecast Summary</CardTitle>
+            <CardDescription className="dark:text-gray-400">Forecast metrics are shown only for workflow branches that have actually been run.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 lg:grid-cols-2">
+            {forecastSummaries.map((summary) => {
+              const Icon = summary.icon;
+              return (
+                <div key={summary.key} className="rounded-xl border border-gray-200 bg-white p-5 transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-gray-700 dark:bg-gray-800">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-300">
+                      <Icon className="h-5 w-5" />
+                    </div>
+                    <h3 className="font-semibold text-gray-950 dark:text-gray-100">{summary.title}</h3>
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    {summary.rows.map(([label, value]) => (
+                      <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900">
+                        <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">{label}</p>
+                        <p className="mt-1 break-words text-sm font-semibold text-gray-950 dark:text-gray-100">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="space-y-3">
         <Button type="button" onClick={handleGenerate} disabled={generating} size="lg" className="h-14 w-full gap-3 text-base font-semibold">
@@ -558,11 +648,11 @@ export default function ReportTab() {
           {generating ? 'Generating Final PDF Report...' : reportGenerated ? 'Generate Fresh PDF Snapshot' : 'Generate Final PDF Report'}
         </Button>
         {reportGenerated && (
-          <Card className="border-primary/20 bg-primary/5">
+          <Card className="border-blue-200 bg-blue-50 dark:border-gray-700 dark:bg-gray-800">
             <CardContent className="flex flex-col gap-4 p-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-sm font-semibold text-primary">Report ready for export</p>
-                <p className="mt-1 text-sm text-muted-foreground">
+                <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">Report ready for export</p>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
                   Download the polished presentation-style PDF for distribution, or export the editable Word-compatible document for revision and stakeholder tailoring.
                 </p>
               </div>
