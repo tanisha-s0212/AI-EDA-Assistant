@@ -43,6 +43,7 @@ import {
   MapPin,
   Phone,
   Wrench,
+  X,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -710,21 +711,64 @@ function SidebarContent({
   );
 }
 
-function AgenticCoreLauncher({ onOpen }: { onOpen: () => void }) {
+const AGENTIC_TOOLTIP_STORAGE_KEY = 'ida_agent_tooltip_dismissed';
+
+function AgenticCoreLauncher({ onOpen, isProcessing }: { onOpen: () => void; isProcessing: boolean }) {
+  const [showTooltip, setShowTooltip] = React.useState(false);
+
+  React.useEffect(() => {
+    try {
+      setShowTooltip(window.localStorage.getItem(AGENTIC_TOOLTIP_STORAGE_KEY) !== 'true');
+    } catch {
+      setShowTooltip(false);
+    }
+  }, []);
+
+  const dismissTooltip = () => {
+    try {
+      window.localStorage.setItem(AGENTIC_TOOLTIP_STORAGE_KEY, 'true');
+    } catch {
+      // Ignore storage failures; the button should remain usable.
+    }
+    setShowTooltip(false);
+  };
+
   return (
-    <button
-      type="button"
-      aria-label="Open IDA Agentic Core"
-      onClick={onOpen}
-      className="fixed bottom-6 right-6 z-[70] inline-flex min-h-12 items-center gap-2.5 rounded-xl border border-white/30 bg-[linear-gradient(135deg,#111827_0%,#087a76_58%,#315fce_100%)] py-2 pl-2.5 pr-4 text-left text-white shadow-[0_20px_52px_-24px_rgba(17,24,39,0.48)] ring-1 ring-blue-100/20 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_58px_-24px_rgba(17,24,39,0.58)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
-    >
-      <span className="grid h-8 w-8 place-items-center rounded-lg bg-white/18 text-[10px] font-extrabold tracking-[0.04em]">IDA</span>
-      <span className="flex flex-col leading-none">
-        <span className="text-[13px] font-extrabold">Agentic Core</span>
-        <span className="mt-1 text-[10px] font-semibold text-white/72">Open workspace</span>
-      </span>
-      <BrainCircuit className="h-3.5 w-3.5 text-white/72" />
-    </button>
+    <div className="fixed bottom-6 right-6 z-[9999] flex flex-col items-end gap-3">
+      {showTooltip && (
+        <div className="relative max-w-[260px] rounded-lg border border-slate-200 bg-white px-4 py-3 pr-10 text-sm font-medium leading-5 text-slate-800 shadow-[0_22px_58px_-26px_rgba(15,23,42,0.45)] ring-1 ring-slate-900/5 dark:border-white/10 dark:bg-slate-950 dark:text-slate-100 dark:ring-white/10">
+          <button
+            type="button"
+            aria-label="Dismiss Agentic Core tip"
+            onClick={dismissTooltip}
+            className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+          Your AI agent — click to automate your full workflow
+          <span className="absolute -bottom-1.5 right-8 h-3 w-3 rotate-45 border-b border-r border-slate-200 bg-white dark:border-white/10 dark:bg-slate-950" />
+        </div>
+      )}
+      <button
+        type="button"
+        aria-label="Open IDA Agentic Core"
+        onClick={onOpen}
+        className="inline-flex min-h-12 items-center gap-2.5 rounded-full border border-slate-200/80 bg-white py-2 pl-2 pr-3.5 text-left text-slate-900 shadow-[0_20px_52px_-24px_rgba(17,24,39,0.44)] ring-1 ring-slate-900/5 transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_24px_58px_-24px_rgba(17,24,39,0.54)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-white/12 dark:bg-slate-950 dark:text-white dark:ring-white/10"
+      >
+        <span className="grid h-8 w-8 place-items-center rounded-full bg-[linear-gradient(135deg,#234e9e_0%,#2f5fa8_48%,#4cb8f0_100%)] text-[10px] font-extrabold tracking-normal text-white shadow-[0_10px_22px_-14px_rgba(47,95,168,0.9)]">
+          IDA
+        </span>
+        <span className="text-[13px] font-medium leading-none">Agentic Core</span>
+        {isProcessing ? (
+          <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" aria-label="Agent processing" />
+        ) : (
+          <span className="relative flex h-3.5 w-3.5 items-center justify-center" aria-label="Agent ready">
+            <span className="absolute h-3.5 w-3.5 animate-ping rounded-full bg-emerald-400/55" />
+            <span className="relative h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-100 dark:ring-emerald-400/20" />
+          </span>
+        )}
+      </button>
+    </div>
   );
 }
 
@@ -751,6 +795,7 @@ export default function HomePage() {
     hasHydrated,
     // # AGENTIC LAYER START
     agenticEnabled,
+    agenticStepStatuses,
     // # AGENTIC LAYER END
   } = useAppStore();
   const { toast } = useToast();
@@ -778,6 +823,7 @@ export default function HomePage() {
   const activeDatasetId = activeDataset?.datasetId ?? null;
   const hasWorkspace = Boolean(rawData?.length || activeDatasetId || displayTotalRows);
   const hasDatasetLibrary = availableDatasets.length > 0;
+  const isAgenticProcessing = Object.values(agenticStepStatuses).some((status) => status === 'running');
   const sessionContinuity = getSessionContinuityLabel(recentActivity?.createdAt ?? null);
   const liveIndiaTime = formatIndiaTime(currentTime);
   const liveIndiaDate = formatIndiaDate(currentTime);
@@ -970,7 +1016,7 @@ export default function HomePage() {
       <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col border-r border-white/60 bg-[linear-gradient(180deg,rgba(237,241,246,0.92),rgba(225,235,247,0.82))] shadow-[18px_0_70px_-46px_rgba(31,95,168,0.5)] backdrop-blur-2xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(20,36,58,0.94),rgba(15,29,48,0.88))] lg:flex">
         <SidebarContent currentUser={currentUser} onLogout={() => void handleLogout()} onProfileUpdated={setCurrentUser} />
       </aside>
-      {agenticEnabled && <AgenticCoreLauncher onOpen={() => setAgenticWorkspaceOpen(true)} />}
+      {agenticEnabled && <AgenticCoreLauncher onOpen={() => setAgenticWorkspaceOpen(true)} isProcessing={isAgenticProcessing} />}
       <Dialog open={agenticWorkspaceOpen} onOpenChange={setAgenticWorkspaceOpen}>
         <DialogContent className="max-h-[88vh] overflow-y-auto rounded-xl border border-white/80 bg-[#f5f8fc] p-4 shadow-[0_34px_110px_-40px_rgba(8,24,58,0.55)] dark:border-white/12 dark:bg-[#101b2c] sm:max-w-6xl">
           <DialogHeader className="text-left">
@@ -1134,31 +1180,25 @@ export default function HomePage() {
         </main>
 
         {/* Footer */}
-        <footer className="mt-auto border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(18,32,52,0.94),rgba(18,32,52,0.88))] sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-7xl">
-            <div className="overflow-hidden rounded-xl border border-white/75 bg-white/78 px-5 py-4 text-[#1f3340] shadow-[0_18px_56px_-38px_rgba(31,95,168,0.3)] backdrop-blur-xl transition-all duration-300 hover:shadow-[0_22px_66px_-40px_rgba(31,95,168,0.38)] dark:border-white/10 dark:bg-white/8 dark:text-slate-100">
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-semibold text-muted-foreground">
-                <span className="inline-flex items-center gap-2 whitespace-nowrap">
-                  <MapPin className="h-4 w-4 text-[#2f5fa8] dark:text-cyan-300" />
-                  Bangalore
-                </span>
-                <a className="inline-flex items-center gap-2 whitespace-nowrap text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="mailto:hr@aroha.co.in">
-                  <Mail className="h-4 w-4" />
-                  hr@aroha.co.in
-                </a>
-                <a className="inline-flex items-center gap-2 whitespace-nowrap text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="tel:+919886228615">
-                  <Phone className="h-4 w-4" />
-                  +91 9886228615
-                </a>
-              </div>
+        <footer className="mt-auto rounded-t-xl border-t border-white/45 bg-[linear-gradient(180deg,rgba(237,241,246,0.96),rgba(230,238,248,0.92))] px-4 py-3 text-muted-foreground shadow-[0_-14px_46px_-34px_rgba(31,95,168,0.38)] backdrop-blur-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 sm:px-6 lg:px-8">
+          <div className="mx-auto flex h-12 max-w-7xl items-center gap-6 overflow-hidden">
+            <div className="flex shrink-0 items-center gap-5 text-sm font-semibold">
+              <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                <MapPin className="h-4 w-4 text-[#2f5fa8] dark:text-cyan-300" />
+                Bangalore
+              </span>
+              <a className="inline-flex items-center gap-2 whitespace-nowrap text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="mailto:hr@aroha.co.in">
+                <Mail className="h-4 w-4" />
+                hr@aroha.co.in
+              </a>
+              <a className="inline-flex items-center gap-2 whitespace-nowrap text-[#2f5fa8] transition-colors hover:text-[#234e9e] dark:text-cyan-300 dark:hover:text-cyan-200" href="tel:+919886228615">
+                <Phone className="h-4 w-4" />
+                +91 9886228615
+              </a>
             </div>
-          </div>
-        </footer>
-        <div className="border-t border-white/45 bg-[linear-gradient(180deg,rgba(225,235,247,0.96),rgba(214,228,244,0.94))] px-4 py-3 backdrop-blur-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-7xl">
-            <div className="relative min-w-0 overflow-hidden rounded-lg border border-[#cad5e4]/80 bg-[linear-gradient(90deg,rgba(255,255,255,0.72),rgba(241,247,255,0.88))] py-2 shadow-[0_14px_46px_-34px_rgba(31,95,168,0.38)] dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 dark:shadow-none">
-              <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(90deg,rgb(17,24,39),rgba(17,24,39,0))]" />
-              <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(255,255,255,0.94),rgba(255,255,255,0))] dark:bg-[linear-gradient(270deg,rgb(17,24,39),rgba(17,24,39,0))]" />
+            <div className="relative min-w-0 flex-1 overflow-hidden py-2">
+              <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-[linear-gradient(90deg,rgba(237,241,246,0.96),rgba(237,241,246,0))] dark:bg-[linear-gradient(90deg,rgb(17,24,39),rgba(17,24,39,0))]" />
+              <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-[linear-gradient(270deg,rgba(230,238,248,0.92),rgba(230,238,248,0))] dark:bg-[linear-gradient(270deg,rgb(17,24,39),rgba(17,24,39,0))]" />
               <div className="footer-info-marquee flex w-max items-center gap-8 whitespace-nowrap px-4 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground dark:text-gray-400">
                 {Array.from({ length: 2 }).map((_, index) => (
                   <div key={index} className="flex items-center gap-8">
@@ -1177,7 +1217,7 @@ export default function HomePage() {
               </div>
             </div>
           </div>
-        </div>
+        </footer>
       </div>
     </div>
   );

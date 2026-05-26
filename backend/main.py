@@ -7255,6 +7255,8 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
     workflow_status = 'Complete workflow captured' if payload.predictionResult is not None else 'Workflow summary generated'
     forecast_status = ', '.join(name for name, present in [('Time Series', bool(ts_result)), ('ML Forecast', bool(ml_forecast_result))] if present) or 'No forecasting branch executed'
     prediction_value = escape(str(payload.predictionResult if payload.predictionResult is not None else 'Pending'))
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M')
+    generation_date = datetime.now().strftime('%Y-%m-%d')
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -7262,80 +7264,93 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
   <title>{escape(payload.fileName)} Workflow Report</title>
   <style>
     @page {{ size: A4 landscape; margin: 0.6in; }}
-    body {{ font-family: Arial, sans-serif; color: #1e293b; margin: 0; line-height: 1.5; background: #f8fafc; }}
+    body {{ font-family: Arial, Helvetica, sans-serif; color: #1e293b; margin: 0; line-height: 1.5; background: #f8fafc; }}
     .page {{ page-break-after: always; padding: 8px 0 16px; }}
     .page:last-child {{ page-break-after: auto; }}
     .hero {{
-      background: linear-gradient(135deg, #0f766e 0%, #0f172a 100%);
-      color: white;
+      background: #0f172a;
+      border-bottom: 8px solid #1e3a5f;
+      color: #ffffff;
       padding: 28px;
-      border-radius: 24px;
-      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+      border-radius: 14px;
     }}
-    .eyebrow {{ font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #a5f3fc; }}
-    .hero h1 {{ margin: 10px 0 8px; font-size: 34px; line-height: 1.05; color: white; }}
-    .hero p {{ margin: 0; color: #dbeafe; font-size: 15px; max-width: 860px; }}
+    .eyebrow {{ font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #e2e8f0; }}
+    .hero h1 {{ margin: 10px 0 8px; font-size: 34px; line-height: 1.05; color: #ffffff; }}
+    .hero p {{ margin: 0; color: #e2e8f0 !important; font-size: 15px; max-width: 860px; }}
     .hero-grid, .stats {{ width: 100%; border-collapse: separate; border-spacing: 12px; margin-top: 20px; }}
     .hero-card, .stat {{
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(165,243,252,0.28);
-      border-radius: 18px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
       padding: 14px;
       vertical-align: top;
     }}
-    .label {{ font-size: 10px; color: #a5f3fc; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; }}
-    .value {{ font-size: 22px; font-weight: 700; margin-top: 8px; color: white; }}
+    .label {{ font-size: 10px; color: #475569; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; }}
+    .value {{ font-size: 22px; font-weight: 700; margin-top: 8px; color: #0369a1; }}
     .deck-title {{ font-size: 24px; color: #0f172a; margin: 26px 0 10px; }}
     .summary {{
-      background: white;
-      border: 1px solid #dbe4f0;
-      border-radius: 20px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
       padding: 18px 20px;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
       margin-top: 18px;
     }}
     .summary strong {{ color: #0f172a; }}
     .section {{
-      background: white;
-      border: 1px solid #dbe4f0;
-      border-radius: 20px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
       padding: 22px;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
       margin-top: 18px;
     }}
-    .section-label {{ font-size: 10px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #0284c7; }}
+    .section-label {{ font-size: 10px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #475569; }}
     h2 {{ color: #0f172a; margin: 8px 0 6px; font-size: 24px; }}
-    h3 {{ color: #134e4a; margin: 16px 0 8px; font-size: 18px; }}
+    h3 {{ color: #0f172a; margin: 16px 0 8px; font-size: 18px; }}
+    p {{ color: #1e293b; }}
     .muted {{ color: #64748b; }}
     .metric-grid {{ width: 100%; border-collapse: separate; border-spacing: 12px; margin: 12px 0 6px; }}
     .metric-card {{
       background: #f8fbff;
-      border: 1px solid #dbe4f0;
-      border-radius: 18px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
       padding: 14px;
       width: 25%;
       vertical-align: top;
     }}
     table.data {{ width: 100%; border-collapse: collapse; margin: 12px 0 4px; font-size: 13px; }}
-    table.data th, table.data td {{ border: 1px solid #dbe4f0; padding: 9px 10px; text-align: left; vertical-align: top; }}
-    table.data th {{ background: #0f766e; color: white; }}
+    table.data th, table.data td {{ border: 1px solid #e2e8f0; padding: 9px 10px; text-align: left; vertical-align: top; color: #1e293b; }}
+    table.data th {{ background: #1e3a5f; color: #ffffff; }}
     table.data tr:nth-child(even) td {{ background: #f8fbff; }}
     .note {{
-      background: linear-gradient(135deg, #eff6ff 0%, #ecfeff 100%);
-      border: 1px solid #bfdbfe;
-      border-radius: 16px;
+      background: #eff6ff;
+      border-left: 3px solid #2563eb;
+      border-top: 1px solid #93c5fd;
+      border-right: 1px solid #93c5fd;
+      border-bottom: 1px solid #93c5fd;
+      border-radius: 8px;
+      color: #1e293b;
       padding: 14px 16px;
       margin: 14px 0 0;
     }}
-    .footer-note {{ color: #64748b; font-size: 12px; margin-top: 12px; }}
+    .footer-note {{
+      background: #f8fafc;
+      color: #64748b;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 12px;
+      margin-top: 18px;
+      padding: 12px 14px;
+    }}
   </style>
 </head>
 <body>
   <div class="page">
     <div class="hero">
-      <div class="eyebrow">Intelligent Data Assistant</div>
+      <div class="eyebrow">Aroha Technologies</div>
       <h1>Executive Workflow Report</h1>
-      <p>This presentation-style document packages the full analytics workflow into a stakeholder-friendly export suitable for PDF distribution and Word-based revision.</p>
+      <p>Intelligent Data Assistant | Dataset: {escape(payload.fileName)} | Generated: {escape(generated_at)}</p>
       <table class="hero-grid">
         <tr>
           <td class="hero-card"><div class="label">Dataset</div><div class="value">{escape(payload.fileName)}</div></td>
@@ -7424,12 +7439,499 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
       <h3>Prediction Log</h3>
       <p class="muted">{escape(payload.predictionAnalysis or 'No prediction analysis captured.')}</p>
       {html_table(['Timestamp', 'Prediction', 'Confidence'], prediction_rows).replace('<table>', '<table class="data">')}
-      <p class="footer-note">This editable export is formatted to feel presentation-ready in Word-compatible tools while remaining easy to revise, annotate, or convert to a formal client deliverable.</p>
+      <p class="footer-note">Aroha Technologies | hr@aroha.co.in | +91 9886228615 | Generated {escape(generation_date)}</p>
     </div>
   </div>
 </body>
 </html>"""
     return html.encode('utf-8')
+
+
+def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
+    session_id = get_session_id(payload.datasetId, payload.sessionId)
+    session_state = ensure_session_state(session_id)
+    ts_raw = payload.timeSeriesForecastResult or session_state.get('time_series_result')
+    ml_raw = payload.mlForecastResult or session_state.get('ml_forecast_result')
+    ts_result = ts_raw.model_dump() if hasattr(ts_raw, 'model_dump') else ts_raw
+    ml_result = ml_raw.model_dump() if hasattr(ml_raw, 'model_dump') else ml_raw
+    loss_rows_raw = payload.lossForecast or session_state.get('loss_forecast_result') or []
+    profit_scenarios = payload.scenarios or session_state.get('profit_scenarios') or {}
+    profit_rows_raw = payload.profitForecast or profit_scenarios.get(payload.reportConfig.scenario, []) or profit_scenarios.get('baseline', [])
+    loss_segments = payload.lossSegments or session_state.get('loss_segments') or []
+    breakeven_period = payload.breakevenPeriod or (session_state.get('breakeven') or {}).get('breakeven_period')
+
+    page_size = landscape(letter)
+    page_width, _ = page_size
+    content_width = page_width - 64
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=page_size, leftMargin=32, rightMargin=32, topMargin=28, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    h_style = ParagraphStyle('PDF_H', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=16, leading=19, textColor=colors.HexColor('#0f172a'))
+    tag_style = ParagraphStyle('PDF_Tag', parent=styles['BodyText'], fontName='Helvetica-Bold', fontSize=8, leading=10, textColor=colors.HexColor('#64748b'), alignment=2)
+    body_style = ParagraphStyle('PDF_Body', parent=styles['BodyText'], fontName='Helvetica', fontSize=8.5, leading=11.7, textColor=colors.HexColor('#1e293b'))
+    muted_style = ParagraphStyle('PDF_Muted', parent=body_style, fontSize=8, leading=10.8, textColor=colors.HexColor('#64748b'))
+    label_style = ParagraphStyle('PDF_Label', parent=body_style, fontName='Helvetica-Bold', fontSize=7.6, leading=9, textColor=colors.HexColor('#0369a1'))
+    value_style = ParagraphStyle('PDF_Value', parent=body_style, fontName='Helvetica-Bold', fontSize=12, leading=14, textColor=colors.HexColor('#0f172a'))
+    table_header_style = ParagraphStyle('PDF_TH', parent=body_style, fontName='Helvetica-Bold', fontSize=7.8, leading=9.5, textColor=colors.white)
+    hero_title = ParagraphStyle('PDF_HeroTitle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=21, leading=25, textColor=colors.white)
+    hero_meta = ParagraphStyle('PDF_HeroMeta', parent=body_style, fontSize=9, leading=12, textColor=colors.HexColor('#e2e8f0'))
+    elements: list[Any] = []
+
+    def para(value: Any, style: ParagraphStyle = body_style) -> Paragraph:
+        return Paragraph(escape(str(value)).replace('\n', '<br/>'), style)
+
+    def fmt(value: Any, digits: int = 3) -> str:
+        if value is None:
+            return 'N/A'
+        if isinstance(value, (int, np.integer)):
+            return f'{int(value):,}'
+        if isinstance(value, (float, np.floating)):
+            return f'{float(value):,.{digits}f}'
+        return str(value)
+
+    def money(value: Any) -> str:
+        try:
+            return f'{float(value):,.0f}'
+        except Exception:
+            return 'N/A'
+
+    def pct(value: Any) -> str:
+        try:
+            return f'{float(value):.1f}%'
+        except Exception:
+            return 'N/A'
+
+    def add_table(rows: list[list[Any]], widths: list[float], header_bg: str = '#1e3a5f') -> None:
+        safe_rows = []
+        for row_index, row in enumerate(rows):
+            row_style = table_header_style if row_index == 0 else body_style
+            safe_rows.append([para(cell, row_style) for cell in row])
+        table = Table(safe_rows, colWidths=widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(header_bg)),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fbff')]),
+            ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#e2e8f0')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 5),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(table)
+
+    def start_section(title: str, tag: str) -> None:
+        if elements:
+            elements.append(PageBreak())
+        header = Table([[para(title, h_style), para(tag, tag_style)]], colWidths=[content_width * 0.72, content_width * 0.28])
+        header.setStyle(TableStyle([
+            ('LINEBELOW', (0, 0), (-1, -1), 0.8, colors.HexColor('#e2e8f0')),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(header)
+        elements.append(Spacer(1, 8))
+
+    def add_cards(cards: list[tuple[str, Any]]) -> None:
+        cells = []
+        widths = []
+        for label, value in cards:
+            card = Table([[para(label, label_style)], [para(value, value_style)]], colWidths=[content_width / len(cards) - 7])
+            card.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+                ('BOX', (0, 0), (-1, -1), 0.65, colors.HexColor('#e2e8f0')),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 7),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+            ]))
+            cells.append(card)
+            widths.append(content_width / len(cards))
+        elements.append(Table([cells], colWidths=widths))
+
+    def add_note(title: str, text: str, tone: str = '#eff6ff', border: str = '#2563eb') -> None:
+        note = Table([[Paragraph(f'<b>{escape(title)}</b><br/>{escape(text)}', body_style)]], colWidths=[content_width])
+        note.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor(tone)),
+            ('LINEBEFORE', (0, 0), (-1, -1), 3, colors.HexColor(border)),
+            ('BOX', (0, 0), (-1, -1), 0.35, colors.HexColor('#e2e8f0')),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(note)
+
+    def skipped(name: str, reason: str, action: str) -> None:
+        add_note(name, f'Reason skipped: {reason} Suggested action: {action}', '#fffbeb', '#f59e0b')
+
+    def image_from_fig(fig: Any, width: float = 500, height: float = 170) -> Image | None:
+        try:
+            img = io.BytesIO()
+            fig.tight_layout()
+            fig.savefig(img, format='png', dpi=160, bbox_inches='tight')
+            plt.close(fig)
+            img.seek(0)
+            return Image(img, width=width, height=height)
+        except Exception:
+            logger.exception('Failed to render PDF chart.')
+            return None
+
+    def add_image(image: Image | None) -> None:
+        if image is not None:
+            elements.append(image)
+            elements.append(Spacer(1, 7))
+
+    def simple_line(title: str, periods: list[str], series: list[tuple[str, list[float], str]]) -> Image | None:
+        if not periods or not series:
+            return None
+        fig, ax = plt.subplots(figsize=(8.4, 2.6))
+        for label, values, color in series:
+            if values:
+                ax.plot(periods[:len(values)], values, label=label, color=color, linewidth=2)
+        ax.set_title(title)
+        ax.tick_params(axis='x', rotation=35, labelsize=7)
+        ax.tick_params(axis='y', labelsize=7)
+        ax.grid(True, alpha=0.25)
+        ax.legend(fontsize=7)
+        return image_from_fig(fig, content_width * 0.86, 165)
+
+    def role_count(*needles: str) -> int:
+        return sum(1 for column in payload.columns if any(needle in str(column.role).lower() or needle in str(column.dtype).lower() for needle in needles))
+
+    def decorate(canvas: Any, doc_obj: Any) -> None:
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor('#e2e8f0'))
+        canvas.line(doc.leftMargin, 20, page_width - doc.rightMargin, 20)
+        canvas.setFont('Helvetica', 8)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.drawString(doc.leftMargin, 10, f'Aroha Technologies | hr@aroha.co.in | +91 9886228615')
+        canvas.drawRightString(page_width - doc.rightMargin, 10, f'Page {canvas.getPageNumber()}')
+        canvas.restoreState()
+
+    loaded_rows = payload.loadedRowCount or payload.totalRows
+    preview_mode = payload.previewLoaded and payload.totalRows > loaded_rows
+    generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+
+    start_section('Data Upload', 'Section 1')
+    hero = Table([[
+        para('Aroha Technologies', hero_meta),
+        para('Intelligent Data Assistant Workflow Report', hero_title),
+        para(f'Dataset: {payload.fileName} | Generated: {generated_at}', hero_meta),
+    ]], colWidths=[content_width])
+    hero.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#0f172a')),
+        ('LINEBELOW', (0, 0), (-1, -1), 8, colors.HexColor('#1e3a5f')),
+        ('LEFTPADDING', (0, 0), (-1, -1), 14),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 14),
+        ('TOPPADDING', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+    ]))
+    elements.append(hero)
+    elements.append(Spacer(1, 8))
+    add_cards([('Filename', payload.fileName), ('Dataset ID', payload.datasetId or session_id), ('Rows Loaded', f'{payload.totalRows:,}'), ('Columns', len(payload.columns))])
+    elements.append(Spacer(1, 8))
+    add_table([
+        ['Field', 'Value'],
+        ['Estimated Memory Size', payload.memoryUsage or 'N/A'],
+        ['Workspace Mode', 'Preview + backend cache' if preview_mode else 'Full workspace load'],
+        ['Upload Timestamp', generated_at],
+        ['Entry Description', f'{loaded_rows:,} browser rows loaded; {payload.totalRows:,} total rows available.' if preview_mode else f'The file entered the workspace with {payload.totalRows:,} rows available for analysis.'],
+    ], [content_width * 0.25, content_width * 0.71])
+    elements.append(Spacer(1, 8))
+    coverage_rows = [
+        ['Workflow Tab', 'Status'],
+        ['Data Upload', 'Completed' if payload.totalRows else 'Skipped'],
+        ['Data Understanding', 'Completed' if payload.columns else 'Skipped'],
+        ['Exploratory Data Analysis', 'Completed' if payload.columns or payload.edaStats.numericColumns else 'Skipped'],
+        ['Data Cleaning', 'Completed' if payload.cleaningLogs or payload.cleaningDone else 'Clean - no actions'],
+        ['Time Series Forecast', 'Completed' if ts_result else 'Skipped'],
+        ['Machine Learning Forecast', 'Completed' if ml_result else 'Skipped'],
+        ['Loss Forecast', 'Completed' if loss_rows_raw else 'Skipped'],
+        ['Profit Forecast', 'Completed' if profit_rows_raw else 'Skipped'],
+        ['ML Assistant', 'Completed' if payload.modelMetrics or payload.selectedModel else 'Skipped'],
+        ['Prediction', 'Completed' if payload.predictionResult is not None or payload.predictionHistory else 'Skipped'],
+    ]
+    coverage_table = Table([[para(cell, table_header_style if row_index == 0 else body_style) for cell in row] for row_index, row in enumerate(coverage_rows)], colWidths=[content_width * 0.55, content_width * 0.25], repeatRows=1)
+    coverage_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
+        ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#e2e8f0')),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 5),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]
+    for row_index, row in enumerate(coverage_rows[1:], start=1):
+        status = str(row[1]).lower()
+        fill = '#ecfdf5' if 'completed' in status else '#f0fdf4' if 'clean' in status else '#fffbeb'
+        coverage_style.append(('BACKGROUND', (0, row_index), (-1, row_index), colors.HexColor(fill)))
+    coverage_table.setStyle(TableStyle(coverage_style))
+    elements.append(coverage_table)
+
+    start_section('Data Understanding', 'Section 2')
+    if not payload.columns:
+        skipped('Data Understanding', 'Column profiling was not captured.', 'Run Data Understanding after upload.')
+    else:
+        add_cards([('Numeric', role_count('numeric', 'float', 'int')), ('Categorical', role_count('categorical')), ('Datetime', role_count('datetime', 'date', 'time')), ('Identifier', role_count('identifier'))])
+        elements.append(Spacer(1, 8))
+        column_rows = [['Column', 'Data Type', 'Role', 'Non-null', 'Null Count', 'Unique Count']]
+        column_rows.extend([[c.name, c.dtype, c.role, c.nonNull, c.nullCount, c.uniqueCount] for c in payload.columns])
+        add_table(column_rows, [content_width * 0.26, content_width * 0.13, content_width * 0.13, content_width * 0.13, content_width * 0.13, content_width * 0.13])
+        elements.append(Spacer(1, 8))
+        add_note('AI Schema Summary', f'{len(payload.columns)} columns were profiled across numeric, categorical, datetime, and identifier roles. Null, non-null, and uniqueness metrics define the schema baseline for downstream analysis.')
+
+    start_section('Exploratory Data Analysis', 'Section 3')
+    if not payload.columns and not payload.edaStats.numericColumns:
+        skipped('Exploratory Data Analysis', 'EDA was not captured.', 'Open the EDA tab after Data Understanding.')
+    else:
+        add_cards([('Numeric Fields', len(payload.edaStats.numericColumns)), ('Categorical Fields', len(payload.edaStats.categoricalColumns)), ('Correlations', len(payload.edaStats.correlations)), ('AI Insight', 'Captured' if payload.aiInsights else 'Not captured')])
+        elements.append(Spacer(1, 8))
+        stat_rows = [['Field', 'Mean', 'Std', 'Min', 'Median', 'Max']]
+        for field in payload.edaStats.numericColumns:
+            stats = payload.edaStats.stats.get(field, {})
+            stat_rows.append([field, fmt(stats.get('mean')), fmt(stats.get('std')), fmt(stats.get('min')), fmt(stats.get('median')), fmt(stats.get('max'))])
+        add_table(stat_rows if len(stat_rows) > 1 else stat_rows + [['N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A']], [content_width * 0.27, content_width * 0.13, content_width * 0.13, content_width * 0.13, content_width * 0.13, content_width * 0.13])
+        elements.append(Spacer(1, 8))
+        corr_rows = [['Pair', 'Correlation']]
+        corr_rows.extend([[item.get('pair', 'N/A'), fmt(item.get('correlation'))] for item in payload.edaStats.correlations])
+        add_table(corr_rows if len(corr_rows) > 1 else corr_rows + [['N/A', 'N/A']], [content_width * 0.72, content_width * 0.22])
+        elements.append(Spacer(1, 8))
+        add_image(build_correlation_chart_image(payload.edaStats.correlations))
+        add_note('AI Insight', payload.aiInsights or 'Not captured', '#eff6ff' if payload.aiInsights else '#f8fafc', '#2563eb' if payload.aiInsights else '#94a3b8')
+
+    start_section('Data Cleaning', 'Section 4')
+    rows_removed = max(0, payload.totalRows - (payload.cleanedRowCount or payload.totalRows))
+    add_cards([('Cleaning Done', 'Yes' if payload.cleaningDone else 'No'), ('Logged Actions', len(payload.cleaningLogs)), ('Rows Removed', f'{rows_removed:,}'), ('Rows Retained', f'{payload.cleanedRowCount:,}')])
+    elements.append(Spacer(1, 8))
+    if payload.cleaningLogs:
+        clean_rows = [['Action Name', 'Detail Description', 'Timestamp']]
+        clean_rows.extend([[log.action, log.detail, log.timestamp] for log in payload.cleaningLogs])
+        add_table(clean_rows, [content_width * 0.2, content_width * 0.56, content_width * 0.18])
+    else:
+        add_note('Data was clean - no actions required', 'No cleaning actions were logged for this session.', '#ecfdf5', '#22c55e')
+
+    start_section('Time Series Forecast', 'Section 5')
+    if not ts_result:
+        skipped('Time Series Forecast', 'TS Forecast was not run.', 'Run Time Series Forecast with a date column and target.')
+    else:
+        profile = ts_result.get('dataset_profile') or {}
+        training = ts_result.get('training_summary') or {}
+        metrics = ts_result.get('metrics') or {}
+        add_cards([('Frequency', profile.get('detected_frequency') or ts_result.get('frequency') or 'N/A'), ('Usable Periods', profile.get('usable_periods', 'N/A')), ('Selected Model', 'SARIMA'), ('MAPE', fmt(metrics.get('mape')))])
+        elements.append(Spacer(1, 8))
+        add_table([
+            ['Field', 'Value'],
+            ['Volatility', fmt(profile.get('volatility'))],
+            ['Training Split', f"{training.get('train_periods', 'N/A')} train / {training.get('test_periods', 'N/A')} test"],
+            ['Stationarity Note', (ts_result.get('stationarity_check') or {}).get('note', 'N/A')],
+            ['MAE', fmt(metrics.get('mae'))],
+            ['RMSE', fmt(metrics.get('rmse'))],
+        ], [content_width * 0.25, content_width * 0.71])
+        elements.append(Spacer(1, 8))
+        future_rows = [['Period', 'Forecast', 'Lower 95%', 'Upper 95%']]
+        future_rows.extend([[p.get('period', 'N/A'), fmt(p.get('predicted')), fmt(p.get('lower')), fmt(p.get('upper'))] for p in ts_result.get('future_forecast', [])])
+        add_table(future_rows if len(future_rows) > 1 else future_rows + [['N/A', 'N/A', 'N/A', 'N/A']], [content_width * 0.25, content_width * 0.23, content_width * 0.23, content_width * 0.23])
+        elements.append(Spacer(1, 8))
+        add_image(build_line_chart_image('Historical vs Forecast', ts_result.get('history', []), ts_result.get('test_forecast', []), ts_result.get('future_forecast', []), True))
+        add_note('Forecast Insight', ts_result.get('analysis') or 'No forecast insight captured.')
+
+    start_section('Machine Learning Forecast', 'Section 6')
+    if not ml_result:
+        skipped('Machine Learning Forecast', 'ML Forecast was not run.', 'Run ML Forecast to evaluate machine learning forecast candidates.')
+    else:
+        profile = ml_result.get('dataset_profile') or {}
+        training = ml_result.get('training_summary') or {}
+        metrics = ml_result.get('metrics') or {}
+        selected_model = (ml_result.get('model_details') or {}).get('model_name') or training.get('model_name') or 'N/A'
+        if 'sarima' in str(selected_model).lower():
+            selected_model = 'N/A - SARIMA excluded'
+        add_cards([('Selected Model', selected_model), ('Generated Features', len(ml_result.get('generated_features', []))), ('Usable Periods', profile.get('usable_periods', 'N/A')), ('Volatility', fmt(profile.get('volatility')))])
+        elements.append(Spacer(1, 8))
+        if float(metrics.get('mae') or 0) == 0 and float(metrics.get('rmse') or 0) == 0:
+            add_note('Metric Warning', 'MAE and RMSE are both 0.000. Review leakage, target construction, and train/test split before relying on this forecast.', '#fffbeb', '#f59e0b')
+            elements.append(Spacer(1, 8))
+        add_table([
+            ['Field', 'Value'],
+            ['Date Column', ml_result.get('date_column', 'N/A')],
+            ['Target Column', ml_result.get('target_column', 'N/A')],
+            ['Detected Frequency', profile.get('detected_frequency') or ml_result.get('frequency') or 'N/A'],
+            ['Training Split', f"{training.get('train_periods', 'N/A')} train / {training.get('test_periods', 'N/A')} test"],
+            ['Data Quality Score', (ml_result.get('data_quality') or {}).get('score', 'N/A')],
+            ['Naive Baseline MAE', ((ml_result.get('naive_baseline') or {}).get('metrics') or {}).get('mae', 'N/A')],
+            ['MAE Improvement %', (ml_result.get('naive_baseline') or {}).get('mae_improvement_pct', 'N/A')],
+        ], [content_width * 0.25, content_width * 0.71])
+        elements.append(Spacer(1, 8))
+        comparison = [['Candidate', 'Status', 'MAE', 'RMSE', 'MAPE', 'Availability Note']]
+        for item in ml_result.get('model_comparison', []):
+            name = str(item.get('model_name') or item.get('model_type') or 'N/A')
+            if 'sarima' in name.lower():
+                continue
+            metrics_row = item.get('metrics') or {}
+            comparison.append([name, item.get('status', 'N/A'), fmt(metrics_row.get('mae')), fmt(metrics_row.get('rmse')), fmt(metrics_row.get('mape')), item.get('availability_note') or item.get('skip_reason') or 'Available'])
+        for name in ['XGBoost', 'LightGBM', 'Prophet', 'Gradient Boosting']:
+            if not any(name.lower().split()[0] in str(row[0]).lower() for row in comparison[1:]):
+                comparison.append([name, 'Not evaluated', 'N/A', 'N/A', 'N/A', 'No candidate result returned'])
+        add_table(comparison, [content_width * 0.17, content_width * 0.12, content_width * 0.1, content_width * 0.1, content_width * 0.1, content_width * 0.35])
+        elements.append(Spacer(1, 8))
+        forecast_rows = [['Period', 'Forecast']]
+        forecast_rows.extend([[p.get('period', 'N/A'), fmt(p.get('predicted'))] for p in ml_result.get('future_forecast', [])])
+        add_table(forecast_rows if len(forecast_rows) > 1 else forecast_rows + [['N/A', 'N/A']], [content_width * 0.48, content_width * 0.48])
+        elements.append(Spacer(1, 8))
+        add_image(build_line_chart_image('ML Forecast Line Chart', ml_result.get('history', []), ml_result.get('test_forecast', []), ml_result.get('future_forecast', []), False))
+        shap = ml_result.get('shap_feature_importance', [])
+        add_image(build_bar_chart_image('SHAP Feature Importance', shap) if shap else None)
+        if shap:
+            add_note('Top Driver', f"{shap[0].get('name', 'N/A')} with importance score {fmt(shap[0].get('importance'))}.")
+        feature_rows = [['Generated Feature']]
+        feature_rows.extend([[feature] for feature in ml_result.get('generated_features', [])])
+        add_table(feature_rows if len(feature_rows) > 1 else feature_rows + [['None captured']], [content_width * 0.96])
+        preview = ml_result.get('feature_preview_rows', [])
+        if preview:
+            columns = list(preview[0].keys())
+            rows = [columns] + [[item.get(column, 'N/A') for column in columns] for item in preview]
+            elements.append(Spacer(1, 8))
+            add_table(rows, [content_width * 0.96 / max(1, len(columns))] * len(columns))
+        add_note('Forecast Insight', ml_result.get('analysis') or 'No ML forecast insight captured.')
+
+    start_section('Loss Forecast', 'Section 7')
+    if not loss_rows_raw:
+        skipped('Loss Forecast', 'Loss Forecast was not run.', 'Run Loss Forecast to quantify loss risk.')
+    else:
+        total_loss = sum(float(row.get('total_loss') or 0) for row in loss_rows_raw)
+        peak = max(loss_rows_raw, key=lambda row: float(row.get('total_loss') or 0))
+        avg_risk = sum(float(row.get('loss_risk_score') or 0) for row in loss_rows_raw) / max(1, len(loss_rows_raw))
+        drivers = {
+            'Revenue Loss': sum(float(row.get('revenue_loss') or 0) for row in loss_rows_raw),
+            'Operational Loss': sum(float(row.get('operational_loss') or 0) for row in loss_rows_raw),
+            'Inventory Loss': sum(float(row.get('inventory_loss') or 0) for row in loss_rows_raw),
+            'Discount Loss': sum(float(row.get('discount_loss') or 0) for row in loss_rows_raw),
+        }
+        top_driver = max(drivers.items(), key=lambda item: item[1])
+        add_cards([('Total Forecasted Loss', money(total_loss)), ('Highest Risk Period', peak.get('period', 'N/A')), ('Average Risk Score', f'{avg_risk:.1%}'), ('Top Driver', f'{top_driver[0]} ({(top_driver[1] / total_loss * 100) if total_loss else 0:.1f}%)')])
+        elements.append(Spacer(1, 8))
+        periods = [str(row.get('period')) for row in loss_rows_raw]
+        add_image(simple_line('Loss Trend Line Chart', periods, [('Total Loss', [float(row.get('total_loss') or 0) for row in loss_rows_raw], '#dc2626')]))
+        fig, ax = plt.subplots(figsize=(8.4, 2.6))
+        bottoms = np.zeros(len(periods))
+        for key, color in [('revenue_loss', '#ef4444'), ('operational_loss', '#f97316'), ('inventory_loss', '#f59e0b'), ('discount_loss', '#8b5cf6')]:
+            vals = np.array([float(row.get(key) or 0) for row in loss_rows_raw])
+            ax.bar(periods, vals, bottom=bottoms, label=key.replace('_', ' ').title(), color=color)
+            bottoms += vals
+        ax.set_title('Loss Breakdown Stacked Bar Chart')
+        ax.tick_params(axis='x', rotation=35, labelsize=7)
+        ax.legend(fontsize=7, ncol=4)
+        add_image(image_from_fig(fig, content_width * 0.86, 165))
+        fig, ax = plt.subplots(figsize=(4.6, 2.8))
+        ax.pie(list(drivers.values()), labels=list(drivers.keys()), autopct='%1.0f%%', textprops={'fontsize': 7})
+        ax.set_title('Segment Loss Mix Donut Chart')
+        fig.gca().add_artist(plt.Circle((0, 0), 0.55, fc='white'))
+        add_image(image_from_fig(fig, 260, 165))
+        risk_rows = [['Segment', 'Risk Score', 'Risk Label']]
+        risk_rows.extend([[item.get('segment', 'N/A'), f"{float(item.get('risk_score') or 0):.1%}", item.get('risk_label', 'N/A')] for item in loss_segments])
+        add_table(risk_rows if len(risk_rows) > 1 else risk_rows + [['N/A', 'N/A', 'N/A']], [content_width * 0.55, content_width * 0.2, content_width * 0.2])
+        elements.append(Spacer(1, 8))
+        full_loss = [['Period', 'Revenue Loss', 'Operational Loss', 'Inventory Loss', 'Discount Loss', 'Total Loss', 'Risk Score', 'Risk Label']]
+        full_loss.extend([[row.get('period', 'N/A'), money(row.get('revenue_loss')), money(row.get('operational_loss')), money(row.get('inventory_loss')), money(row.get('discount_loss')), money(row.get('total_loss')), f"{float(row.get('loss_risk_score') or 0):.1%}", row.get('risk_label', 'N/A')] for row in loss_rows_raw])
+        add_table(full_loss, [content_width * 0.12, content_width * 0.12, content_width * 0.13, content_width * 0.12, content_width * 0.12, content_width * 0.12, content_width * 0.12, content_width * 0.11])
+        elements.append(Spacer(1, 8))
+        driver_rows = [['Driver', 'Total Amount', 'Share']]
+        driver_rows.extend([[name, money(value), f'{(value / total_loss * 100) if total_loss else 0:.1f}%'] for name, value in sorted(drivers.items(), key=lambda item: item[1], reverse=True)[:3]])
+        add_table(driver_rows, [content_width * 0.36, content_width * 0.3, content_width * 0.28])
+
+    start_section('Profit Forecast', 'Section 8')
+    if not profit_rows_raw:
+        skipped('Profit Forecast', 'Profit Forecast was not run.', 'Run Profit Forecast to generate scenario P&L projections.')
+    else:
+        revenue = sum(float(row.get('forecasted_revenue') or 0) for row in profit_rows_raw)
+        cogs = sum(float(row.get('forecasted_cogs') or 0) for row in profit_rows_raw)
+        gross = sum(float(row.get('gross_profit') or 0) for row in profit_rows_raw)
+        losses = sum(float(row.get('total_losses') or 0) for row in profit_rows_raw)
+        net = sum(float(row.get('net_profit') or 0) for row in profit_rows_raw)
+        add_cards([('Forecasted Revenue', money(revenue)), ('Gross Profit', money(gross)), ('Net Profit', money(net)), ('Net Margin', f'{(net / revenue * 100) if revenue else 0:.1f}%')])
+        elements.append(Spacer(1, 8))
+        fig, ax = plt.subplots(figsize=(7.2, 2.5))
+        ax.bar(['Revenue', 'COGS', 'Loss', 'Net Profit'], [revenue, -cogs, -losses, net], color=['#2563eb', '#f97316', '#dc2626', '#16a34a'])
+        ax.axhline(0, color='#64748b', linewidth=1)
+        ax.set_title('P&L Waterfall Chart')
+        add_image(image_from_fig(fig, content_width * 0.7, 160))
+        scenario_periods = [str(row.get('period')) for row in profit_rows_raw]
+        scenario_series = []
+        for name, color in [('optimistic', '#16a34a'), ('baseline', '#2563eb'), ('pessimistic', '#dc2626')]:
+            rows = profit_scenarios.get(name, [])
+            if rows:
+                scenario_periods = [str(row.get('period')) for row in rows]
+            scenario_series.append((name.title(), [float(row.get('net_profit') or 0) for row in rows], color))
+        add_image(simple_line('Net Profit Forecast Three-Scenario Line Chart', scenario_periods, scenario_series))
+        add_image(simple_line('Gross vs Net Margin Trend Chart', [str(row.get('period')) for row in profit_rows_raw], [('Gross Margin', [float(row.get('gross_margin_pct') or 0) for row in profit_rows_raw], '#0369a1'), ('Net Margin', [float(row.get('net_margin_pct') or 0) for row in profit_rows_raw], '#16a34a')]))
+        fig, ax = plt.subplots(figsize=(8.4, 2.6))
+        periods = [str(row.get('period')) for row in profit_rows_raw]
+        x = np.arange(len(periods))
+        width = 0.25
+        ax.bar(x - width, [float(row.get('forecasted_revenue') or 0) for row in profit_rows_raw], width, label='Revenue', color='#2563eb')
+        ax.bar(x, [float(row.get('forecasted_cogs') or 0) + float(row.get('operating_expenses') or 0) for row in profit_rows_raw], width, label='Cost', color='#f97316')
+        ax.bar(x + width, [float(row.get('total_losses') or 0) for row in profit_rows_raw], width, label='Loss', color='#dc2626')
+        ax.set_xticks(x)
+        ax.set_xticklabels(periods, rotation=35, fontsize=7)
+        ax.legend(fontsize=7)
+        ax.set_title('Revenue vs Cost vs Loss Bar Chart')
+        add_image(image_from_fig(fig, content_width * 0.86, 165))
+        add_note('Break-even Analysis', f'Period reached: {breakeven_period or "Not reached"}. Gross margin: {(gross / revenue * 100) if revenue else 0:.1f}%. Net margin: {(net / revenue * 100) if revenue else 0:.1f}%.', '#ecfdf5', '#22c55e')
+        pnl = [['Period', 'Revenue', 'COGS', 'Gross Profit', 'OpEx', 'Total Loss', 'Net Profit', 'Gross Margin', 'Net Margin']]
+        pnl.extend([[row.get('period', 'N/A'), money(row.get('forecasted_revenue')), money(row.get('forecasted_cogs')), money(row.get('gross_profit')), money(row.get('operating_expenses')), money(row.get('total_losses')), money(row.get('net_profit')), pct(row.get('gross_margin_pct')), pct(row.get('net_margin_pct'))] for row in profit_rows_raw])
+        add_table(pnl, [content_width * 0.11, content_width * 0.1, content_width * 0.1, content_width * 0.11, content_width * 0.09, content_width * 0.1, content_width * 0.11, content_width * 0.11, content_width * 0.11])
+        elements.append(Spacer(1, 8))
+        scenario_rows = [['Scenario', 'Revenue', 'COGS', 'Gross Profit', 'Total Losses', 'Net Profit', 'Net Margin']]
+        for name in ['optimistic', 'baseline', 'pessimistic']:
+            rows = profit_scenarios.get(name, [])
+            s_revenue = sum(float(row.get('forecasted_revenue') or 0) for row in rows)
+            s_cogs = sum(float(row.get('forecasted_cogs') or 0) for row in rows)
+            s_gross = sum(float(row.get('gross_profit') or 0) for row in rows)
+            s_losses = sum(float(row.get('total_losses') or 0) for row in rows)
+            s_net = sum(float(row.get('net_profit') or 0) for row in rows)
+            scenario_rows.append([name.title(), money(s_revenue), money(s_cogs), money(s_gross), money(s_losses), money(s_net), f'{(s_net / s_revenue * 100) if s_revenue else 0:.1f}%'])
+        add_table(scenario_rows, [content_width * 0.14, content_width * 0.14, content_width * 0.13, content_width * 0.14, content_width * 0.14, content_width * 0.14, content_width * 0.11])
+
+    start_section('ML Assistant', 'Section 9')
+    if not payload.modelMetrics and not payload.selectedModel:
+        skipped('ML Assistant', 'ML Assistant was not run in this session.', 'Select a target, choose features, and train a model.')
+    else:
+        add_cards([('Target Column', payload.targetColumn or 'N/A'), ('Problem Type', payload.problemType), ('Selected Model', payload.selectedModel or 'N/A'), ('Features Used', len(payload.selectedFeatures))])
+        elements.append(Spacer(1, 8))
+        metrics = [['Metric', 'Value']]
+        metrics.extend([[key, fmt(value)] for key, value in (payload.modelMetrics or {}).items()])
+        add_table(metrics if len(metrics) > 1 else metrics + [['N/A', 'No training metrics captured']], [content_width * 0.45, content_width * 0.51])
+        if payload.featureImportance:
+            elements.append(Spacer(1, 8))
+            importance = [['Feature', 'Importance']]
+            importance.extend([[item.get('name', 'N/A'), fmt(item.get('importance'))] for item in payload.featureImportance])
+            add_table(importance, [content_width * 0.66, content_width * 0.3])
+        add_note('Model Summary', f'{payload.selectedModel or "Selected model"} was trained for {payload.problemType} using {len(payload.selectedFeatures)} features targeting {payload.targetColumn or "the selected target"}.')
+
+    start_section('Prediction', 'Section 10')
+    if payload.predictionResult is None and not payload.predictionHistory:
+        skipped('Prediction', 'No predictions were made in this session.', 'Train or load a model, then run prediction.')
+        add_note('Prediction Info', 'No predictions were made in this session', '#f8fafc', '#94a3b8')
+    else:
+        latest = payload.predictionHistory[-1] if payload.predictionHistory else None
+        add_cards([('Latest Prediction', payload.predictionResult if payload.predictionResult is not None else 'N/A'), ('Prediction Timestamp', latest.timestamp if latest else 'N/A'), ('History Entries', len(payload.predictionHistory)), ('Probabilities', 'Available' if payload.predictionProbabilities else 'N/A')])
+        elements.append(Spacer(1, 8))
+        if latest and latest.features:
+            feature_rows = [['Input Feature', 'Value']]
+            feature_rows.extend([[key, value] for key, value in latest.features.items()])
+            add_table(feature_rows, [content_width * 0.45, content_width * 0.51])
+            elements.append(Spacer(1, 8))
+        if payload.predictionProbabilities:
+            prob_rows = [['Class', 'Probability']]
+            prob_rows.extend([[label, f'{round(probability * 100, 2)}%'] for label, probability in payload.predictionProbabilities.items()])
+            add_table(prob_rows, [content_width * 0.48, content_width * 0.48])
+            elements.append(Spacer(1, 8))
+        history = [['Timestamp', 'Prediction', 'Confidence']]
+        history.extend([[item.timestamp, item.prediction, 'N/A' if item.confidence is None else f'{round(item.confidence * 100, 2)}%'] for item in payload.predictionHistory])
+        add_table(history if len(history) > 1 else history + [['N/A', 'No prediction history captured', 'N/A']], [content_width * 0.45, content_width * 0.3, content_width * 0.21])
+        add_note('Analysis Note', payload.predictionAnalysis or 'No prediction analysis note captured.')
+
+    doc.build(elements, onFirstPage=decorate, onLaterPages=decorate)
+    return buffer.getvalue()
 
 
 @router.post('/cache-dataset')

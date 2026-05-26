@@ -228,6 +228,60 @@ const cardHover = {
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
+function DatasetIngestionIllustration() {
+  return (
+    <svg width={80} height={80} viewBox="0 0 80 80" role="img" aria-label="Files flowing into dataset storage">
+      <style>
+        {`
+          @keyframes dash { to { stroke-dashoffset: -18; } }
+          @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+          .upload-flow-arrow { animation: dash 1.5s linear infinite; }
+          .upload-database { animation: pulse 2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+          @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+        `}
+      </style>
+      <defs>
+        <marker id="upload-flow-arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M1 1 L7 4 L1 7 Z" fill="#3b82f6" />
+        </marker>
+      </defs>
+      <g>
+        <g transform="translate(6 28)">
+          <rect width="20" height="26" rx="3" fill="#22c55e" />
+          <path d="M16 0 L20 4 L16 4 Z" fill="#dcfce7" opacity="0.9" />
+          <text x="10" y="17" textAnchor="middle" fontSize="5.5" fontWeight="700" fill="#ffffff">CSV</text>
+        </g>
+        <g transform="translate(12 22)">
+          <rect width="20" height="26" rx="3" fill="#3b82f6" />
+          <path d="M16 0 L20 4 L16 4 Z" fill="#dbeafe" opacity="0.9" />
+          <text x="10" y="17" textAnchor="middle" fontSize="5.5" fontWeight="700" fill="#ffffff">XLS</text>
+        </g>
+        <g transform="translate(18 16)">
+          <rect width="20" height="26" rx="3" fill="#f97316" />
+          <path d="M16 0 L20 4 L16 4 Z" fill="#ffedd5" opacity="0.95" />
+          <text x="10" y="17" textAnchor="middle" fontSize="5" fontWeight="700" fill="#ffffff">PAR</text>
+        </g>
+      </g>
+      <path
+        className="upload-flow-arrow"
+        d="M38 40 H52"
+        fill="none"
+        stroke="#3b82f6"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray="6 3"
+        markerEnd="url(#upload-flow-arrowhead)"
+      />
+      <g className="upload-database">
+        <rect x="54" y="30" width="20" height="22" fill="#1e40af" stroke="#3b82f6" strokeWidth="2" />
+        <ellipse cx="64" cy="30" rx="10" ry="5" fill="#1e40af" stroke="#3b82f6" strokeWidth="2" />
+        <ellipse cx="64" cy="52" rx="10" ry="5" fill="#1e40af" stroke="#3b82f6" strokeWidth="2" />
+        <path d="M54 41 C58 45 70 45 74 41" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+      </g>
+    </svg>
+  );
+}
+
 function buildFreshDatasetState(
   data: DataRow[],
   fileName: string,
@@ -670,7 +724,7 @@ export default function UploadTab() {
           >
             <div className="relative">
               <div className="flex h-24 w-24 items-center justify-center rounded-3xl bg-primary shadow-2xl shadow-primary/25 md:h-32 md:w-32">
-                <Database className="h-12 w-12 text-primary-foreground md:h-16 md:w-16" />
+                <DatasetIngestionIllustration />
               </div>
               <div className="absolute -right-1 -top-1 h-6 w-6 rounded-full border-2 border-white bg-sky-100 shadow-sm dark:border-gray-900 dark:bg-sky-950" />
             </div>

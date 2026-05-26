@@ -462,23 +462,6 @@ export default function ReportTab() {
     }
   }, [fileName, reportPayload, toast]);
 
-  const handleDownloadForecastWorkbook = useCallback(async () => {
-    if (!datasetId) {
-      toast({ title: 'Dataset required', description: 'Upload and run forecasts before exporting the forecast workbook.', variant: 'destructive' });
-      return;
-    }
-    try {
-      const response = await apiClient.get(`/forecast/export/excel/${datasetId}`, { responseType: 'blob' });
-      const blob = response.data as Blob;
-      const url = URL.createObjectURL(blob);
-      downloadBlobUrl(url, getDownloadFileName(response.headers['content-disposition'], buildReportFileName(fileName, 'xlsx')));
-      URL.revokeObjectURL(url);
-      toast({ title: 'Forecast workbook downloaded', description: 'Raw forecast numbers, comparisons, and version history were exported.' });
-    } catch (error) {
-      toast({ title: 'Workbook failed', description: await getBlobErrorMessage(error, 'Failed to generate the forecast Excel workbook.'), variant: 'destructive' });
-    }
-  }, [datasetId, fileName, toast]);
-
   if (!rawData) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center dark:bg-gray-900">
@@ -517,10 +500,6 @@ export default function ReportTab() {
               <Button type="button" onClick={handleDownloadReport} className="gap-2 bg-white text-blue-700 hover:bg-blue-50 dark:bg-gray-100 dark:text-blue-700 dark:hover:bg-white">
                 <Download className="h-4 w-4" />
                 Download PDF
-              </Button>
-              <Button type="button" onClick={handleDownloadForecastWorkbook} className="gap-2 bg-white/10 text-white ring-1 ring-white/25 hover:bg-white/20">
-                <Database className="h-4 w-4" />
-                Download Excel
               </Button>
             </div>
           </div>
@@ -664,10 +643,6 @@ export default function ReportTab() {
                 <Button type="button" onClick={handleDownloadDocument} variant="outline" disabled={generatingDocument} className="gap-2">
                   {generatingDocument ? <Loader2 className="h-4 w-4 animate-spin" /> : <FilePenLine className="h-4 w-4" />}
                   Download Document
-                </Button>
-                <Button type="button" onClick={handleDownloadForecastWorkbook} variant="outline" className="gap-2">
-                  <Database className="h-4 w-4" />
-                  Download Excel
                 </Button>
                 <Button type="button" onClick={handleRegenerateReport} disabled={generating} className="gap-2">
                   {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
