@@ -163,7 +163,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
       className="login-page-shell relative h-screen max-h-screen w-screen overflow-hidden bg-background text-foreground"
     >
       <div className="flex h-full min-h-0 w-full flex-col overflow-hidden md:flex-row">
-        <section className="relative flex min-h-0 w-full items-center justify-center overflow-hidden border-b border-white/30 bg-[radial-gradient(circle_at_16%_12%,rgba(255,255,255,0.82),transparent_30%),radial-gradient(circle_at_84%_74%,rgba(99,102,241,0.28),transparent_36%),linear-gradient(135deg,#f8fbff_0%,#dbeafe_46%,#eef2ff_100%)] px-6 py-8 md:h-full md:w-[40%] md:border-b-0 md:border-r">
+        <section className="relative flex min-h-0 w-full items-center justify-center overflow-hidden border-b border-white/40 bg-[radial-gradient(circle_at_12%_10%,rgba(255,255,255,0.92),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(14,165,233,0.18),transparent_30%),radial-gradient(circle_at_84%_78%,rgba(99,102,241,0.32),transparent_38%),linear-gradient(145deg,#fbfdff_0%,#eaf4ff_42%,#eef2ff_100%)] px-6 py-8 dark:border-slate-700/50 dark:bg-[radial-gradient(circle_at_14%_12%,rgba(59,130,246,0.18),transparent_30%),radial-gradient(circle_at_88%_78%,rgba(99,102,241,0.22),transparent_38%),linear-gradient(145deg,#020617_0%,#0f172a_48%,#111827_100%)] md:h-full md:w-[40%] md:border-b-0 md:border-r">
           <div className="pointer-events-none absolute left-[-7rem] top-[-5rem] h-64 w-64 rounded-full bg-white/70 blur-3xl" />
           <div className="pointer-events-none absolute bottom-[-7rem] right-[-6rem] h-72 w-72 rounded-full bg-indigo-300/30 blur-3xl" />
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,0.34)_0%,rgba(255,255,255,0.08)_42%,rgba(255,255,255,0.24)_100%)]" />
@@ -180,51 +180,51 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.55, ease: 'easeOut' }}
-            className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/70 bg-white/22 p-8 shadow-[0_34px_110px_-42px_rgba(30,41,59,0.62),inset_0_1px_0_rgba(255,255,255,0.75)] ring-1 ring-white/45 backdrop-blur-[34px]"
+            className="relative w-full max-w-md overflow-hidden rounded-[2.25rem] border border-white/75 bg-white/28 p-8 shadow-[0_38px_120px_-44px_rgba(15,23,42,0.68),0_18px_42px_-34px_rgba(79,70,229,0.72),inset_0_1px_0_rgba(255,255,255,0.82)] ring-1 ring-white/50 backdrop-blur-[38px] dark:border-white/12 dark:bg-slate-950/58 dark:shadow-[0_38px_120px_-48px_rgba(0,0,0,0.92),0_18px_42px_-34px_rgba(99,102,241,0.62),inset_0_1px_0_rgba(255,255,255,0.12)] dark:ring-white/10"
           >
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.82)_0%,rgba(255,255,255,0.28)_46%,rgba(199,210,254,0.3)_100%)]" />
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.86)_0%,rgba(255,255,255,0.3)_46%,rgba(199,210,254,0.34)_100%)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.72)_0%,rgba(30,41,59,0.32)_54%,rgba(79,70,229,0.16)_100%)]" />
             <div className="pointer-events-none absolute -left-24 top-24 h-40 w-[140%] rotate-[-14deg] bg-white/42 blur-3xl" />
             <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-white/90" />
-            <div className="absolute left-1/2 top-0 flex h-12 w-40 -translate-x-1/2 -translate-y-px items-center justify-center rounded-b-2xl border-x border-b border-white/70 bg-white/82 text-sm font-semibold text-slate-900 shadow-[0_16px_36px_-24px_rgba(15,23,42,0.55)] backdrop-blur-2xl">
+            <div className="absolute left-1/2 top-0 flex h-12 w-40 -translate-x-1/2 -translate-y-px items-center justify-center rounded-b-2xl border-x border-b border-white/70 bg-white/86 text-sm font-semibold text-slate-900 shadow-[0_16px_36px_-24px_rgba(15,23,42,0.55)] backdrop-blur-2xl dark:border-white/12 dark:bg-slate-900/88 dark:text-slate-100">
               {isRegister ? 'Register' : 'Login'}
             </div>
 
-            <div className="relative mt-9 flex items-center gap-4 rounded-2xl border border-white/72 bg-white/36 px-4 py-3 shadow-[0_20px_56px_-36px_rgba(67,56,202,0.46),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl">
+            <div className="relative mt-9 flex items-center gap-4 rounded-3xl border border-white/75 bg-white/42 px-4 py-3 shadow-[0_24px_64px_-38px_rgba(67,56,202,0.56),inset_0_1px_0_rgba(255,255,255,0.86)] backdrop-blur-2xl dark:border-white/12 dark:bg-white/8">
               <a
                 href="https://aroha.co.in/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex h-32 w-56 shrink-0 items-center justify-center rounded-xl border border-white/72 bg-white/72 px-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.78),0_18px_44px_-32px_rgba(67,56,202,0.58)] transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+                className="flex h-32 w-56 shrink-0 items-center justify-center rounded-2xl border border-white/72 bg-white/76 px-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_18px_44px_-32px_rgba(67,56,202,0.58)] transition hover:-translate-y-0.5 hover:bg-white hover:shadow-[0_22px_54px_-32px_rgba(67,56,202,0.72)] focus:outline-none focus:ring-2 focus:ring-indigo-400/60 dark:border-white/12 dark:bg-white/90"
                 aria-label="Visit Aroha website"
               >
                 <img
                   src="/company-logo.png"
                   alt="Aroha"
-                  width={224}
-                  height={96}
-                  className="max-h-24 w-full object-contain drop-shadow-[0_14px_30px_rgba(67,56,202,0.2)]"
+                  width={320}
+                  height={136}
+                  className="max-h-28 w-[140%] max-w-none object-contain drop-shadow-[0_16px_34px_rgba(67,56,202,0.24)]"
                 />
               </a>
               <div className="min-w-0 text-left">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-indigo-500/90">Aroha</p>
-                <p className="mt-1 text-xl font-black leading-tight tracking-normal text-slate-950">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-indigo-500/90 dark:text-indigo-300">Aroha</p>
+                <p className="mt-1 text-xl font-black leading-tight tracking-normal text-slate-950 dark:text-white">
                   Aroha Intelligent Platform
                 </p>
               </div>
             </div>
 
             <div className="relative mt-5 text-center">
-              <h1 className="mt-3 text-3xl font-semibold tracking-normal text-slate-950">
+              <h1 className="mt-3 text-3xl font-bold tracking-normal text-slate-950 dark:text-white">
                 {isRegister ? 'Create Your Account' : 'Welcome Back'}
               </h1>
-              <p className="mt-3 text-sm leading-6 text-slate-700">
+              <p className="mt-3 text-sm leading-6 text-slate-700 dark:text-slate-300">
                 {isRegister
                   ? 'Register to start a secure AI analytics workspace for your business data.'
                   : 'Sign in to continue your secure analytics workspace and active data workflows.'}
               </p>
             </div>
 
-            <form className="relative mt-7 space-y-4" onSubmit={handleSubmit}>
+            <form className="relative mt-8 space-y-5" onSubmit={handleSubmit}>
               {errorMessage ? (
                 <div className="flex gap-2 rounded-2xl border border-red-200/90 bg-red-50/85 px-4 py-3 text-sm text-red-950">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -248,13 +248,13 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
               {isRegister && (
                 <label className="block">
-                  <span className="mb-2 block text-sm font-semibold text-slate-800">Full name</span>
-                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                  <span className="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-200">Full name</span>
+                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/74 bg-white/44 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.86),0_14px_36px_-30px_rgba(67,56,202,0.5)] transition duration-200 backdrop-blur-2xl hover:border-indigo-200/90 hover:bg-white/56 hover:shadow-[0_18px_44px_-34px_rgba(99,102,241,0.66),inset_0_1px_0_rgba(255,255,255,0.9)] focus-within:border-indigo-300/90 focus-within:bg-white/64 focus-within:ring-4 focus-within:ring-indigo-300/24 dark:border-white/12 dark:bg-white/8 dark:text-white dark:hover:border-indigo-400/40 dark:hover:bg-white/10 dark:focus-within:border-indigo-300/60 dark:focus-within:bg-white/12 dark:focus-within:ring-indigo-400/20">
                     <UserRound className="h-5 w-5 text-indigo-600" />
                     <input
                       type="text"
                       autoComplete="name"
-                      className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                      className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500 dark:text-white dark:placeholder:text-slate-500"
                       placeholder="Your name"
                       value={form.username}
                       onChange={updateField('username')}
@@ -266,13 +266,13 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               )}
 
               <label className="block">
-                <span className="mb-2 block text-sm font-semibold text-slate-800">Email</span>
-                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                <span className="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-200">Email</span>
+                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/74 bg-white/44 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.86),0_14px_36px_-30px_rgba(67,56,202,0.5)] transition duration-200 backdrop-blur-2xl hover:border-indigo-200/90 hover:bg-white/56 hover:shadow-[0_18px_44px_-34px_rgba(99,102,241,0.66),inset_0_1px_0_rgba(255,255,255,0.9)] focus-within:border-indigo-300/90 focus-within:bg-white/64 focus-within:ring-4 focus-within:ring-indigo-300/24 dark:border-white/12 dark:bg-white/8 dark:text-white dark:hover:border-indigo-400/40 dark:hover:bg-white/10 dark:focus-within:border-indigo-300/60 dark:focus-within:bg-white/12 dark:focus-within:ring-indigo-400/20">
                   <Mail className="h-5 w-5 text-indigo-600" />
                   <input
                     type="email"
                     autoComplete="email"
-                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500 dark:text-white dark:placeholder:text-slate-500"
                     placeholder="you@example.com"
                     value={form.email}
                     onChange={updateField('email')}
@@ -283,13 +283,13 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               </label>
 
               <label className="block">
-                <span className="mb-2 block text-sm font-semibold text-slate-800">Password</span>
-                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                <span className="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-200">Password</span>
+                <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/74 bg-white/44 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.86),0_14px_36px_-30px_rgba(67,56,202,0.5)] transition duration-200 backdrop-blur-2xl hover:border-indigo-200/90 hover:bg-white/56 hover:shadow-[0_18px_44px_-34px_rgba(99,102,241,0.66),inset_0_1px_0_rgba(255,255,255,0.9)] focus-within:border-indigo-300/90 focus-within:bg-white/64 focus-within:ring-4 focus-within:ring-indigo-300/24 dark:border-white/12 dark:bg-white/8 dark:text-white dark:hover:border-indigo-400/40 dark:hover:bg-white/10 dark:focus-within:border-indigo-300/60 dark:focus-within:bg-white/12 dark:focus-within:ring-indigo-400/20">
                   <Lock className="h-5 w-5 text-indigo-600" />
                   <input
                     type={showPassword ? 'text' : 'password'}
                     autoComplete={isRegister ? 'new-password' : 'current-password'}
-                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500 dark:text-white dark:placeholder:text-slate-500"
                     placeholder="Enter your password"
                     value={form.password}
                     onChange={updateField('password')}
@@ -300,7 +300,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                   <button
                     type="button"
                     onClick={() => setShowPassword((current) => !current)}
-                    className="rounded-lg p-1 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-300/80"
+                    className="rounded-lg p-1 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-300/80 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-indigo-200"
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
                   >
                     {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
@@ -310,13 +310,13 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
 
               {isRegister && (
                 <label className="block">
-                  <span className="mb-2 block text-sm font-semibold text-slate-800">Confirm password</span>
-                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/72 bg-white/38 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_14px_36px_-30px_rgba(67,56,202,0.46)] transition backdrop-blur-2xl focus-within:border-indigo-300/90 focus-within:bg-white/58 focus-within:ring-4 focus-within:ring-indigo-300/22">
+                  <span className="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-200">Confirm password</span>
+                  <span className="flex h-12 items-center gap-3 rounded-2xl border border-white/74 bg-white/44 px-4 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.86),0_14px_36px_-30px_rgba(67,56,202,0.5)] transition duration-200 backdrop-blur-2xl hover:border-indigo-200/90 hover:bg-white/56 hover:shadow-[0_18px_44px_-34px_rgba(99,102,241,0.66),inset_0_1px_0_rgba(255,255,255,0.9)] focus-within:border-indigo-300/90 focus-within:bg-white/64 focus-within:ring-4 focus-within:ring-indigo-300/24 dark:border-white/12 dark:bg-white/8 dark:text-white dark:hover:border-indigo-400/40 dark:hover:bg-white/10 dark:focus-within:border-indigo-300/60 dark:focus-within:bg-white/12 dark:focus-within:ring-indigo-400/20">
                     <Lock className="h-5 w-5 text-indigo-600" />
                     <input
                       type={showPassword ? 'text' : 'password'}
                       autoComplete="new-password"
-                      className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500"
+                      className="h-full min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-500 dark:text-white dark:placeholder:text-slate-500"
                       placeholder="Confirm your password"
                       value={form.confirmPassword}
                       onChange={updateField('confirmPassword')}
@@ -329,7 +329,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
               )}
 
               <div className="flex items-center justify-between gap-4 text-sm">
-                <label className="flex min-w-0 items-center gap-2 text-slate-700">
+                <label className="flex min-w-0 items-center gap-2 text-slate-700 dark:text-slate-300">
                   <input
                     type="checkbox"
                     className="h-4 w-4 rounded border-slate-300 bg-white text-indigo-600 focus:ring-2 focus:ring-indigo-300/60"
@@ -343,7 +343,7 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                   <button
                     type="button"
                     onClick={handleForgotPassword}
-                    className="shrink-0 font-semibold text-indigo-700 transition hover:text-indigo-950"
+                    className="shrink-0 font-semibold text-indigo-700 transition hover:text-indigo-950 dark:text-indigo-300 dark:hover:text-indigo-100"
                   >
                     Forgot password?
                   </button>
@@ -354,19 +354,19 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 type="submit"
                 whileTap={{ scale: 0.97 }}
                 disabled={isSubmitting}
-                className="flex h-12 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 to-indigo-600 text-sm font-semibold text-white shadow-[0_16px_40px_-18px_rgba(129,140,248,0.9)] transition hover:scale-[1.02] hover:shadow-[0_22px_54px_-18px_rgba(129,140,248,1)] focus:outline-none focus:ring-4 focus:ring-violet-300/35 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:scale-100"
+                className="flex h-12 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-indigo-500 to-sky-500 text-sm font-bold text-white shadow-[0_18px_46px_-18px_rgba(99,102,241,0.95)] transition duration-200 hover:scale-[1.025] hover:shadow-[0_24px_60px_-18px_rgba(99,102,241,1)] focus:outline-none focus:ring-4 focus:ring-violet-300/35 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:scale-100"
               >
                 {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {isSubmitting ? (isRegister ? 'Creating account...' : 'Signing in...') : isRegister ? 'Create Account' : 'Login'}
               </motion.button>
             </form>
 
-            <p className="mt-8 text-center text-sm text-slate-600">
+            <p className="mt-8 text-center text-sm text-slate-600 dark:text-slate-300">
               {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button
                 type="button"
                 onClick={() => switchMode(isRegister ? 'login' : 'register')}
-                className="font-semibold text-indigo-700 transition hover:text-indigo-950"
+                className="font-semibold text-indigo-700 transition hover:text-indigo-950 dark:text-indigo-300 dark:hover:text-indigo-100"
               >
                 {isRegister ? 'Login' : 'Register'}
               </button>

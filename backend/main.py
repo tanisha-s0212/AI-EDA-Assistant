@@ -52,7 +52,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, r2_score, recall_score
-from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import KFold, LeaveOneOut, StratifiedKFold, cross_val_score, cross_validate, train_test_split
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
@@ -63,6 +63,11 @@ try:
     from xgboost import XGBRegressor
 except Exception:  # pragma: no cover - optional production dependency
     XGBRegressor = None
+
+try:
+    from xgboost import XGBClassifier
+except Exception:  # pragma: no cover - optional production dependency
+    XGBClassifier = None
 
 try:
     from lightgbm import LGBMRegressor
@@ -927,6 +932,37 @@ def write_cached_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
     return target
 
 
+def load_dataset(filepath: str) -> pd.DataFrame:
+    path = Path(filepath)
+    ext = path.suffix.lower()
+    loaders = {
+        '.csv': lambda f: pd.read_csv(f),
+        '.tsv': lambda f: pd.read_csv(f, sep='\t'),
+        '.txt': lambda f: pd.read_csv(f, sep=None, engine='python'),
+        '.xlsx': lambda f: pd.read_excel(f, engine='openpyxl'),
+        '.xls': lambda f: pd.read_excel(f, engine='xlrd'),
+        '.xlsm': lambda f: pd.read_excel(f, engine='openpyxl'),
+        '.parquet': lambda f: pd.read_parquet(f),
+        '.json': lambda f: pd.read_json(f),
+        '.jsonl': lambda f: pd.read_json(f, lines=True),
+        '.joblib': lambda f: joblib.load(f),
+        '.pkl': lambda f: joblib.load(f),
+        '.pickle': lambda f: joblib.load(f),
+    }
+    loader = loaders.get(ext)
+    if loader is None:
+        raise ValueError(f"Unsupported file format: {ext}. Supported: {list(loaders.keys())}")
+    try:
+        frame = loader(path)
+        if not isinstance(frame, pd.DataFrame):
+            frame = pd.DataFrame(frame)
+        if frame.empty:
+            raise ValueError('Loaded dataset is empty.')
+        return normalize_dataframe(frame)
+    except Exception as error:
+        raise ValueError(f'Failed to load {filepath}: {error}') from error
+
+
 class IngestionFormatError(ValueError):
     def __init__(self, message: str, *, issue: str = 'format_error') -> None:
         super().__init__(message)
@@ -1171,9 +1207,7 @@ def read_cached_frame(dataset_entry: dict[str, Any], columns: list[str] | None =
         raise HTTPException(status_code=400, detail='Cached dataset frame path is missing. Please upload the file again.')
 
     try:
-        frame = joblib.load(frame_path)
-        if not isinstance(frame, pd.DataFrame):
-            frame = pd.DataFrame(frame)
+        frame = load_dataset(str(frame_path))
         if columns is not None:
             frame = frame.loc[:, columns]
         if n_rows is not None and n_rows > 0:
@@ -3837,11 +3871,433 @@ def load_model_bundle(model_id: str) -> dict[str, Any]:
     if model_id in MODEL_CACHE:
         return MODEL_CACHE[model_id]
     model_path = MODEL_DIR / f'{model_id}.joblib'
+    bundle_path = MODEL_DIR / f'{model_id}_model_bundle.joblib'
+    if not model_path.exists() and bundle_path.exists():
+        model_path = bundle_path
     if not model_path.exists():
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' was not found.")
     bundle = joblib.load(model_path)
     MODEL_CACHE[model_id] = bundle
     return bundle
+
+
+def structured_training_failure(error: Exception, *, step: str, request: TrainRequest | None = None) -> JSONResponse:
+    detail = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
+    logger.error('ML training failed at %s: %s\n%s', step, error, detail)
+    if request is not None:
+        try:
+            record_activity(
+                action='train_model',
+                status='failed',
+                dataset_id=request.dataset_id,
+                detail=f'{step}: {error}',
+                metadata={
+                    'target_column': request.target_column,
+                    'feature_count': len(request.feature_columns),
+                    'model_type': request.model_type,
+                    'problem_type': request.problem_type,
+                },
+            )
+        except Exception:
+            logger.exception('Failed to record training failure activity.')
+    return JSONResponse(
+        status_code=200,
+        content={
+            'status': 'failed',
+            'step': step,
+            'error': str(getattr(error, 'detail', None) or error) or 'Training failed.',
+            'detail': detail,
+        },
+    )
+
+
+def get_cv_strategy(n_rows: int):
+    if n_rows < 30:
+        return LeaveOneOut()
+    if n_rows < 100:
+        return KFold(n_splits=min(5, n_rows), shuffle=True, random_state=42)
+    return KFold(n_splits=min(10, n_rows), shuffle=True, random_state=42)
+
+
+def select_candidate_models(task_type: ProblemType, n_rows: int, n_features: int, random_state: int) -> list[tuple[str, Any]]:
+    del n_features
+    if task_type == 'regression':
+        if n_rows < 50:
+            return [('Ridge', Ridge(alpha=1.0)), ('Lasso', Lasso(alpha=1.0)), ('Linear Regression', LinearRegression())]
+        if n_rows < 500:
+            return [
+                ('Random Forest', RandomForestRegressor(n_estimators=100, random_state=random_state)),
+                ('Gradient Boosting', GradientBoostingRegressor(random_state=random_state)),
+                ('Ridge', Ridge(alpha=1.0)),
+            ]
+        large_candidates: list[tuple[str, Any]] = [
+            ('Random Forest', RandomForestRegressor(n_estimators=200, random_state=random_state)),
+            ('Gradient Boosting', GradientBoostingRegressor(n_estimators=200, random_state=random_state)),
+        ]
+        if XGBRegressor is not None:
+            large_candidates.append(('XGBoost', XGBRegressor(n_estimators=200, random_state=random_state, verbosity=0)))
+        else:
+            large_candidates.append(('Gradient Boosting Fallback', GradientBoostingRegressor(n_estimators=200, random_state=random_state)))
+        return large_candidates
+
+    if n_rows < 50:
+        return [('Logistic Regression', LogisticRegression(max_iter=1000)), ('SVC', SVC(probability=True))]
+    if n_rows < 500:
+        return [
+            ('Random Forest', RandomForestClassifier(n_estimators=100, random_state=random_state)),
+            ('Logistic Regression', LogisticRegression(max_iter=1000)),
+        ]
+    large_classifiers: list[tuple[str, Any]] = [
+        ('Random Forest', RandomForestClassifier(n_estimators=200, random_state=random_state)),
+        ('Gradient Boosting', GradientBoostingClassifier(random_state=random_state)),
+    ]
+    if XGBClassifier is not None:
+        large_classifiers.append(('XGBoost', XGBClassifier(n_estimators=200, random_state=random_state, verbosity=0)))
+    else:
+        large_classifiers.append(('Gradient Boosting Fallback', GradientBoostingClassifier(random_state=random_state)))
+    return large_classifiers
+
+
+def is_datetime_feature(series: pd.Series) -> bool:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return True
+    if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
+        return False
+    sample = series.dropna().astype(str).head(50)
+    if sample.empty:
+        return False
+    parsed = pd.to_datetime(sample, errors='coerce')
+    return bool(parsed.notna().mean() >= 0.8)
+
+
+def prepare_universal_training_data(
+    frame: pd.DataFrame,
+    request: TrainRequest,
+) -> tuple[np.ndarray, pd.Series, dict[str, Any], list[str], list[str], LabelEncoder | None]:
+    warnings_list: list[str] = []
+    target_column = request.target_column
+    if target_column not in frame.columns:
+        raise ValueError(f'Target column "{target_column}" was not found in the dataset.')
+    missing_features = [feature for feature in request.feature_columns if feature not in frame.columns]
+    if missing_features:
+        raise ValueError(f'Missing selected feature columns: {missing_features}')
+
+    model_frame = frame[[*request.feature_columns, target_column]].copy()
+    model_frame = model_frame.dropna(subset=[target_column])
+    if len(model_frame) < 3:
+        raise ValueError('At least 3 valid target rows are required for universal cross-validation training.')
+
+    y_raw = model_frame[target_column]
+    label_encoder: LabelEncoder | None = None
+    if request.problem_type == 'classification':
+        label_encoder = LabelEncoder()
+        y = pd.Series(label_encoder.fit_transform(y_raw.astype(str)), index=model_frame.index)
+        if y.nunique() < 2:
+            raise ValueError('Classification requires at least two target classes.')
+    else:
+        y = pd.to_numeric(y_raw, errors='coerce').replace([np.inf, -np.inf], np.nan)
+        valid = y.notna()
+        model_frame = model_frame.loc[valid]
+        y = y.loc[valid].astype(float)
+        if len(y) < 3:
+            raise ValueError('Regression requires at least 3 numeric target rows.')
+        zero_pct = float((y == 0).mean() * 100)
+        if zero_pct > 5:
+            warnings_list.append(
+                f'Target column contains {zero_pct:.1f}% zero values which may affect accuracy. These have been kept as-is. If zeros represent missing data, clean them in the Data Cleaning tab first.'
+            )
+
+    X = model_frame[request.feature_columns].copy().replace([np.inf, -np.inf], np.nan)
+    dropped: dict[str, str] = {}
+    for column in list(X.columns):
+        series = X[column]
+        non_null = series.dropna()
+        if non_null.nunique(dropna=True) <= 1:
+            dropped[column] = 'Dropped because all values are identical.'
+            X = X.drop(columns=[column])
+            continue
+        if is_datetime_feature(series):
+            dropped[column] = 'Dropped because datetime features are excluded unless explicitly engineered first.'
+            X = X.drop(columns=[column])
+            continue
+        if (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)) and len(non_null) > 0:
+            unique_pct = float(non_null.astype(str).nunique() / max(len(series), 1))
+            if unique_pct > 0.95:
+                dropped[column] = 'Dropped because it behaves like a text identifier with more than 95% unique values.'
+                X = X.drop(columns=[column])
+
+    if X.empty:
+        raise ValueError('No usable features remain after removing identifiers, constant columns, and datetime columns.')
+
+    numeric_features = X.select_dtypes(include=[np.number, 'bool']).columns.tolist()
+    categorical_features = [column for column in X.columns if column not in numeric_features]
+    imputers: dict[str, Any] = {'numeric': {}, 'categorical': {}}
+    categories: dict[str, list[str]] = {}
+    X_imputed = pd.DataFrame(index=X.index)
+
+    for column in numeric_features:
+        numeric = pd.to_numeric(X[column], errors='coerce').replace([np.inf, -np.inf], np.nan)
+        median = float(numeric.median()) if numeric.notna().any() else 0.0
+        X_imputed[column] = numeric.fillna(median)
+        imputers['numeric'][column] = median
+
+    for column in categorical_features:
+        categorical = X[column].astype(object).where(pd.notna(X[column]), np.nan)
+        mode = categorical.dropna().astype(str).mode()
+        fill_value = str(mode.iloc[0]) if not mode.empty else 'missing'
+        filled = categorical.fillna(fill_value).astype(str)
+        X_imputed[column] = filled
+        imputers['categorical'][column] = fill_value
+        categories[column] = sorted(filled.unique().tolist())
+
+    if X_imputed.isna().any().any():
+        raise ValueError('Validation failed: missing values remain after imputation.')
+
+    X_encoded = pd.get_dummies(X_imputed, columns=categorical_features, dummy_na=False, dtype=float)
+    final_feature_names = X_encoded.columns.tolist()
+    if not final_feature_names:
+        raise ValueError('No usable encoded features are available for training.')
+
+    if len(final_feature_names) >= len(X_encoded):
+        y_for_corr = pd.Series(y, index=X_encoded.index).astype(float)
+        correlations = X_encoded.apply(lambda column: abs(float(column.corr(y_for_corr))) if column.nunique() > 1 else 0.0)
+        correlations = correlations.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        keep_count = min(len(final_feature_names), max(1, len(X_encoded) - 1), max(3, len(X_encoded) // 3))
+        kept = correlations.sort_values(ascending=False).head(keep_count).index.tolist()
+        warnings_list.append(
+            f'Dataset has {len(X_encoded)} rows. Auto-selected top {len(kept)} features by correlation with target to prevent overfitting.'
+        )
+        X_encoded = X_encoded.loc[:, kept]
+        final_feature_names = kept
+
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(X_encoded.astype(float))
+    if np.isnan(scaled).any() or np.isinf(scaled).any():
+        raise ValueError('Validation failed: NaN or Inf values remain after scaling.')
+
+    preprocessing = {
+        'raw_feature_columns': list(X.columns),
+        'numeric_features': numeric_features,
+        'categorical_features': categorical_features,
+        'imputers': imputers,
+        'categories': categories,
+        'encoded_feature_names': final_feature_names,
+        'scaler': scaler,
+        'dropped_features': dropped,
+        'warnings': warnings_list,
+    }
+    return scaled, y.reset_index(drop=True), preprocessing, final_feature_names, warnings_list, label_encoder
+
+
+def transform_features_for_bundle(features: dict[str, Any], bundle: dict[str, Any]) -> np.ndarray:
+    preprocessing = bundle.get('preprocessing') or {}
+    raw_features = preprocessing.get('raw_feature_columns') or bundle.get('feature_columns') or []
+    missing = [feature for feature in raw_features if features.get(feature) in [None, '']]
+    if missing:
+        raise ValueError(f'Missing features: {missing}')
+
+    row = pd.DataFrame([{feature: features.get(feature) for feature in raw_features}])
+    pieces: dict[str, Any] = {}
+    for column in preprocessing.get('numeric_features', []):
+        value = pd.to_numeric(pd.Series([row.at[0, column]]), errors='coerce').replace([np.inf, -np.inf], np.nan).iloc[0]
+        if pd.isna(value):
+            value = preprocessing.get('imputers', {}).get('numeric', {}).get(column, 0.0)
+        pieces[column] = float(value)
+    for column in preprocessing.get('categorical_features', []):
+        value = row.at[0, column]
+        if value in [None, ''] or pd.isna(value):
+            value = preprocessing.get('imputers', {}).get('categorical', {}).get(column, 'missing')
+        pieces[column] = str(value)
+
+    encoded = pd.get_dummies(pd.DataFrame([pieces]), columns=preprocessing.get('categorical_features', []), dtype=float)
+    encoded = encoded.reindex(columns=preprocessing.get('encoded_feature_names', []), fill_value=0.0)
+    scaler = preprocessing.get('scaler') or bundle.get('scaler')
+    if scaler is None:
+        return encoded.to_numpy(dtype=float)
+    return scaler.transform(encoded.astype(float))
+
+
+def train_universal_model(request: TrainRequest, http_request: Request) -> dict[str, Any]:
+    selected_columns = [*request.feature_columns, request.target_column]
+    try:
+        data_frame = load_dataset_frame(request.dataset_id, request.data, selected_columns)
+    except Exception as error:
+        raise RuntimeError(f'Data Loading failed: {error}') from error
+
+    try:
+        X, y, preprocessing, feature_names, warnings_list, label_encoder = prepare_universal_training_data(data_frame, request)
+    except Exception as error:
+        raise RuntimeError(f'Validation failed: {error}') from error
+
+    candidate_models = select_candidate_models(request.problem_type, len(y), len(feature_names), request.random_state)
+    cv = get_cv_strategy(len(y))
+    scoring = (
+        {'rmse': 'neg_root_mean_squared_error', 'r2': 'r2'}
+        if request.problem_type == 'regression'
+        else {'accuracy': 'accuracy', 'f1_weighted': 'f1_weighted'}
+    )
+    primary_metric = 'rmse' if request.problem_type == 'regression' else 'accuracy'
+    model_failures: list[str] = []
+    best: dict[str, Any] | None = None
+
+    for model_name, estimator in candidate_models:
+        try:
+            scores = cross_validate(clone(estimator), X, y, cv=cv, scoring=scoring, n_jobs=TRAINING_N_JOBS, error_score='raise')
+            primary_values = scores[f'test_{primary_metric}']
+            ranking_score = float(np.mean(primary_values))
+            summary = {
+                metric: {
+                    'mean': float(np.mean(values if metric != 'rmse' else -values)),
+                    'std': float(np.std(values if metric != 'rmse' else -values)),
+                }
+                for metric, values in ((key, scores[f'test_{key}']) for key in scoring.keys())
+            }
+            if best is None or ranking_score > best['ranking_score']:
+                best = {'name': model_name, 'estimator': clone(estimator), 'scores': summary, 'ranking_score': ranking_score}
+        except Exception as error:
+            model_failures.append(f'{model_name}: {error}')
+            logger.exception('Candidate model failed during training model=%s', model_name)
+
+    if best is None:
+        raise RuntimeError('Training failed for all candidate models. ' + ' | '.join(model_failures))
+
+    try:
+        start_time = time.perf_counter()
+        best['estimator'].fit(X, y)
+        training_time = round(time.perf_counter() - start_time, 4)
+    except Exception as error:
+        raise RuntimeError(f'Training model failed: {error}') from error
+
+    try:
+        fitted_predictions = best['estimator'].predict(X)
+        if request.problem_type == 'regression':
+            rmse = float(np.sqrt(mean_squared_error(y, fitted_predictions)))
+            metrics_primary = {
+                'R2': round(float(r2_score(y, fitted_predictions)), 6),
+                'RMSE': round(rmse, 6),
+                'MAE': round(float(mean_absolute_error(y, fitted_predictions)), 6),
+            }
+        else:
+            metrics_primary = {
+                'Accuracy': round(float(accuracy_score(y, fitted_predictions)), 6),
+                'Precision': round(float(precision_score(y, fitted_predictions, average='weighted', zero_division=0)), 6),
+                'Recall': round(float(recall_score(y, fitted_predictions, average='weighted', zero_division=0)), 6),
+                'F1 Score': round(float(f1_score(y, fitted_predictions, average='weighted', zero_division=0)), 6),
+            }
+            rmse = None
+    except Exception:
+        logger.exception('Failed to compute fitted metrics; returning CV metrics only.')
+        metrics_primary = {}
+        rmse = None
+
+    feature_importance = []
+    importances = getattr(best['estimator'], 'feature_importances_', None)
+    coefficients = getattr(best['estimator'], 'coef_', None)
+    if importances is not None:
+        values = np.asarray(importances).ravel()
+    elif coefficients is not None:
+        values = np.abs(np.asarray(coefficients)).mean(axis=0) if np.asarray(coefficients).ndim > 1 else np.abs(np.asarray(coefficients).ravel())
+    else:
+        values = np.zeros(len(feature_names))
+    for index, feature_name in enumerate(feature_names):
+        feature_importance.append({'name': feature_name, 'importance': round(float(values[index]) if index < len(values) else 0.0, 6)})
+    feature_importance.sort(key=lambda item: item['importance'], reverse=True)
+
+    model_id = request.dataset_id or str(uuid.uuid4())[:8]
+    trained_at = datetime.utcnow().isoformat()
+    bundle = {
+        'model': best['estimator'],
+        'pipeline': best['estimator'],
+        'scaler': preprocessing['scaler'],
+        'encoder': preprocessing['categories'],
+        'preprocessing': preprocessing,
+        'feature_names': feature_names,
+        'feature_columns': preprocessing['raw_feature_columns'],
+        'target_name': request.target_column,
+        'target_column': request.target_column,
+        'task_type': request.problem_type,
+        'problem_type': request.problem_type,
+        'model_type': best['name'].lower().replace(' ', '_'),
+        'model_name': best['name'],
+        'label_encoder': label_encoder,
+        'cv_score_mean': float(best['scores'][primary_metric]['mean']),
+        'cv_score_std': float(best['scores'][primary_metric]['std']),
+        'cv_scores': best['scores'],
+        'rmse': rmse,
+        'trained_at': trained_at,
+        'n_rows': int(len(y)),
+        'n_features': int(len(feature_names)),
+        'file_format': Path(str((DATASET_CACHE.get(request.dataset_id or '') or {}).get('filename') or '')).suffix.lower(),
+    }
+    try:
+        save_model_bundle(model_id, bundle)
+        joblib.dump(bundle, MODEL_DIR / f'{model_id}_model_bundle.joblib')
+    except Exception as error:
+        raise RuntimeError(f'Saving failed: {error}') from error
+
+    if request.problem_type == 'classification' and label_encoder is not None:
+        actual_values = label_encoder.inverse_transform(y.astype(int))
+        predicted_values = label_encoder.inverse_transform(pd.Series(fitted_predictions).astype(int))
+    else:
+        actual_values = y.tolist()
+        predicted_values = pd.Series(fitted_predictions).tolist()
+    sample_predictions = [
+        {'actual': safe_serialize(actual_values[index]), 'predicted': safe_serialize(predicted_values[index])}
+        for index in range(min(10, len(predicted_values)))
+    ]
+
+    full_metrics = {
+        'primary': metrics_primary,
+        'cv_scores': [round(float(v), 6) for v in np.atleast_1d(best['scores'][primary_metric]['mean'])],
+        'cv_mean': round(float(best['scores'][primary_metric]['mean']), 6),
+        'cv_std': round(float(best['scores'][primary_metric]['std']), 6),
+        'cv_folds_used': int(getattr(cv, 'n_splits', len(y))),
+        'cv_rows_evaluated': int(len(y)),
+    }
+    response = {
+        'status': 'success',
+        'model': best['name'],
+        'model_id': model_id,
+        'model_name': best['name'],
+        'problem_type': request.problem_type,
+        'scores': best['scores'],
+        'metrics': metrics_primary,
+        'full_metrics': full_metrics,
+        'features_used': feature_names,
+        'warnings': warnings_list,
+        'feature_importance': feature_importance,
+        'sample_predictions': sample_predictions,
+        'analysis': make_analysis(request.problem_type, best['name'], full_metrics, feature_importance),
+        'training_time': training_time,
+        'trained_at': trained_at,
+        'cv_scores': [round(float(best['scores'][primary_metric]['mean']), 6)],
+        'overfitting_detected': False,
+        'overfitting_status': 'healthy',
+        'overfitting_explanation': 'Model quality is reported from cross-validation mean and standard deviation.',
+        'generalization_gap': 0,
+        'cv_gap': None,
+        'optimization': {
+            'training_rows_available': int(len(data_frame)),
+            'training_rows_used': int(len(y)),
+            'training_sampled': False,
+            'cv_rows_evaluated': int(len(y)),
+            'cv_folds_used': int(getattr(cv, 'n_splits', len(y))),
+            'cv_sampled': False,
+            'training_mode': request.training_mode,
+            'importance_rows_evaluated': int(len(y)),
+            'importance_repeats': 0,
+        },
+    }
+    record_activity(
+        request=http_request,
+        action='train_model',
+        status='success',
+        dataset_id=request.dataset_id,
+        model_id=model_id,
+        detail=f'Trained {best["name"]} for a {request.problem_type} task.',
+        metadata={'target_column': request.target_column, 'feature_count': len(feature_names), 'primary_metrics': metrics_primary},
+    )
+    return response
 
 
 def infer_problem_type_from_estimator(estimator: Any) -> ProblemType:
@@ -3892,234 +4348,26 @@ def normalize_uploaded_bundle(raw_bundle: Any, filename: str) -> dict[str, Any]:
 
 @router.post('/train')
 def train_model(request: TrainRequest, http_request: Request) -> JSONResponse:
-    logger.info(
-        'Train request received problem_type=%s model_type=%s dataset_id=%s feature_count=%s test_size=%s cv_folds=%s training_mode=%s',
-        request.problem_type,
-        request.model_type,
-        request.dataset_id,
-        len(request.feature_columns),
-        request.test_size,
-        request.cv_folds,
-        request.training_mode,
-    )
-    selected_columns = [*request.feature_columns, request.target_column]
-    data_frame = load_dataset_frame(request.dataset_id, request.data, selected_columns)
-    data_frame = data_frame.dropna(subset=[request.target_column])
-    if len(data_frame) < 10:
-        raise HTTPException(status_code=400, detail='At least 10 valid rows are required for training.')
-
-    X = normalize_feature_frame(data_frame[request.feature_columns].copy())
-    y_raw = data_frame[request.target_column].copy()
-    label_encoder: LabelEncoder | None = None
-    if request.problem_type == 'classification':
-        label_encoder = LabelEncoder()
-        y = pd.Series(label_encoder.fit_transform(y_raw.astype(str)), index=y_raw.index)
-        class_counts = y.value_counts()
-        if class_counts.shape[0] < 2:
-            raise HTTPException(status_code=400, detail='Classification requires at least two target classes.')
-        stratify = y if class_counts.min() >= 2 else None
-    else:
-        y = pd.to_numeric(y_raw, errors='coerce')
-        valid_numeric = y.notna()
-        X = X.loc[valid_numeric]
-        y = y.loc[valid_numeric]
-        stratify = None
-        if len(X) < 10:
-            raise HTTPException(status_code=400, detail='Regression requires at least 10 numeric target rows.')
-
-    training_profile = build_training_profile(len(X), request.cv_folds, request.training_mode)
-    training_rows_available = int(len(X))
-    train_sample_limit = int(training_profile['train_sample_limit'])
-    if train_sample_limit > 0 and len(X) > train_sample_limit:
-        X, y = sample_training_rows(X, y, max_rows=train_sample_limit, random_state=request.random_state, stratify=stratify)
-        if request.problem_type == 'classification':
-            stratify = y if y.value_counts().min() >= 2 else None
-    training_rows_used = int(len(X))
-
     try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=request.test_size, random_state=request.random_state, stratify=stratify,
+        logger.info(
+            'Train request received problem_type=%s model_type=%s dataset_id=%s feature_count=%s training_mode=%s',
+            request.problem_type,
+            request.model_type,
+            request.dataset_id,
+            len(request.feature_columns),
+            request.training_mode,
         )
-    except ValueError as error:
-        if request.problem_type == 'classification' and stratify is not None:
-            try:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=request.test_size, random_state=request.random_state, stratify=None,
-                )
-            except ValueError as fallback_error:
-                raise HTTPException(status_code=400, detail=f'Unable to split the dataset for training: {fallback_error}') from fallback_error
-        else:
-            raise HTTPException(status_code=400, detail=f'Unable to split the dataset for training: {error}') from error
-
-    model_name, estimator = build_estimator(request.problem_type, request.model_type, request.random_state)
-    pipeline = Pipeline([
-        ('preprocessor', build_preprocessor(X_train)),
-        ('model', estimator),
-    ])
-
-    start_time = time.perf_counter()
-    try:
-        pipeline.fit(X_train, y_train)
+        response = train_universal_model(request, http_request)
+        logger.info('Train request completed successfully model_id=%s model_name=%s', response.get('model_id'), response.get('model_name'))
+        return JSONResponse(status_code=200, content=safe_serialize(response))
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Training failed for {model_name}: {error}") from error
-    training_time = round(time.perf_counter() - start_time, 4)
-
-    train_predictions = pipeline.predict(X_train)
-    test_predictions = pipeline.predict(X_test)
-    metrics: dict[str, Any] = {}
-    scoring = 'r2'
-    if request.problem_type == 'regression':
-        rmse = float(np.sqrt(mean_squared_error(y_test, test_predictions)))
-        metrics.update({
-            'train_r2': round(float(r2_score(y_train, train_predictions)), 6),
-            'test_r2': round(float(r2_score(y_test, test_predictions)), 6),
-            'test_rmse': round(rmse, 6),
-            'test_mae': round(float(mean_absolute_error(y_test, test_predictions)), 6),
-        })
-        metrics['primary'] = {'R2': metrics['test_r2'], 'RMSE': metrics['test_rmse'], 'MAE': metrics['test_mae']}
-    else:
-        scoring = 'accuracy'
-        metrics.update({
-            'train_accuracy': round(float(accuracy_score(y_train, train_predictions)), 6),
-            'test_accuracy': round(float(accuracy_score(y_test, test_predictions)), 6),
-            'test_precision': round(float(precision_score(y_test, test_predictions, average='weighted', zero_division=0)), 6),
-            'test_recall': round(float(recall_score(y_test, test_predictions, average='weighted', zero_division=0)), 6),
-            'test_f1': round(float(f1_score(y_test, test_predictions, average='weighted', zero_division=0)), 6),
-        })
-        metrics['primary'] = {
-            'Accuracy': metrics['test_accuracy'],
-            'Precision': metrics['test_precision'],
-            'Recall': metrics['test_recall'],
-            'F1 Score': metrics['test_f1'],
-        }
-
-    folds = int(training_profile['cv_folds'])
-    try:
-        cv_X = X
-        cv_y = y
-        if bool(training_profile['skip_cv_for_large_dataset']) and len(X) >= LARGE_DATASET_ROW_THRESHOLD:
-            raise RuntimeError('Cross-validation skipped for large dataset to keep training responsive.')
-        cv_stratify = y if request.problem_type == 'classification' and y.value_counts().min() >= 2 else None
-        cv_sample_limit = int(training_profile['cv_sample_limit'])
-        if cv_sample_limit > 0:
-            cv_X, cv_y = sample_training_rows(X, y, max_rows=cv_sample_limit, random_state=request.random_state, stratify=cv_stratify)
-            if request.problem_type == 'classification':
-                cv_stratify = cv_y if cv_y.value_counts().min() >= 2 else None
-        if request.problem_type == 'classification':
-            min_class_size = int(cv_y.value_counts().min())
-            folds = max(2, min(folds, min_class_size))
-            cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=request.random_state)
-        else:
-            cv = KFold(n_splits=folds, shuffle=True, random_state=request.random_state)
-        cv_scores = cross_val_score(clone(pipeline), cv_X, cv_y, cv=cv, scoring=scoring, n_jobs=TRAINING_N_JOBS)
-        metrics['cv_scores'] = [round(float(score), 6) for score in cv_scores]
-        metrics['cv_mean'] = round(float(np.mean(cv_scores)), 6)
-        metrics['cv_std'] = round(float(np.std(cv_scores)), 6)
-        metrics['cv_rows_evaluated'] = int(len(cv_X))
-        metrics['cv_folds_used'] = int(folds)
-    except Exception:
-        metrics['cv_scores'] = []
-        metrics['cv_mean'] = 0.0
-        metrics['cv_std'] = 0.0
-        metrics['cv_rows_evaluated'] = 0
-        metrics['cv_folds_used'] = int(folds)
-
-    try:
-        importance_X = X_test
-        importance_y = y_test
-        if len(X) > 10000:
-            raise RuntimeError('Permutation importance skipped for large dataset to keep training responsive.')
-        importance_sample_limit = int(training_profile['importance_sample_limit'])
-        if importance_sample_limit > 0 and len(X_test) > importance_sample_limit:
-            importance_X, importance_y = sample_training_rows(
-                X_test, y_test, max_rows=importance_sample_limit, random_state=request.random_state,
-                stratify=y_test if request.problem_type == 'classification' and y_test.value_counts().min() >= 2 else None,
-            )
-        permutation = permutation_importance(
-            pipeline, importance_X, importance_y, n_repeats=int(training_profile['importance_repeats']),
-            random_state=request.random_state, scoring=scoring, n_jobs=TRAINING_N_JOBS,
-        )
-        feature_importance = [
-            {'name': feature_name, 'importance': round(float(permutation.importances_mean[index]), 6)}
-            for index, feature_name in enumerate(request.feature_columns)
-        ]
-    except Exception:
-        feature_importance = [{'name': feature_name, 'importance': 0.0} for feature_name in request.feature_columns]
-    feature_importance.sort(key=lambda item: item['importance'], reverse=True)
-
-    if request.problem_type == 'classification' and label_encoder is not None:
-        actual_values = label_encoder.inverse_transform(y_test.astype(int))
-        predicted_values = label_encoder.inverse_transform(pd.Series(test_predictions).astype(int))
-    else:
-        actual_values = y_test.tolist()
-        predicted_values = pd.Series(test_predictions).tolist()
-
-    sample_predictions = [
-        {'actual': safe_serialize(actual_values[index]), 'predicted': safe_serialize(predicted_values[index])}
-        for index in range(min(10, len(predicted_values)))
-    ]
-
-    overfitting_assessment = assess_overfitting(request.problem_type, metrics)
-
-    model_id = str(uuid.uuid4())[:8]
-    model_bundle = {
-        'pipeline': pipeline,
-        'feature_columns': request.feature_columns,
-        'target_column': request.target_column,
-        'problem_type': request.problem_type,
-        'model_type': request.model_type,
-        'model_name': model_name,
-        'label_encoder': label_encoder,
-        'trained_at': datetime.utcnow().isoformat(),
-    }
-    save_model_bundle(model_id, model_bundle)
-    logger.info('Train request completed successfully model_id=%s model_name=%s', model_id, model_bundle['model_name'])
-
-    response = {
-        'model_id': model_id,
-        'model_name': model_name,
-        'problem_type': request.problem_type,
-        'metrics': metrics['primary'],
-        'full_metrics': metrics,
-        'feature_importance': feature_importance,
-        'sample_predictions': sample_predictions,
-        'analysis': make_analysis(request.problem_type, model_name, metrics, feature_importance),
-        'training_time': training_time,
-        'trained_at': model_bundle['trained_at'],
-        'cv_scores': metrics.get('cv_scores', []),
-        'overfitting_detected': overfitting_assessment['detected'],
-        'overfitting_status': overfitting_assessment['status'],
-        'overfitting_explanation': overfitting_assessment['explanation'],
-        'generalization_gap': overfitting_assessment['generalization_gap'],
-        'cv_gap': overfitting_assessment['cv_gap'],
-        'optimization': {
-            'training_rows_available': training_rows_available,
-            'training_rows_used': training_rows_used,
-            'training_sampled': training_rows_used < training_rows_available,
-            'cv_rows_evaluated': metrics.get('cv_rows_evaluated', len(X)),
-            'cv_folds_used': metrics.get('cv_folds_used', folds),
-            'cv_sampled': bool(training_profile['cv_sample_limit']) and metrics.get('cv_rows_evaluated', 0) > 0 and metrics.get('cv_rows_evaluated', 0) < training_rows_available,
-            'training_mode': str(training_profile['training_mode']),
-            'importance_rows_evaluated': int(len(importance_X)) if 'importance_X' in locals() else int(len(X_test)),
-            'importance_repeats': int(training_profile['importance_repeats']),
-        },
-    }
-    record_activity(
-        request=http_request,
-        action='train_model',
-        status='success',
-        dataset_id=request.dataset_id,
-        model_id=model_id,
-        detail=f'Trained {model_name} for a {request.problem_type} task.',
-        metadata={
-            'target_column': request.target_column,
-            'feature_count': len(request.feature_columns),
-            'model_type': request.model_type,
-            'training_mode': request.training_mode,
-            'primary_metrics': metrics['primary'],
-        },
-    )
-    return JSONResponse(content=safe_serialize(response))
+        message = str(error)
+        failed_step = 'Training'
+        for candidate_step in ('Data Loading', 'Validation', 'Saving'):
+            if candidate_step.lower() in message.lower():
+                failed_step = candidate_step
+                break
+        return structured_training_failure(error, step=failed_step, request=request)
 
 
 @router.post('/sales-forecast')
@@ -5485,28 +5733,60 @@ def get_profit_breakeven(session_id: str) -> JSONResponse:
 
 @router.post('/predict')
 def predict(request: PredictRequest, http_request: Request) -> JSONResponse:
-    bundle = load_model_bundle(request.model_id)
-    missing = [feature for feature in bundle['feature_columns'] if request.features.get(feature) in [None, '']]
-    if missing:
-        raise HTTPException(status_code=400, detail=f'Missing features: {missing}')
-
-    frame = normalize_feature_frame(pd.DataFrame([{feature: request.features.get(feature) for feature in bundle['feature_columns']}]))
     try:
-        raw_prediction = bundle['pipeline'].predict(frame)[0]
+        bundle = load_model_bundle(request.model_id)
+    except HTTPException:
+        return JSONResponse(
+            status_code=200,
+            content={
+                'status': 'failed',
+                'error': 'No trained model found. Please complete ML Assistant training first.',
+                'detail': f'Model bundle not found for id {request.model_id}.',
+            },
+        )
+    except Exception as error:
+        logger.exception('Prediction bundle loading failed model_id=%s', request.model_id)
+        return JSONResponse(status_code=200, content={'status': 'failed', 'error': 'Unable to load the trained model.', 'detail': str(error)})
+
+    try:
+        if bundle.get('preprocessing'):
+            frame_or_array = transform_features_for_bundle(request.features, bundle)
+            estimator = bundle.get('model') or bundle.get('pipeline')
+        else:
+            missing = [feature for feature in bundle['feature_columns'] if request.features.get(feature) in [None, '']]
+            if missing:
+                raise ValueError(f'Missing features: {missing}')
+            frame_or_array = normalize_feature_frame(pd.DataFrame([{feature: request.features.get(feature) for feature in bundle['feature_columns']}]))
+            estimator = bundle['pipeline']
+
+        raw_prediction = estimator.predict(frame_or_array)[0]
         prediction: Any = raw_prediction
         if bundle['problem_type'] == 'regression':
             prediction = int(round(float(raw_prediction)))
 
-        payload: dict[str, Any] = {'prediction': safe_serialize(prediction), 'prediction_label': safe_serialize(prediction)}
+        payload: dict[str, Any] = {
+            'status': 'success',
+            'prediction': safe_serialize(prediction),
+            'prediction_label': safe_serialize(prediction),
+            'cv_score_mean': safe_serialize(bundle.get('cv_score_mean')),
+            'cv_score_std': safe_serialize(bundle.get('cv_score_std')),
+        }
+        if bundle['problem_type'] == 'regression' and bundle.get('rmse') is not None:
+            interval = 1.96 * float(bundle['rmse'])
+            numeric_prediction = float(raw_prediction)
+            payload['confidence_interval'] = {
+                'lower': round(numeric_prediction - interval, 6),
+                'upper': round(numeric_prediction + interval, 6),
+                'margin': round(interval, 6),
+            }
 
         label_encoder: LabelEncoder | None = bundle.get('label_encoder')
         if bundle['problem_type'] == 'classification' and label_encoder is not None:
             label = label_encoder.inverse_transform([int(prediction)])[0]
             payload['prediction_label'] = str(label)
 
-            model = bundle['pipeline'].named_steps['model']
-            if hasattr(model, 'predict_proba'):
-                probabilities = bundle['pipeline'].predict_proba(frame)[0]
+            if hasattr(estimator, 'predict_proba'):
+                probabilities = estimator.predict_proba(frame_or_array)[0]
                 probability_map: dict[str, float] = {}
                 for encoded_class, probability in enumerate(probabilities):
                     label_name = label_encoder.inverse_transform([encoded_class])[0]
@@ -5528,11 +5808,16 @@ def predict(request: PredictRequest, http_request: Request) -> JSONResponse:
             },
         )
         return JSONResponse(content=safe_serialize(payload))
-    except HTTPException:
-        raise
     except Exception as error:
         logger.exception('Prediction failed model_id=%s', request.model_id)
-        raise HTTPException(status_code=400, detail=f'Prediction failed: {error}') from error
+        return JSONResponse(
+            status_code=200,
+            content={
+                'status': 'failed',
+                'error': f'Prediction failed: {error}',
+                'detail': ''.join(traceback.format_exception(type(error), error, error.__traceback__)),
+            },
+        )
 
 
 @router.post('/upload-model')

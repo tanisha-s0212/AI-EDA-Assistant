@@ -81,11 +81,17 @@ import { cn } from '@/lib/utils';
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 interface PredictResponse {
+  status?: 'success' | 'failed';
+  error?: string;
+  detail?: string;
   prediction: number | string;
   prediction_label?: string;
   probabilities?: Record<string, number>;
   confidence?: number;
   top_class?: string;
+  confidence_interval?: { lower: number; upper: number; margin: number };
+  cv_score_mean?: number | null;
+  cv_score_std?: number | null;
 }
 
 interface UploadModelResponse {
@@ -418,8 +424,7 @@ function EmptyState() {
       </div>
       <h3 className="text-xl font-semibold mb-2">No Model Available</h3>
       <p className="text-sm text-muted-foreground mb-2 text-center max-w-md">
-        You need to train a machine learning model before making predictions.
-        Go to the ML Assistant tab to configure and train your model.
+        No trained model found. Please complete ML Assistant training first.
       </p>
       <div className="flex items-center gap-2 text-xs text-muted-foreground mb-6">
         <Zap className="h-3.5 w-3.5 text-amber-500" />
@@ -1653,9 +1658,17 @@ export default function PredictionTab() {
     try {
       const response = await apiClient.post('/predict', { model_id: modelId, features: processedFeatures });
       const result: PredictResponse = response.data;
+      if (result.status === 'failed') {
+        toast({
+          title: 'Prediction Error',
+          description: result.error || 'Prediction failed',
+          variant: 'destructive',
+        });
+        return;
+      }
 
       const predictionValue = result.prediction_label ?? result.prediction;
-      const analysis = buildPredictionExplanation(
+      let analysis = buildPredictionExplanation(
         predictionValue,
         result.confidence,
         processedFeatures,
@@ -1663,6 +1676,12 @@ export default function PredictionTab() {
         featureImportance,
         store.problemType,
       );
+      if (result.confidence_interval) {
+        analysis += ` Regression interval: ${result.confidence_interval.lower.toLocaleString()} to ${result.confidence_interval.upper.toLocaleString()} (plus/minus ${result.confidence_interval.margin.toLocaleString()}).`;
+      }
+      if (result.cv_score_mean != null) {
+        analysis += ` Cross-validation reliability: mean ${Number(result.cv_score_mean).toFixed(4)}${result.cv_score_std != null ? `, std ${Number(result.cv_score_std).toFixed(4)}` : ''}.`;
+      }
 
       // Update store
       const existing = useAppStore.getState().predictionHistory;

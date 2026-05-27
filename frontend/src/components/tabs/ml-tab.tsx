@@ -66,7 +66,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { cn } from '@/lib/utils';
-import { apiClient, getApiErrorMessage } from '@/lib/api';
+import { apiClient, getApiErrorDetail, getApiErrorMessage } from '@/lib/api';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,12 @@ interface ModelDef {
 }
 
 interface TrainResponse {
+  status?: 'success' | 'failed';
+  error?: string;
+  detail?: string;
+  step?: string;
+  features_used?: string[];
+  warnings?: string[];
   model_id: string;
   metrics: Record<string, number>;
   feature_importance: { name: string; importance: number }[];
@@ -107,6 +113,8 @@ interface TrainResponse {
     importance_repeats?: number;
   };
 }
+
+const TRAINING_STEPS = ['Loading data...', 'Validating...', 'Selecting features...', 'Training model...', 'Saving model...', 'Done'];
 
 interface ComparisonResult {
   modelId: string;
@@ -534,6 +542,9 @@ export default function MlTab() {
   const [generalizationGap, setGeneralizationGap] = useState<number | null>(null);
   const [cvGap, setCvGap] = useState<number | null>(null);
   const [trainingError, setTrainingError] = useState<string | null>(null);
+  const [trainingErrorStep, setTrainingErrorStep] = useState<string | null>(null);
+  const [trainingErrorDetail, setTrainingErrorDetail] = useState<string | null>(null);
+  const [trainingStepLabel, setTrainingStepLabel] = useState(TRAINING_STEPS[0]);
 
   // Step 5 state
   const [isComparing, setIsComparing] = useState(false);
@@ -715,10 +726,21 @@ export default function MlTab() {
     try {
       const response = await apiClient.post('/train', payload);
       const result: TrainResponse = response.data;
+      if (result?.status === 'failed') {
+        const err = new Error(result.error || 'Training failed');
+        (err as Error & { step?: string; detail?: string }).step = result.step || 'Training';
+        (err as Error & { step?: string; detail?: string }).detail = result.detail;
+        throw err;
+      }
       return result;
     } catch (error: unknown) {
       const msg = getApiErrorMessage(error, 'Training failed');
-      throw new Error(msg);
+      if (error instanceof Error) {
+        throw error;
+      }
+      const err = new Error(msg);
+      (err as Error & { detail?: string }).detail = getApiErrorDetail(error) ?? undefined;
+      throw err;
     }
   }, [data, datasetId, selectedTarget, selectedFeatures, targetProblemType, testSize, randomState, cvFolds, trainingMode, toast]);
 
@@ -733,14 +755,19 @@ export default function MlTab() {
 
     setIsTraining(true);
     setTrainingError(null);
+    setTrainingErrorStep(null);
+    setTrainingErrorDetail(null);
     setTrainResults(null);
     setTrainingProgress(0);
+    setTrainingStepLabel(TRAINING_STEPS[0]);
 
-    // Simulate progress
     const progressInterval = setInterval(() => {
       setTrainingProgress(prev => {
         if (prev >= 90) { clearInterval(progressInterval); return 90; }
-        return prev + Math.random() * 15;
+        const next = prev + Math.random() * 15;
+        const stepIndex = Math.min(TRAINING_STEPS.length - 2, Math.floor(next / 20));
+        setTrainingStepLabel(TRAINING_STEPS[stepIndex]);
+        return next;
       });
     }, 300);
 
@@ -748,8 +775,10 @@ export default function MlTab() {
       const result = await trainModel(modelToTrain);
       clearInterval(progressInterval);
       setTrainingProgress(100);
+      setTrainingStepLabel(TRAINING_STEPS[TRAINING_STEPS.length - 1]);
 
       if (result) {
+        const featuresUsed = result.features_used && result.features_used.length > 0 ? result.features_used : selectedFeatures;
         setTrainResults(result);
         setModelAnalysis(result.analysis || '');
         setCvScores(result.cv_scores || []);
@@ -763,7 +792,7 @@ export default function MlTab() {
         useAppStore.setState({
           targetColumn: selectedTarget,
           problemType: targetProblemType,
-          selectedFeatures,
+          selectedFeatures: featuresUsed,
           selectedModel: modelToTrain,
           modelId: result.model_id || null,
           modelMetrics: result.metrics,
@@ -776,13 +805,13 @@ export default function MlTab() {
             problem: targetProblemType,
             trainedAt: new Date().toISOString(),
             metrics: result.metrics,
-            features: selectedFeatures,
+            features: featuresUsed,
           },
         });
 
         toast({
           title: 'Model Trained Successfully!',
-          description: `${modelToTrain} is ready for predictions.`,
+          description: result.warnings?.[0] || `${modelToTrain} is ready for predictions.`,
         });
         return true;
       }
@@ -790,8 +819,11 @@ export default function MlTab() {
       return false;
     } catch (error: unknown) {
       clearInterval(progressInterval);
-      const msg = getApiErrorMessage(error, 'Training failed');
+      const typedError = error as Error & { step?: string; detail?: string };
+      const msg = error instanceof Error ? error.message : getApiErrorMessage(error, 'Training failed');
       setTrainingError(msg);
+      setTrainingErrorStep(typedError.step || 'Training');
+      setTrainingErrorDetail(typedError.detail || getApiErrorDetail(error));
       toast({ title: 'Training Failed', description: msg, variant: 'destructive' });
       return false;
     } finally {
@@ -1687,6 +1719,7 @@ export default function MlTab() {
                               </div>
                             </div>
                             <p className="text-sm font-medium">Training Model...</p>
+                            <p className="text-xs font-medium text-primary">{trainingStepLabel}</p>
                             <p className="text-xs text-muted-foreground">{selectedModel || recommendedModel?.id}</p>
                             <div className="max-w-xs mx-auto">
                               <Progress value={Math.min(trainingProgress, 100)} className="h-2" />
@@ -1719,9 +1752,21 @@ export default function MlTab() {
                     <CardContent className="p-4">
                       <div className="flex items-start gap-3">
                         <AlertTriangle className="h-5 w-5 text-rose-500 mt-0.5" />
-                        <div>
+                        <div className="flex-1">
                           <p className="text-sm font-medium text-rose-600 dark:text-rose-400">Training Failed</p>
+                          <p className="text-xs text-muted-foreground mt-1">Step failed: {trainingErrorStep || 'Training'}</p>
                           <p className="text-xs text-muted-foreground mt-1">{trainingError}</p>
+                          {trainingErrorDetail && (
+                            <details className="mt-3 text-left">
+                              <summary className="cursor-pointer text-xs font-medium text-rose-600 dark:text-rose-400">View Details</summary>
+                              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-background p-3 text-[11px] text-muted-foreground">
+                                {trainingErrorDetail}
+                              </pre>
+                            </details>
+                          )}
+                          <Button variant="outline" size="sm" className="mt-3" onClick={handleTrain} disabled={isTraining}>
+                            Retry
+                          </Button>
                         </div>
                       </div>
                     </CardContent>

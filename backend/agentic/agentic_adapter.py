@@ -811,16 +811,11 @@ def get_backend_module() -> Any:
 
 
 def read_dataset_file(path: Path) -> pd.DataFrame:
-    suffix = path.suffix.lower()
-    if suffix == '.csv':
-        return pd.read_csv(path)
-    if suffix == '.tsv':
-        return pd.read_csv(path, sep='\t')
-    if suffix in {'.xlsx', '.xls'}:
-        return pd.read_excel(path)
-    if suffix == '.parquet':
-        return pd.read_parquet(path)
-    raise HTTPException(status_code=400, detail='Agentic profiling accepts .csv, .tsv, .xlsx, .xls, and .parquet files.')
+    backend = get_backend_module()
+    try:
+        return backend.load_dataset(str(path))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f'Agentic profiling failed to load dataset: {error}') from error
 
 
 def read_dataset_profile(dataset_path: str) -> dict[str, Any]:

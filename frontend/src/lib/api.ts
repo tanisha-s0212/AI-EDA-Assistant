@@ -77,3 +77,14 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+export function getApiErrorDetail(error: unknown): string | null {
+  if (axios.isAxiosError(error)) {
+    const responseData = error.response?.data;
+    if (typeof responseData === 'object' && responseData !== null && 'detail' in responseData && typeof responseData.detail === 'string') {
+      return responseData.detail;
+    }
+  }
+
+  return null;
+}
+
