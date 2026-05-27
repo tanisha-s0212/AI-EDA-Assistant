@@ -18,8 +18,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
-
-from agentic.run_artifacts import append_audit_log, read_session_summary, write_decision, write_step_output
+from psycopg.types.json import Json
 
 agentic_router = APIRouter(prefix='/api/agentic')
 
@@ -45,7 +44,6 @@ AGENTIC_LAYER_ROOT = resolve_agentic_layer_root()
 CORE_AGENTIC_ROOT = AGENTIC_LAYER_ROOT
 CORE_UI_ROOT = CORE_AGENTIC_ROOT / 'ui'
 CORE_RUNS_ROOT = CORE_AGENTIC_ROOT / 'runs'
-CORE_ACTIVITY_LOG = CORE_AGENTIC_ROOT / 'logs' / 'activity.jsonl'
 
 
 class CoreSettings:
@@ -149,11 +147,7 @@ PIPELINE_STEPS = [
     'Report Generation',
 ]
 
-# AGENTIC LAYER START
 _sessions: dict[str, dict[str, Any]] = {}
-_step_executions: dict[str, list[dict[str, Any]]] = {}
-_decisions: dict[str, list[dict[str, Any]]] = {}
-# AGENTIC LAYER END
 
 
 class SuggestNextStepsRequest(BaseModel):
@@ -163,7 +157,10 @@ class SuggestNextStepsRequest(BaseModel):
 class ExecuteStepRequest(BaseModel):
     session_id: str
     step_name: str
-    approved_by: str
+    approved_by: str = 'current_user'
+    decision: str = 'accepted'
+    reasoning: str = ''
+    step_definition: dict[str, Any] | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -468,6 +465,9 @@ def core_create_run(payload: dict[str, Any]) -> dict[str, Any]:
     }
     _core_json_write(run_root / 'manifest.json', manifest)
     _core_json_write(run_root / 'results' / 'dataset_profile.json', manifest['dataset'])
+    persist_agentic_run(run_id, str(payload.get('session_id') or run_id), manifest['status'])
+    persist_agentic_step(run_id, 'Profile Dataset', 'completed', {'dataset': manifest['dataset'], 'suggestions': manifest['suggestions']})
+    persist_agentic_audit(run_id, 'recommendations_created', {'manifest': manifest})
     return manifest
 
 
@@ -542,11 +542,14 @@ def core_record_decision(payload: dict[str, Any]) -> dict[str, Any]:
     if decision == 'accept':
         record['report'] = _core_render_report(run_root, manifest, step_id, decision)
     _core_json_write(run_root / 'decisions' / f'{step_id}.json', record)
+    persisted_step_id = persist_agentic_step(run_id, step_id, record['status'], record)
+    persist_agentic_decision(run_id, persisted_step_id, 'accepted' if decision == 'accept' else 'skipped', record.get('note') or '')
+    persist_agentic_audit(run_id, 'decision_recorded', record)
     return record
 
 
 def core_record_activity(payload: dict[str, Any]) -> None:
-    CORE_ACTIVITY_LOG.parent.mkdir(parents=True, exist_ok=True)
+    run_id = _safe_core_id(str(payload.get('run_id') or payload.get('session') or 'agentic-core'))
     event = {
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'type': str(payload.get('type', 'ui_event'))[:80],
@@ -555,8 +558,7 @@ def core_record_activity(payload: dict[str, Any]) -> None:
         'session': str(payload.get('session', ''))[:80],
         'mode': str(payload.get('mode', ''))[:40],
     }
-    with CORE_ACTIVITY_LOG.open('a', encoding='utf-8') as log_file:
-        log_file.write(json.dumps(event, ensure_ascii=True) + '\n')
+    persist_agentic_audit(run_id, event['type'], event)
 
 
 def core_text_asset(path: Path) -> str:
@@ -596,7 +598,196 @@ def disabled_response() -> JSONResponse:
     return JSONResponse(content={'error': 'agentic layer disabled', 'status': 503}, status_code=503)
 
 
-# AGENTIC LAYER START
+def agentic_utc_now() -> str:
+    return datetime.utcnow().isoformat()
+
+
+def agentic_json(value: Any) -> Json:
+    backend = get_backend_module()
+    serializer = getattr(backend, 'safe_serialize', None)
+    safe_value = serializer(value) if callable(serializer) else value
+    return Json(safe_value, dumps=lambda item: json.dumps(item, default=str))
+
+
+def persist_agentic_run(run_id: str, session_id: str | None = None, status: str = 'running') -> None:
+    timestamp = agentic_utc_now()
+    backend = get_backend_module()
+    with backend.get_activity_connection() as connection:
+        connection.execute(
+            '''
+            INSERT INTO agentic_runs (run_id, session_id, status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (run_id) DO UPDATE
+            SET status = CASE
+                    WHEN agentic_runs.status IN ('completed', 'failed')
+                        AND EXCLUDED.status IN ('created', 'running')
+                    THEN agentic_runs.status
+                    ELSE EXCLUDED.status
+                END,
+                updated_at = EXCLUDED.updated_at
+            ''',
+            (run_id, session_id or run_id, status, timestamp, timestamp),
+        )
+
+
+def persist_agentic_step(run_id: str, step_name: str, status: str, result: dict[str, Any] | None = None) -> str:
+    step_id = uuid.uuid4().hex
+    timestamp = agentic_utc_now()
+    backend = get_backend_module()
+    persist_agentic_run(run_id, run_id, 'failed' if status == 'failed' else 'running')
+    with backend.get_activity_connection() as connection:
+        connection.execute(
+            '''
+            INSERT INTO agentic_steps (step_id, run_id, step_name, status, result_json, executed_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ''',
+            (step_id, run_id, step_name, status, agentic_json(result or {}), timestamp),
+        )
+    return step_id
+
+
+def persist_agentic_decision(run_id: str, step_id: str | None, decision: str, reason: str) -> str:
+    decision_id = uuid.uuid4().hex
+    timestamp = agentic_utc_now()
+    backend = get_backend_module()
+    persist_agentic_run(run_id, run_id, 'decision_recorded')
+    with backend.get_activity_connection() as connection:
+        connection.execute(
+            '''
+            INSERT INTO agentic_decisions (decision_id, run_id, step_id, decision, reason, decided_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ''',
+            (decision_id, run_id, step_id, decision, reason, timestamp),
+        )
+    return decision_id
+
+
+def persist_agentic_audit(run_id: str, event_type: str, payload: dict[str, Any]) -> str:
+    audit_id = uuid.uuid4().hex
+    timestamp = agentic_utc_now()
+    backend = get_backend_module()
+    persist_agentic_run(run_id, run_id, 'running')
+    with backend.get_activity_connection() as connection:
+        connection.execute(
+            '''
+            INSERT INTO agentic_audit (audit_id, run_id, event_type, payload_json, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ''',
+            (audit_id, run_id, event_type, agentic_json(payload), timestamp),
+        )
+    return audit_id
+
+
+def read_agentic_session_summary(run_id: str) -> dict[str, Any]:
+    backend = get_backend_module()
+    with backend.get_activity_connection() as connection:
+        run_row = connection.execute(
+            '''
+            SELECT run_id, session_id, status, created_at, updated_at
+            FROM agentic_runs
+            WHERE run_id = %s OR session_id = %s
+            ORDER BY updated_at DESC
+            LIMIT 1
+            ''',
+            (run_id, run_id),
+        ).fetchone()
+        step_rows = connection.execute(
+            '''
+            SELECT step_id, run_id, step_name, status, result_json, executed_at
+            FROM agentic_steps
+            WHERE run_id = %s
+            ORDER BY executed_at ASC
+            ''',
+            (run_id,),
+        ).fetchall()
+        decision_rows = connection.execute(
+            '''
+            SELECT decision_id, run_id, step_id, decision, reason, decided_at
+            FROM agentic_decisions
+            WHERE run_id = %s
+            ORDER BY decided_at ASC
+            ''',
+            (run_id,),
+        ).fetchall()
+        audit_rows = connection.execute(
+            '''
+            SELECT audit_id, run_id, event_type, payload_json, created_at
+            FROM agentic_audit
+            WHERE run_id = %s
+            ORDER BY created_at ASC
+            ''',
+            (run_id,),
+        ).fetchall()
+    return {
+        'run': run_row,
+        'steps': step_rows,
+        'decisions': decision_rows,
+        'audit_log': audit_rows,
+    }
+
+
+def latest_agentic_step_statuses(run_id: str) -> dict[str, str]:
+    backend = get_backend_module()
+    with backend.get_activity_connection() as connection:
+        rows = connection.execute(
+            '''
+            SELECT DISTINCT ON (step_name) step_name, status
+            FROM agentic_steps
+            WHERE run_id = %s
+            ORDER BY step_name, executed_at DESC
+            ''',
+            (run_id,),
+        ).fetchall()
+    return {str(row['step_name']): str(row['status']) for row in rows}
+
+
+def latest_agentic_step_results(run_id: str) -> dict[str, dict[str, Any]]:
+    backend = get_backend_module()
+    with backend.get_activity_connection() as connection:
+        rows = connection.execute(
+            '''
+            SELECT DISTINCT ON (step_name) step_name, step_id, status, result_json, executed_at
+            FROM agentic_steps
+            WHERE run_id = %s
+            ORDER BY step_name, executed_at DESC
+            ''',
+            (run_id,),
+        ).fetchall()
+    return {
+        str(row['step_name']): {
+            'step_id': row['step_id'],
+            'status': row['status'],
+            'result': row.get('result_json') or {},
+            'executed_at': row['executed_at'],
+        }
+        for row in rows
+    }
+
+
+def latest_agentic_result(run_id: str) -> dict[str, Any] | None:
+    backend = get_backend_module()
+    with backend.get_activity_connection() as connection:
+        row = connection.execute(
+            '''
+            SELECT step_id, step_name, status, result_json, executed_at
+            FROM agentic_steps
+            WHERE run_id = %s
+            ORDER BY executed_at DESC
+            LIMIT 1
+            ''',
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        'step_id': row['step_id'],
+        'step_name': row['step_name'],
+        'status': row['status'],
+        'result': row.get('result_json') or {},
+        'executed_at': row['executed_at'],
+    }
+
+
 def is_db_connected() -> bool:
     try:
         backend = get_backend_module()
@@ -605,11 +796,10 @@ def is_db_connected() -> bool:
         return True
     except Exception:
         try:
-            backend.logger.warning('Agentic database unavailable; using in-memory fallback store.', exc_info=True)
+            backend.logger.warning('Agentic database unavailable.', exc_info=True)
         except Exception:
             pass
         return False
-# AGENTIC LAYER END
 
 
 def get_backend_module() -> Any:
@@ -725,6 +915,10 @@ def ensure_session(session_id: str) -> dict[str, Any]:
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat(),
         }
+        persist_agentic_run(session_id, session_id, 'created')
+    persisted_statuses = latest_agentic_step_statuses(session_id)
+    if persisted_statuses:
+        _sessions[session_id]['steps'].update(persisted_statuses)
     return _sessions[session_id]
 
 
@@ -739,6 +933,15 @@ def summarize_response(response: Any) -> str:
             keys = ', '.join(sorted(str(key) for key in payload.keys())[:8])
             return f'Step completed with status {status}. Returned fields: {keys}.'
     return 'Step completed.'
+
+
+def response_payload(response: Any) -> Any:
+    if hasattr(response, 'body'):
+        try:
+            return json.loads(response.body.decode('utf-8'))
+        except Exception:
+            return {'message': 'Step completed and returned a non-JSON response.'}
+    return {'message': 'Step completed.'}
 
 
 def session_dataset_id(session_id: str) -> str:
@@ -798,7 +1001,14 @@ def infer_problem_type(frame: pd.DataFrame, target_column: str) -> str:
     return 'classification'
 
 
-def record_agentic_execution(session_id: str, step_name: str, status: str, output_summary: str | None, error_message: str | None) -> None:
+def record_agentic_execution(
+    session_id: str,
+    step_name: str,
+    status: str,
+    output_summary: str | None,
+    error_message: str | None,
+    result: dict[str, Any] | None = None,
+) -> str:
     execution = {
         'session_id': session_id,
         'step_name': step_name,
@@ -807,41 +1017,11 @@ def record_agentic_execution(session_id: str, step_name: str, status: str, outpu
         'completed_at': datetime.utcnow().isoformat(),
         'output_summary': output_summary,
         'error_message': error_message,
+        **(result or {}),
     }
-    backend = get_backend_module()
-    if not getattr(backend, 'ACTIVITY_DB_AVAILABLE', False):
-        _step_executions.setdefault(session_id, []).append(execution)
-        append_audit_log(session_id, 'step_execution_recorded', execution)
-        return
-    # AGENTIC LAYER START
-    try:
-        with backend.get_activity_connection() as connection:
-            connection.execute(
-                '''
-                INSERT INTO agentic_step_executions (
-                    session_id, step_name, status, started_at, completed_at, output_summary, error_message
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ''',
-                (
-                    session_id,
-                    step_name,
-                    status,
-                    execution['started_at'],
-                    execution['completed_at'],
-                    output_summary,
-                    error_message,
-                ),
-            )
-    except Exception:
-        backend.logger.warning(
-            'Failed to persist agentic execution event for session_id=%s step=%s; using in-memory fallback.',
-            session_id,
-            step_name,
-            exc_info=True,
-        )
-        _step_executions.setdefault(session_id, []).append(execution)
-        append_audit_log(session_id, 'step_execution_recorded', execution)
-    # AGENTIC LAYER END
+    step_id = persist_agentic_step(session_id, step_name, status, execution)
+    persist_agentic_audit(session_id, 'step_execution_recorded', {**execution, 'step_id': step_id})
+    return step_id
 
 
 def execute_data_understanding(session_id: str, request: Request) -> Any:
@@ -856,7 +1036,7 @@ def execute_data_understanding(session_id: str, request: Request) -> Any:
         'column_count': int(len(frame.columns)),
         'profile': profile_frame(frame, source=dataset_id),
     }
-    append_audit_log(session_id, 'data_understanding_completed', payload)
+    persist_agentic_audit(session_id, 'data_understanding_completed', payload)
     return JSONResponse(content=payload)
 
 
@@ -1130,9 +1310,10 @@ def agentic_health() -> JSONResponse:
     db_connected = is_db_connected() if enabled else False
     return JSONResponse(
         content={
+            'status': 'ok',
             'agentic_enabled': enabled,
             'db_connected': db_connected,
-            'db_fallback_active': enabled and not db_connected,
+            'db_fallback_active': False,
             'providers': {
                 'primary': CoreSettings.primary_provider,
                 'fallbacks': CoreSettings.fallback_providers,
@@ -1276,7 +1457,7 @@ def suggest_next_steps(payload: SuggestNextStepsRequest) -> JSONResponse:
     session['profile'] = profile
     session['recommendations'] = recommendations[:1]
     session['updated_at'] = datetime.utcnow().isoformat()
-    append_audit_log(session_id, 'recommendations_created', {'profile': profile, 'recommendations': recommendations})
+    persist_agentic_audit(session_id, 'recommendations_created', {'profile': profile, 'recommendations': recommendations})
     return JSONResponse(content={'session_id': session_id, 'profile': profile, 'recommendations': recommendations})
 
 
@@ -1284,22 +1465,45 @@ def suggest_next_steps(payload: SuggestNextStepsRequest) -> JSONResponse:
 def execute_step(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
     if not agentic_enabled():
         return disabled_response()
+    decision = payload.decision.strip().lower()
+    if decision not in {'accepted', 'skipped'}:
+        raise HTTPException(status_code=400, detail="decision must be 'accepted' or 'skipped'")
     session = ensure_session(payload.session_id)
+    step_definition = payload.step_definition or {}
     handler = STEP_HANDLERS.get(payload.step_name)
     if handler is None:
         raise HTTPException(status_code=404, detail=f'Unknown agentic step: {payload.step_name}')
+    if decision == 'skipped':
+        session['steps'][payload.step_name] = 'skipped'
+        session['updated_at'] = datetime.utcnow().isoformat()
+        prepare_next_recommendation(payload.session_id, payload.step_name)
+        result = {
+            'session_id': payload.session_id,
+            'step_name': payload.step_name,
+            'step_definition': step_definition,
+            'decision': decision,
+            'status': 'skipped',
+            'output_summary': payload.reasoning or 'Step skipped by backend agentic workflow.',
+            'next_recommendations': session.get('recommendations', []),
+            'next_suggested_step': (session.get('recommendations') or [None])[0],
+        }
+        step_id = record_agentic_execution(payload.session_id, payload.step_name, 'skipped', result['output_summary'], None, result)
+        decision_id = persist_agentic_decision(payload.session_id, step_id, decision, result['output_summary'])
+        persist_agentic_audit(payload.session_id, 'decision_recorded', {**result, 'step_id': step_id, 'decision_id': decision_id})
+        return JSONResponse(content={**result, 'step_id': step_id, 'decision_id': decision_id})
     if handler == 'not_yet_wired':
         session['steps'][payload.step_name] = 'failed'
         session['updated_at'] = datetime.utcnow().isoformat()
         message = f'{payload.step_name} is not_yet_wired to an existing backend handler.'
-        record_agentic_execution(payload.session_id, payload.step_name, 'not_yet_wired', None, message)
-        return JSONResponse(content={'status': 'not_yet_wired', 'output_summary': None, 'error': message}, status_code=501)
+        record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, message, {'step_definition': step_definition, 'code': 'not_yet_wired'})
+        return JSONResponse(content={'status': 'failed', 'output_summary': None, 'error': message}, status_code=501)
 
     session['steps'][payload.step_name] = 'running'
     session['updated_at'] = datetime.utcnow().isoformat()
     try:
         response = handler(payload.session_id, request)
         output_summary = summarize_response(response)
+        raw_result = response_payload(response)
         session['steps'][payload.step_name] = 'completed'
         session['events'].append({
             'step_name': payload.step_name,
@@ -1308,16 +1512,38 @@ def execute_step(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
             'completed_at': datetime.utcnow().isoformat(),
             'output_summary': output_summary,
         })
-        write_step_output(payload.session_id, payload.step_name, {'output_summary': output_summary})
         prepare_next_recommendation(payload.session_id, payload.step_name)
-        record_agentic_execution(payload.session_id, payload.step_name, 'completed', output_summary, None)
-        return JSONResponse(content={'status': 'completed', 'output_summary': output_summary, 'next_recommendations': session['recommendations']})
+        result = {
+            'session_id': payload.session_id,
+            'step_name': payload.step_name,
+            'step_definition': step_definition,
+            'decision': decision,
+            'status': 'completed',
+            'output_summary': output_summary,
+            'result': raw_result,
+            'next_recommendations': session['recommendations'],
+            'next_suggested_step': (session.get('recommendations') or [None])[0],
+        }
+        step_id = record_agentic_execution(payload.session_id, payload.step_name, 'completed', output_summary, None, result)
+        decision_id = persist_agentic_decision(payload.session_id, step_id, decision, payload.reasoning or output_summary)
+        persist_agentic_audit(payload.session_id, 'decision_recorded', {**result, 'step_id': step_id, 'decision_id': decision_id})
+        return JSONResponse(content={**result, 'step_id': step_id, 'decision_id': decision_id})
     except HTTPException as error:
         session['steps'][payload.step_name] = 'failed'
         session['updated_at'] = datetime.utcnow().isoformat()
         error_detail = error.detail
         error_message = error_detail.get('message') if isinstance(error_detail, dict) else str(error_detail)
-        record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, str(error_message))
+        failure_result = {
+            'session_id': payload.session_id,
+            'step_name': payload.step_name,
+            'step_definition': step_definition,
+            'decision': decision,
+            'status': 'failed',
+            'output_summary': None,
+            'error': error_detail,
+            'next_suggested_step': (session.get('recommendations') or [None])[0],
+        }
+        record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, str(error_message), failure_result)
         return JSONResponse(
             content={
                 'status': 'failed',
@@ -1330,8 +1556,18 @@ def execute_step(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
         session['steps'][payload.step_name] = 'failed'
         session['updated_at'] = datetime.utcnow().isoformat()
         error_message = str(error)
-        record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, error_message)
-        return JSONResponse(content={'status': 'failed', 'output_summary': None, 'error': error_message}, status_code=500)
+        failure_result = {
+            'session_id': payload.session_id,
+            'step_name': payload.step_name,
+            'step_definition': step_definition,
+            'decision': decision,
+            'status': 'failed',
+            'output_summary': None,
+            'error': error_message,
+            'next_suggested_step': (session.get('recommendations') or [None])[0],
+        }
+        record_agentic_execution(payload.session_id, payload.step_name, 'failed', None, error_message, failure_result)
+        return JSONResponse(content=failure_result, status_code=500)
 
 
 @agentic_router.post('/decision')
@@ -1353,10 +1589,15 @@ def record_decision(payload: DecisionRequest) -> JSONResponse:
             'completed_at': datetime.utcnow().isoformat(),
             'output_summary': payload.reasoning,
         })
-        write_step_output(payload.session_id, payload.step_name, {'output_summary': payload.reasoning})
         prepare_next_recommendation(payload.session_id, payload.step_name)
-    _decisions.setdefault(payload.session_id, []).append(payload.model_dump())
-    write_decision(payload.session_id, payload.step_name, payload.decision, payload.reasoning)
+    step_id = persist_agentic_step(
+        payload.session_id,
+        payload.step_name,
+        'completed' if payload.decision == 'accepted' else 'skipped',
+        {'output_summary': payload.reasoning, 'decision': payload.decision},
+    )
+    persist_agentic_decision(payload.session_id, step_id, payload.decision, payload.reasoning)
+    persist_agentic_audit(payload.session_id, 'decision_recorded', payload.model_dump())
     session['updated_at'] = datetime.utcnow().isoformat()
     return JSONResponse(content={'status': 'recorded', 'steps': session['steps'], 'next_recommendations': session.get('recommendations', [])})
 
@@ -1366,7 +1607,18 @@ def get_session_status(session_id: str) -> JSONResponse:
     if not agentic_enabled():
         return disabled_response()
     session = ensure_session(session_id)
-    return JSONResponse(content={'steps': session['steps'], 'recommendations': session.get('recommendations', []), 'updated_at': session['updated_at']})
+    results = latest_agentic_step_results(session_id)
+    last_result = latest_agentic_result(session_id)
+    return JSONResponse(
+        content={
+            'steps': session['steps'],
+            'recommendations': session.get('recommendations', []),
+            'next_suggested_step': (session.get('recommendations') or [None])[0],
+            'updated_at': session['updated_at'],
+            'results': results,
+            'last_result': last_result,
+        }
+    )
 
 
 @agentic_router.get('/session/{session_id}/report', response_model=None)
@@ -1374,14 +1626,22 @@ def get_session_report(session_id: str) -> HTMLResponse | JSONResponse:
     if not agentic_enabled():
         return disabled_response()
     session = ensure_session(session_id)
-    summary = read_session_summary(session_id)
+    summary = read_agentic_session_summary(session_id)
     rows = ''.join(
         f'<tr><td>{html.escape(step)}</td><td>{html.escape(status)}</td></tr>'
         for step, status in session['steps'].items()
     )
+    persisted_events = [
+        {
+            'step_name': row.get('step_name'),
+            'output_summary': ((row.get('result_json') or {}).get('output_summary') if isinstance(row.get('result_json'), dict) else None) or row.get('status'),
+        }
+        for row in summary.get('steps', [])
+    ]
+    report_events = session.get('events', []) or persisted_events
     events = ''.join(
         f'<li><strong>{html.escape(str(event.get("step_name", "")))}</strong>: {html.escape(str(event.get("output_summary", "")))}</li>'
-        for event in session.get('events', [])
+        for event in report_events
     )
     body = f'''
     <!doctype html>

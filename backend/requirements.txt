@@ -16,6 +16,9 @@ kaleido
 openpyxl
 xlrd
 psycopg[binary]
+httpx
+pytest
+pytest-asyncio
 xgboost
 lightgbm
 optuna

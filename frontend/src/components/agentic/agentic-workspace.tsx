@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Clock3,
   Database,
   Download,
   Eye,
@@ -18,7 +17,6 @@ import {
   MessageSquare,
   Play,
   RefreshCw,
-  RotateCcw,
   Send,
   SkipForward,
   Sparkles,
@@ -26,13 +24,12 @@ import {
   TrendingUp,
   Upload,
   Wand2,
-  X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { apiClient, getApiErrorMessage } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
-import type { AgenticStepStatus, ColumnInfo, Recommendation } from '@/lib/store';
+import type { AgenticStepStatus, Recommendation } from '@/lib/store';
 import { cn } from '@/lib/utils';
 
 const agenticApiClient = axios.create({
@@ -63,6 +60,7 @@ const UI_STEPS = [
   { id: 'loss', label: 'Loss Forecast', handler: 'Loss Forecast', description: 'Estimate future loss pressure, risk scores, and top loss drivers.', icon: TrendingDown },
   { id: 'profit', label: 'Profit Forecast', handler: 'Profit Forecast', description: 'Generate optimistic, baseline, and pessimistic profit scenarios.', icon: TrendingUp },
   { id: 'ml', label: 'ML Assistant', handler: 'ML Assistant', description: 'Train a supervised model for the strongest available target and features.', icon: Wand2 },
+  { id: 'prediction', label: 'Prediction', handler: 'Prediction', description: 'Run an approved prediction from the backend-trained model.', icon: Sparkles },
   { id: 'report', label: 'Report', handler: 'Report Generation', description: 'Compile the approved workflow outputs into a final run artifact.', icon: FileText },
 ] as const;
 
@@ -83,6 +81,35 @@ type SuggestResponse = {
 type StatusResponse = {
   steps: Record<string, AgenticStepStatus>;
   recommendations?: Recommendation[];
+  next_suggested_step?: Recommendation | null;
+  results?: Record<string, PersistedStepResult>;
+  last_result?: PersistedStepResult | null;
+};
+
+type ExecuteStepResponse = {
+  status: AgenticStepStatus;
+  step_id?: string;
+  decision_id?: string;
+  step_name: string;
+  output_summary?: string | null;
+  error?: unknown;
+  result?: unknown;
+  next_recommendations?: Recommendation[];
+  next_suggested_step?: Recommendation | null;
+};
+
+type PersistedStepResult = {
+  step_id?: string;
+  step_name?: string;
+  status: AgenticStepStatus;
+  executed_at?: string;
+  result?: {
+    output_summary?: string | null;
+    error?: unknown;
+    result?: unknown;
+    next_recommendations?: Recommendation[];
+    [key: string]: unknown;
+  };
 };
 
 type ChatResponse = {
@@ -96,26 +123,12 @@ type AgenticWorkspaceProps = {
   fileName: string | null;
 };
 
-type StepSnapshot = {
-  rows: number;
-  columns: number;
-  nulls: number;
-  duplicates: number;
-  cleanedRows: number | null;
-};
-
 type StepArtifact = {
   step: string;
   summary: string;
   completedAt: number;
-  before: StepSnapshot;
-  after: StepSnapshot;
-};
-
-type UndoState = {
-  step: HandlerStep;
-  expiresAt: number;
-  previousState: Partial<ReturnType<typeof useAppStore.getState>>;
+  status: AgenticStepStatus;
+  result?: unknown;
 };
 
 type StructuredError = {
@@ -128,21 +141,6 @@ type ChatMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-};
-
-type StoreTabId = ReturnType<typeof useAppStore.getState>['activeTab'];
-
-const STEP_TO_TAB: Record<string, StoreTabId> = {
-  'Data Understanding': 'understanding',
-  EDA: 'eda',
-  'Data Cleaning': 'cleaning',
-  'Time Series Forecast': 'forecast_ts',
-  'ML Forecast': 'forecast_ml',
-  'Loss Forecast': 'loss_forecast',
-  'Profit Forecast': 'profit_forecast',
-  'ML Assistant': 'ml',
-  Prediction: 'prediction',
-  'Report Generation': 'report',
 };
 
 function AgenticWorkspaceStyles() {
@@ -168,6 +166,17 @@ function AgenticWorkspaceStyles() {
 
 function normalizeStepName(step: string) {
   return step === 'Report' ? 'Report Generation' : step;
+}
+
+function artifactFromPersisted(stepName: string, persisted: PersistedStepResult): StepArtifact {
+  const result = persisted.result ?? {};
+  return {
+    step: stepName,
+    status: persisted.status,
+    summary: result.output_summary ?? (result.error ? String(result.error) : persisted.status),
+    completedAt: persisted.executed_at ? new Date(persisted.executed_at).getTime() : Date.now(),
+    result,
+  };
 }
 
 function getUiStatus(step: UiStep, statuses: Record<string, AgenticStepStatus>, datasetId: string | null): AgenticStepStatus {
@@ -199,57 +208,6 @@ function formatNumber(value: number | null | undefined, digits = 2) {
   return value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
-function getSnapshot(): StepSnapshot {
-  const state = useAppStore.getState();
-  const data = state.cleanedData ?? state.rawData ?? [];
-  const nulls = data.reduce((total, row) => total + Object.values(row).filter((value) => value === null || value === undefined || value === '').length, 0);
-  return {
-    rows: state.totalRows || data.length,
-    columns: state.columns.length,
-    nulls,
-    duplicates: state.duplicates ?? 0,
-    cleanedRows: state.cleanedRowCount,
-  };
-}
-
-function getRollbackState(): Partial<ReturnType<typeof useAppStore.getState>> {
-  const state = useAppStore.getState();
-  return {
-    rawData: state.rawData,
-    cleanedData: state.cleanedData,
-    columns: state.columns,
-    cleaningLogs: state.cleaningLogs,
-    cleaningDone: state.cleaningDone,
-    cleanedRowCount: state.cleanedRowCount,
-    loadedRowCount: state.loadedRowCount,
-    previewLoaded: state.previewLoaded,
-    duplicates: state.duplicates,
-    timeSeriesForecastResult: state.timeSeriesForecastResult,
-    mlForecastResult: state.mlForecastResult,
-    lossForecast: state.lossForecast,
-    profitForecast: state.profitForecast,
-    lossSegments: state.lossSegments,
-    lossSummary: state.lossSummary,
-    scenarios: state.scenarios,
-    breakevenPeriod: state.breakevenPeriod,
-    targetColumn: state.targetColumn,
-    problemType: state.problemType,
-    selectedFeatures: state.selectedFeatures,
-    selectedModel: state.selectedModel,
-    modelId: state.modelId,
-    modelMetrics: state.modelMetrics,
-    modelTrained: state.modelTrained,
-    featureImportance: state.featureImportance,
-    uploadedModel: state.uploadedModel,
-    predictionResult: state.predictionResult,
-    predictionAnalysis: state.predictionAnalysis,
-    predictionProbabilities: state.predictionProbabilities,
-    predictionHistory: state.predictionHistory,
-    reportGenerated: state.reportGenerated,
-    reportUrl: state.reportUrl,
-  };
-}
-
 function getPreferredDateColumn() {
   const { columns } = useAppStore.getState();
   return columns.find((column) => column.role === 'datetime')?.name
@@ -263,54 +221,6 @@ function getPreferredTargetColumn() {
     ?? columns.find((column) => column.role === 'numeric')?.name
     ?? columns.find((column) => !/id$/i.test(column.name) && column.role !== 'identifier')?.name
     ?? '';
-}
-
-function getAutoFeatureColumns(targetColumn: string) {
-  const { columns } = useAppStore.getState();
-  return columns
-    .filter((column) => column.name !== targetColumn && column.role !== 'identifier')
-    .map((column) => column.name)
-    .slice(0, 30);
-}
-
-function inferProblemType(targetColumn: string): 'regression' | 'classification' {
-  const { columns } = useAppStore.getState();
-  const target = columns.find((column) => column.name === targetColumn);
-  if (!target) return 'regression';
-  return target.role === 'numeric' && target.uniqueCount > 12 ? 'regression' : 'classification';
-}
-
-function normalizePredictionFeatures(features: string[]) {
-  const state = useAppStore.getState();
-  const sampleRow = (state.cleanedData ?? state.rawData ?? [])[0] ?? {};
-  const columnsByName = new Map(state.columns.map((column) => [column.name, column]));
-
-  return Object.fromEntries(features.map((feature) => {
-    const value = sampleRow[feature];
-    const column = columnsByName.get(feature);
-    if (column?.role === 'numeric') {
-      const numericValue = typeof value === 'number' ? value : Number(value);
-      return [feature, Number.isFinite(numericValue) ? numericValue : 0];
-    }
-    return [feature, value == null || value === '' ? 'unknown' : String(value)];
-  }));
-}
-
-function getNextRecommendation(completedStep: string, findings: string[] = []): Recommendation[] {
-  const currentIndex = EXECUTABLE_STEPS.indexOf(completedStep);
-  const state = useAppStore.getState();
-  const nextStep = EXECUTABLE_STEPS.slice(currentIndex + 1).find((step) => {
-    const status = state.agenticStepStatuses[step];
-    return status !== 'completed' && status !== 'skipped';
-  });
-
-  if (!nextStep) return [];
-
-  return [{
-    step: nextStep,
-    reason: 'The previous approved action finished, so the assistant is ready to continue the application workflow.',
-    findings: findings.length ? findings : [`${completedStep} completed.`, 'Sequential auto-advance is waiting for explicit approval.'],
-  }];
 }
 
 function buildMemoryFacts(fileName: string | null) {
@@ -370,48 +280,18 @@ function getStepContext(step: UiStep | null, artifacts: StepArtifact[]) {
   return { findings: findings.slice(0, 4), issues: issues.slice(0, 3) };
 }
 
-function StepDiffCard({ artifact }: { artifact: StepArtifact | null }) {
+function StepResultCard({ artifact }: { artifact: StepArtifact | null }) {
   if (!artifact) return null;
-  const rowDelta = artifact.after.rows - artifact.before.rows;
-  const columnDelta = artifact.after.columns - artifact.before.columns;
-  const nullDelta = artifact.after.nulls - artifact.before.nulls;
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Step Diff</h3>
+        <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Backend Step Result</h3>
         <Badge variant="outline" className="dark:border-slate-700 dark:text-slate-300">{artifact.step}</Badge>
       </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <DiffMetric label="Rows affected" before={artifact.before.rows} after={artifact.after.rows} delta={rowDelta} />
-        <DiffMetric label="Columns changed" before={artifact.before.columns} after={artifact.after.columns} delta={columnDelta} />
-        <DiffMetric label="Values repaired/imputed" before={artifact.before.nulls} after={artifact.after.nulls} delta={nullDelta * -1} positiveMeans="increase" />
-      </div>
-    </div>
-  );
-}
-
-function DiffMetric({
-  label,
-  before,
-  after,
-  delta,
-  positiveMeans = 'decrease',
-}: {
-  label: string;
-  before: number;
-  after: number;
-  delta: number;
-  positiveMeans?: 'increase' | 'decrease';
-}) {
-  const good = positiveMeans === 'increase' ? delta > 0 : delta < 0;
-  const bad = positiveMeans === 'increase' ? delta < 0 : delta > 0;
-  return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950">
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
-      <p className="mt-2 font-mono text-sm text-slate-700 dark:text-slate-300">{before.toLocaleString()} {'->'} {after.toLocaleString()}</p>
-      <p className={cn('mt-1 text-xs font-semibold', good && 'text-emerald-600 dark:text-emerald-400', bad && 'text-red-600 dark:text-red-400', !good && !bad && 'text-slate-500')}>
-        {delta > 0 ? '+' : ''}{delta.toLocaleString()}
-      </p>
+      <p className="text-sm text-slate-700 dark:text-slate-300">{artifact.summary}</p>
+      <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
+        {JSON.stringify({ status: artifact.status, result: artifact.result }, null, 2)}
+      </pre>
     </div>
   );
 }
@@ -548,7 +428,6 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const [artifacts, setArtifacts] = React.useState<StepArtifact[]>([]);
   const [stepDurations, setStepDurations] = React.useState<Record<string, number>>({});
   const [expandedDetails, setExpandedDetails] = React.useState(false);
-  const [undoState, setUndoState] = React.useState<UndoState | null>(null);
   const [structuredError, setStructuredError] = React.useState<StructuredError | null>(null);
   const [chatOpen, setChatOpen] = React.useState(false);
   const [chatInput, setChatInput] = React.useState('');
@@ -560,7 +439,6 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const completedCount = completedUiCount(agenticStepStatuses, datasetId);
   const pendingCount = UI_STEPS.length - completedCount;
   const progress = Math.round((completedCount / UI_STEPS.length) * 100);
-  const workflowComplete = completedCount === UI_STEPS.length;
   const activeHandlerStep = normalizeStepName(activeRecommendation?.step ?? runningStep ?? '') || null;
   const activeUiStep = UI_STEPS.find((step) => step.handler === activeHandlerStep) ?? UI_STEPS.find((step) => getUiStatus(step, agenticStepStatuses, datasetId) === 'pending') ?? UI_STEPS[0];
   const latestArtifact = artifacts.at(-1) ?? null;
@@ -577,17 +455,11 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     setExecutionLogs((current) => [...current.slice(-80), `[${stamp}] ${line}`]);
   }, []);
 
-  React.useEffect(() => {
-    if (!undoState) return;
-    const timeout = window.setTimeout(() => setUndoState(null), Math.max(0, undoState.expiresAt - Date.now()));
-    return () => window.clearTimeout(timeout);
-  }, [undoState]);
-
   const refreshHealth = React.useCallback(async () => {
     try {
       const response = await agenticApiClient.get<AgenticHealth>('/health');
       setHealth(response.data);
-      setBanner(response.data.db_connected ? null : 'Running in offline mode - decisions will not persist across sessions');
+      setBanner(response.data.db_connected ? null : 'Agentic database unavailable - backend execution is paused');
     } catch {
       setHealth(null);
       setBanner('Agentic layer unavailable - manual mode active');
@@ -598,30 +470,41 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     void refreshHealth();
   }, [refreshHealth]);
 
-  React.useEffect(() => {
+  const refreshStatus = React.useCallback(async () => {
     if (!agenticSessionId) return;
-    const pollStatus = async () => {
-      try {
-        const response = await agenticApiClient.get<StatusResponse>(`/session/${agenticSessionId}/status`);
-        const currentStatuses = useAppStore.getState().agenticStepStatuses;
-        Object.entries(response.data.steps ?? {}).forEach(([step, status]) => {
-          const currentStatus = currentStatuses[step];
-          if (currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'running') return;
-          setAgenticStepStatus(step, status);
-        });
-        if (response.data.recommendations) {
-          const hasActiveLocalRecommendation = useAppStore.getState().agenticRecommendations.length > 0;
-          if (!hasActiveLocalRecommendation) setAgenticRecommendations(response.data.recommendations.slice(0, 1));
-        }
-        setAgenticLastSyncedAt(Date.now());
-      } catch {
-        setBanner('Agentic layer unavailable - manual mode active');
+    try {
+      const response = await agenticApiClient.get<StatusResponse>(`/session/${agenticSessionId}/status`);
+      Object.entries(response.data.steps ?? {}).forEach(([step, status]) => {
+        setAgenticStepStatus(step, status);
+      });
+      if (response.data.recommendations) {
+        setAgenticRecommendations(response.data.recommendations.slice(0, 1));
       }
-    };
-    void pollStatus();
-    const interval = window.setInterval(() => void pollStatus(), 3000);
+      if (response.data.results) {
+        const nextArtifacts = Object.entries(response.data.results).map(([step, result]) => artifactFromPersisted(step, result));
+        setArtifacts(nextArtifacts.sort((left, right) => left.completedAt - right.completedAt));
+      }
+      if (runningStep) {
+        const backendStatus = response.data.steps?.[runningStep];
+        if (backendStatus === 'completed' || backendStatus === 'failed' || backendStatus === 'skipped') {
+          setRunningStep(null);
+        }
+      }
+      setAgenticLastSyncedAt(Date.now());
+    } catch {
+      setBanner('Agentic layer unavailable - manual mode active');
+    }
+  }, [agenticSessionId, runningStep, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticStepStatus]);
+
+  React.useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  React.useEffect(() => {
+    if (!agenticSessionId || (!runningStep && !runningAll)) return;
+    const interval = window.setInterval(() => void refreshStatus(), 3000);
     return () => window.clearInterval(interval);
-  }, [agenticSessionId, setAgenticLastSyncedAt, setAgenticRecommendations, setAgenticStepStatus]);
+  }, [agenticSessionId, refreshStatus, runningAll, runningStep]);
 
   const suggestNextSteps = React.useCallback(async () => {
     if (!datasetId) return null;
@@ -661,184 +544,39 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     URL.revokeObjectURL(url);
   };
 
-  const runApprovedStep = async (stepName: string) => {
-    const state = useAppStore.getState();
-    const tab = STEP_TO_TAB[stepName];
-    if (tab) state.setActiveTab(tab);
-
-    if (stepName === 'Data Understanding' || stepName === 'EDA') {
-      return `${stepName} reviewed from the uploaded dataset profile. The application tab is open for inspection.`;
-    }
-
-    if (stepName === 'Data Cleaning') {
-      if (!state.datasetId) {
-        useAppStore.setState({ cleanedData: state.rawData, cleaningDone: true, cleanedRowCount: state.rawData?.length ?? 0 });
-        return 'Cleaning marked complete for the in-browser dataset preview.';
-      }
-      const response = await apiClient.post('/clean-dataset', {
-        dataset_id: state.datasetId,
-        remove_duplicates: true,
-        handle_missing: true,
-        convert_dates: true,
-        standardize_names: true,
-        infer_dtypes: true,
-      });
-      const result = response.data;
-      useAppStore.setState({
-        rawData: result.data,
-        cleanedData: result.data,
-        columns: (result.columns ?? state.columns).map((column: ColumnInfo) => ({ ...column, sample: Array.isArray(column.sample) ? column.sample : [] })),
-        cleaningLogs: result.logs ?? [],
-        cleaningDone: true,
-        cleanedRowCount: result.rowCount ?? result.data?.length ?? state.totalRows,
-        loadedRowCount: result.loadedRowCount ?? result.data?.length ?? state.loadedRowCount,
-        previewLoaded: Boolean(result.previewLoaded),
-        duplicates: result.duplicates ?? 0,
-        reportGenerated: false,
-        reportUrl: null,
-      });
-      return `Data Cleaning completed with ${(result.logs ?? []).length} recorded operation(s).`;
-    }
-
-    if (stepName === 'Time Series Forecast' || stepName === 'ML Forecast') {
-      const latest = useAppStore.getState();
-      const dateColumn = getPreferredDateColumn();
-      const targetColumn = getPreferredTargetColumn();
-      if (!dateColumn || !targetColumn) throw new Error('A date-like column and numeric target are required for automated forecasting.');
-      const isMlForecast = stepName === 'ML Forecast';
-      const response = await apiClient.post(isMlForecast ? '/forecast/ml/run' : '/forecast/ts/run', {
-        dataset_id: latest.datasetId ?? null,
-        data: latest.datasetId ? [] : latest.cleanedData ?? latest.rawData ?? [],
-        date_column: dateColumn,
-        target_column: targetColumn,
-        forecast_periods: 3,
-        test_percentage: 20,
-        ...(isMlForecast
-          ? { lag_periods: 3, model_type: 'gradient_boosting', feature_groups: ['trend', 'calendar', 'lags', 'rolling'] }
-          : { model_type: 'sarima' }),
-      });
-      useAppStore.setState(isMlForecast ? { mlForecastResult: response.data } : { timeSeriesForecastResult: response.data });
-      return `${stepName} completed for ${targetColumn} over ${dateColumn}.`;
-    }
-
-    if (stepName === 'Loss Forecast') {
-      if (!state.datasetId) throw new Error('Loss Forecast needs a cached dataset id.');
-      await state.runLossForecast(state.datasetId, 30, { confirmedAssumptions: true });
-      return 'Loss Forecast completed and stored in the application workflow.';
-    }
-
-    if (stepName === 'Profit Forecast') {
-      if (!state.datasetId) throw new Error('Profit Forecast needs a cached dataset id.');
-      await state.runProfitForecast(state.datasetId, 30, {
-        confirmedAssumptions: true,
-        scenarios: { optimistic: 1.15, baseline: 1.0, pessimistic: 0.85 },
-      });
-      return 'Profit Forecast completed and stored in the application workflow.';
-    }
-
-    if (stepName === 'ML Assistant') {
-      const latest = useAppStore.getState();
-      const targetColumn = getPreferredTargetColumn();
-      const featureColumns = getAutoFeatureColumns(targetColumn);
-      if (!targetColumn || featureColumns.length === 0) throw new Error('Automated model training needs one target and at least one feature column.');
-      const problemType = inferProblemType(targetColumn);
-      const modelType = problemType === 'regression' ? 'ridge_regression' : 'random_forest';
-      const response = await apiClient.post('/train', {
-        data: latest.datasetId ? [] : latest.cleanedData ?? latest.rawData ?? [],
-        dataset_id: latest.datasetId ?? null,
-        target_column: targetColumn,
-        feature_columns: featureColumns,
-        problem_type: problemType,
-        model_type: modelType,
-        test_size: 0.2,
-        random_state: 42,
-        cv_folds: 5,
-        training_mode: 'fast',
-      });
-      const result = response.data;
-      useAppStore.setState({
-        targetColumn,
-        problemType,
-        selectedFeatures: featureColumns,
-        selectedModel: modelType,
-        modelId: result.model_id ?? null,
-        modelMetrics: result.metrics ?? null,
-        modelTrained: true,
-        featureImportance: result.feature_importance ?? [],
-        uploadedModel: {
-          name: modelType,
-          type: modelType,
-          target: targetColumn,
-          problem: problemType,
-          trainedAt: new Date().toISOString(),
-          metrics: result.metrics ?? {},
-          features: featureColumns,
-        },
-      });
-      return `${modelType} trained for ${targetColumn} using ${featureColumns.length} feature(s).`;
-    }
-
-    if (stepName === 'Prediction') {
-      const latest = useAppStore.getState();
-      if (!latest.modelId) throw new Error('Prediction needs a trained model id.');
-      const features = normalizePredictionFeatures(latest.selectedFeatures);
-      const response = await apiClient.post('/predict', { model_id: latest.modelId, features });
-      const predictionValue = response.data.prediction_label ?? response.data.prediction;
-      useAppStore.setState({
-        predictionResult: predictionValue,
-        predictionAnalysis: `Automated prediction generated from the approved agentic flow for ${latest.targetColumn ?? 'the selected target'}.`,
-        predictionProbabilities: response.data.probabilities ?? null,
-        predictionHistory: [
-          ...latest.predictionHistory,
-          {
-            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-            prediction: predictionValue,
-            confidence: response.data.confidence,
-            probabilities: response.data.probabilities,
-            features,
-            timestamp: new Date().toISOString(),
-          },
-        ],
-      });
-      return `Prediction completed with result ${String(predictionValue)}.`;
-    }
-
-    if (stepName === 'Report Generation') {
-      if (agenticSessionId) await downloadReport(agenticSessionId);
-      return 'Agentic run report downloaded and the application Report tab is open for the final workflow PDF.';
-    }
-
-    return `${stepName} completed.`;
-  };
-
-  const executeStep = async (stepName: HandlerStep, sessionId: string, options?: { createUndo?: boolean }) => {
-    const before = getSnapshot();
-    const rollbackState = getRollbackState();
+  const executeStep = async (stepName: HandlerStep, sessionId: string, decision: 'accepted' | 'skipped' = 'accepted') => {
     const startedAt = performance.now();
     setStructuredError(null);
     setRunningStep(stepName);
     setAgenticStepStatus(stepName, 'running');
-    appendLog(`starting ${stepName}`);
+    appendLog(`${decision === 'skipped' ? 'skipping' : 'starting'} ${stepName}`);
     try {
-      appendLog(`opening module context for ${stepName}`);
-      const outputSummary = await runApprovedStep(stepName);
-      appendLog(`module completed: ${outputSummary}`);
-      await agenticApiClient.post('/decision', {
+      const definition = UI_STEPS.find((step) => step.handler === stepName);
+      const response = await agenticApiClient.post<ExecuteStepResponse>('/execute-step', {
         session_id: sessionId,
         step_name: stepName,
-        decision: 'accepted',
-        reasoning: outputSummary,
+        decision,
+        approved_by: 'current_user',
+        reasoning: decision === 'skipped' ? 'Skipped from agentic workspace.' : '',
+        step_definition: definition ? {
+          id: definition.id,
+          label: definition.label,
+          handler: definition.handler,
+          description: definition.description,
+        } : { handler: stepName },
       });
-      setAgenticStepStatus(stepName, 'completed');
+      if (response.data.status === 'failed') {
+        throw response.data.error ?? new Error(`${stepName} failed.`);
+      }
+      const finalStatus = response.data.status ?? (decision === 'skipped' ? 'skipped' : 'completed');
+      const outputSummary = response.data.output_summary ?? `${stepName} ${finalStatus}.`;
+      setAgenticStepStatus(stepName, finalStatus);
       const duration = performance.now() - startedAt;
       setStepDurations((current) => ({ ...current, [stepName]: duration }));
-      const artifact = { step: stepName, summary: outputSummary, completedAt: Date.now(), before, after: getSnapshot() };
+      const artifact = { step: stepName, summary: outputSummary, completedAt: Date.now(), status: finalStatus, result: response.data };
       setArtifacts((current) => [...current, artifact]);
-      setAgenticRecommendations(getNextRecommendation(stepName, [outputSummary]));
-      if (options?.createUndo !== false) {
-        setUndoState({ step: stepName, previousState: rollbackState, expiresAt: Date.now() + 10_000 });
-      }
-      appendLog(`recorded decision for ${stepName}`);
+      setAgenticRecommendations(response.data.next_recommendations ?? []);
+      appendLog(`backend completed ${stepName}: ${outputSummary}`);
       return outputSummary;
     } catch (error) {
       const reason = getApiErrorMessage(error, `${stepName} failed.`);
@@ -863,15 +601,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     const target = normalizeStepName(stepName ?? activeRecommendation?.step ?? '');
     if (!target || !agenticSessionId) return;
     try {
-      const response = await agenticApiClient.post<{ next_recommendations?: Recommendation[] }>('/decision', {
-        session_id: agenticSessionId,
-        step_name: target,
-        decision: 'skipped',
-        reasoning: 'Skipped from agentic workspace.',
-      });
-      setAgenticStepStatus(target, 'skipped');
-      setAgenticRecommendations(response.data.next_recommendations ?? getNextRecommendation(target, [`${target} skipped by user.`]));
-      appendLog(`skipped ${target}`);
+      await executeStep(target as HandlerStep, agenticSessionId, 'skipped');
     } catch (error) {
       setBanner(getApiErrorMessage(error, 'Agentic layer unavailable - manual mode active'));
     }
@@ -885,21 +615,11 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       for (const step of EXECUTABLE_STEPS) {
         const status = useAppStore.getState().agenticStepStatuses[step];
         if (status === 'completed' || status === 'skipped') continue;
-        await executeStep(step as HandlerStep, sessionId, { createUndo: false });
+        await executeStep(step as HandlerStep, sessionId);
       }
     } finally {
       setRunningAll(false);
     }
-  };
-
-  const rollbackUndo = () => {
-    if (!undoState) return;
-    useAppStore.setState(undoState.previousState);
-    setAgenticStepStatus(undoState.step, 'pending');
-    setArtifacts((current) => current.filter((artifact) => artifact.step !== undoState.step));
-    setAgenticRecommendations([{ step: undoState.step, reason: 'The last step was rolled back. Review and rerun it when ready.', findings: ['Undo restored the previous workspace state.'] }]);
-    appendLog(`rolled back ${undoState.step}`);
-    setUndoState(null);
   };
 
   const askAgent = async (message: string) => {
@@ -1070,15 +790,6 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
 
             <ExecutionLog logs={executionLogs} running={Boolean(runningStep)} />
 
-            {undoState && (
-              <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700 shadow-sm dark:border-blue-500/30 dark:bg-blue-950/40 dark:text-blue-200">
-                <RotateCcw className="h-4 w-4" />
-                <span>{undoState.step} accepted</span>
-                <button className="font-semibold underline" onClick={rollbackUndo}>Undo</button>
-                <button onClick={() => setUndoState(null)} aria-label="Dismiss undo"><X className="h-4 w-4" /></button>
-              </div>
-            )}
-
             {structuredError && (
               <div className="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-500/30 dark:bg-red-950/30">
                 <h3 className="font-semibold text-red-800 dark:text-red-200">{structuredError.step} failed</h3>
@@ -1098,7 +809,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
               <MetricCard label="Forecast MAE" value={formatNumber(forecastMae)} />
             </div>
 
-            <StepDiffCard artifact={latestArtifact} />
+            <StepResultCard artifact={latestArtifact} />
 
             {previewReady && <DataPreviewTable />}
 
