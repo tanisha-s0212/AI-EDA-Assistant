@@ -15,6 +15,7 @@ backend/datasets/*.parquet
 backend/*.log
 *.pyc
 *.tsbuildinfo
+# Local environment secrets
 .env
 .env.local
 backend/tmp/*
