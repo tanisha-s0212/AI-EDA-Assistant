@@ -19,3 +19,4 @@ backend/*.log
 .env
 .env.local
 backend/tmp/*
+backend/.pytest_cache/
