@@ -100,6 +100,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dtype_inference import LARGE_COL_CUTOFF, RANDOM_STATE, SAMPLE_SIZE, dtype_review_flags, dtype_summary_report, infer_universal_dtypes
+from ml_forecast_pipeline import run_full_pipeline
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
@@ -4617,103 +4618,142 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
 
 @router.post('/forecast/ml/run')
 def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONResponse:
+    session_id = get_session_id(request.dataset_id, request.session_id)
     required_columns = [request.date_column, request.target_column]
+    pipeline_frame: pd.DataFrame | None = None
+    input_path: Path
     if request.dataset_id:
         dataset_entry = DATASET_CACHE.get(request.dataset_id)
         if dataset_entry is None:
             raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
-        series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, request.date_column, request.target_column)
+        if dataset_entry.get('parquet_path'):
+            input_path = Path(str(dataset_entry['parquet_path']))
+        else:
+            pipeline_frame = load_dataset_frame(request.dataset_id, [], required_columns)
+            input_path = Path(str(dataset_entry.get('frame_path') or dataset_entry.get('csv_path') or dataset_entry.get('excel_path') or (BASE_DIR / 'datasets')))
     else:
-        frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
-        series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
+        pipeline_frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
+        input_path = BASE_DIR / 'datasets'
 
-    total_periods = len(series_frame)
-    data_quality = ensure_forecast_data_sufficiency(series_frame, period_label, request.require_quality_gate)
-    target_std = float(series_frame['sales'].astype(float).std() or 0.0)
-    if target_std < 1.0:
-        raise HTTPException(status_code=422, detail='Selected target has near-zero variance (std < 1.0). Please select a different revenue or sales target column before running ML Forecast.')
-    effective_test_periods = min(max(1, int(round(total_periods * (request.test_percentage / 100)))), max(1, total_periods - 4))
-    train_periods = total_periods - effective_test_periods
-    effective_lag_periods = min(request.lag_periods, max(1, train_periods - 1), max(1, total_periods - 2))
-    preview_X, _preview_y = build_ml_forecast_training_frame(series_frame.iloc[:train_periods].copy(), effective_lag_periods, request.feature_groups)
-    non_zero_feature_count = int((preview_X.var(numeric_only=True) > 1e-9).sum())
-    if non_zero_feature_count < 3:
-        raise HTTPException(status_code=422, detail=f'Only {non_zero_feature_count} generated features have non-zero variance; at least 3 are required. Select a stronger target column or provide more varied training data.')
-    auto_result = auto_select_forecast_model(
-        series_frame,
-        request.forecast_periods,
-        effective_test_periods,
-        effective_lag_periods,
-        request.feature_groups,
-        freq,
-        period_label,
-        ['gradient_boosting', 'xgboost', 'lightgbm', 'prophet'],
-    )
-    selected = auto_result['selected']
-    metrics = selected['metrics']
-    future_predictions = auto_result['future_forecast']
+    try:
+        pipeline_result = run_full_pipeline(
+            input_path,
+            target_col=request.target_column,
+            date_col=request.date_column,
+            horizon=request.forecast_periods,
+            frequency='auto',
+            frame=pipeline_frame,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f'ML forecasting pipeline failed: {error}') from error
 
-    history = [{'period': format_forecast_period(pd.Timestamp(row['period']), period_label), 'actual': round(float(row['sales']), 2)} for _, row in series_frame.iterrows()]
-    test_results = auto_result['test_forecast']
-    profile = build_dataset_profile(series_frame, period_label)
-    generated_features = selected.get('generated_features') or []
-    feature_preview_rows = selected.get('feature_preview_rows') or []
-    importance = selected.get('feature_importance') or []
-    session_id = get_session_id(request.dataset_id, request.session_id)
-    session_state = ensure_session_state(session_id)
+    metadata = pipeline_result['metadata']
+    selected_model = pipeline_result['selected_model']
+    metrics = {
+        'mae': selected_model['mae'],
+        'rmse': selected_model['rmse'],
+        'mape': selected_model['mape'],
+        'smape': selected_model['smape'],
+    }
+    frequency_label = 'week' if metadata['frequency'] == 'weekly' else 'month'
+    actual_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'actual']
+    backtest_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'backtest']
+    forecast_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'forecast']
+    history = [{'period': row['period'], 'actual': row['actual']} for row in actual_rows]
+    test_results = [{'period': row['period'], 'actual': None, 'predicted': row['backtest']} for row in backtest_rows]
+    future_predictions = [{'period': row['period'], 'predicted': row['forecast']} for row in forecast_rows]
+    generated_features = pipeline_result['feature_table_sample']['columns']
+    importance = [{'name': row['feature'], 'importance': row['importance']} for row in pipeline_result['shap_importance']]
+    total_periods = len(history)
+    test_periods = len(test_results)
+    train_periods = max(0, total_periods - test_periods)
+    data_quality = {
+        'score': selected_model['data_quality_score'],
+        'status': selected_model['data_quality_status'],
+        'minimum_required_periods': 20 if metadata['frequency'] == 'weekly' else 12,
+        'usable_periods': metadata['usable_periods'],
+        'missing_share': 0,
+        'zero_or_negative_share': 0,
+        'volatility': metadata['volatility'],
+        'issues': [] if selected_model['data_quality_status'] == 'pass' else ['Data quality score below production pass threshold.'],
+    }
+    model_comparison = [
+        {
+            'model_type': row['model'].lower().replace(' ', '_'),
+            'model_name': row['model'],
+            'status': row['status'],
+            'metrics': {'mae': row['mae'], 'rmse': row['rmse'], 'mape': row['mape'], 'smape': row['smape']} if row['status'] == 'completed' else None,
+            'skip_reason': row['note'] if row['status'] != 'completed' else None,
+            'availability_note': row['note'],
+        }
+        for row in pipeline_result['model_comparison']
+    ]
     assumptions = [
-        'Gradient Boosting, Prophet, XGBoost, and LightGBM candidates are compared with walk-forward validation using MAE, RMSE, and MAPE.',
-        'LightGBM availability is reported as a named failure if the installed backend cannot import it.',
-        'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
+        'Gradient Boosting, Prophet, XGBoost, and LightGBM candidates are compared with walk-forward validation using MAE, RMSE, MAPE, and SMAPE.',
+        'SMAPE is the primary model selection metric to reduce near-zero denominator inflation.',
+        'LightGBM availability is reported as a named failure if unavailable.',
         'A naive last-observation baseline is always calculated for comparison.',
     ]
 
     response = {
-        'date_column': request.date_column,
-        'target_column': request.target_column,
-        'frequency': freq,
-        'period_label': period_label,
-        'dataset_profile': profile,
+        'date_column': metadata['date_col'],
+        'target_column': metadata['target_col'],
+        'frequency': 'W-MON' if metadata['frequency'] == 'weekly' else 'MS',
+        'period_label': frequency_label,
+        'dataset_profile': {
+            'detected_frequency': frequency_label,
+            'usable_periods': metadata['usable_periods'],
+            'volatility': metadata['volatility'],
+            'zero_value_share': 0,
+        },
         'data_quality': data_quality,
         'generated_features': generated_features,
-        'feature_preview_rows': feature_preview_rows,
+        'feature_preview_rows': pipeline_result['feature_table_sample']['rows'],
         'history': history,
         'test_forecast': test_results,
         'future_forecast': future_predictions,
         'metrics': metrics,
         'training_summary': {
-            'model_name': selected['model_name'],
+            'model_name': selected_model['model_name'],
             'total_periods': total_periods,
             'train_periods': train_periods,
-            'test_periods': effective_test_periods,
-            'train_percentage': round((train_periods / total_periods) * 100, 1),
-            'test_percentage': round((effective_test_periods / total_periods) * 100, 1),
+            'test_periods': test_periods,
+            'train_percentage': 80,
+            'test_percentage': 20,
             'forecast_periods': request.forecast_periods,
-            'lag_periods': effective_lag_periods,
-            'train_start': history[0]['period'],
-            'train_end': history[train_periods - 1]['period'],
-            'test_start': history[train_periods]['period'],
-            'test_end': history[-1]['period'],
-            'last_observed_period': history[-1]['period'],
+            'lag_periods': len([feature for feature in generated_features if feature.startswith('lag_')]),
+            'train_start': history[0]['period'] if history else None,
+            'train_end': history[max(0, train_periods - 1)]['period'] if history and train_periods else None,
+            'test_start': history[train_periods]['period'] if history and train_periods < len(history) else None,
+            'test_end': history[-1]['period'] if history else None,
+            'last_observed_period': history[-1]['period'] if history else None,
         },
         'shap_feature_importance': importance,
-        'model_comparison': auto_result['model_comparison'],
-        'naive_baseline': auto_result['naive_baseline'],
-        'validation_warnings': auto_result.get('validation_warnings', []),
+        'model_comparison': model_comparison,
+        'naive_baseline': {
+            'model_name': 'Naive last-observation baseline',
+            'metrics': {'mae': selected_model['naive_baseline_mae']},
+            'mae_improvement_pct': selected_model['mae_improvement_pct'],
+        },
+        'validation_warnings': [],
         'assumptions_audit': assumptions,
         'recommended_models': build_ml_model_recommendations(generated_features),
         'model_details': {
-            'model_type': selected['model_type'],
-            'model_name': selected['model_name'],
-            'rationale': f'{selected["model_name"]} was auto-selected from Gradient Boosting, Prophet, XGBoost, and LightGBM candidates using walk-forward MAE/RMSE/MAPE.',
+            'model_type': selected_model['model_name'].lower().replace(' ', '_'),
+            'model_name': selected_model['model_name'],
+            'rationale': selected_model['selection_note'],
+            'selection_metric': selected_model['selection_metric'],
         },
-        'analysis': (
-            f'ML forecasting auto-selected {selected["model_name"]} after comparing production candidates. '
-            f'The strongest drivers were {", ".join(item["name"] for item in importance[:3]) or "the engineered feature set"}, '
-            f'with backtest MAE {metrics["mae"]}, RMSE {metrics["rmse"]}, and MAPE {metrics["mape"]}%.'
-        ),
+        'artifact_output_dir': pipeline_result['output_dir'],
+        'pipeline_status': metadata['pipeline_status'],
+        'next_tab': metadata['next_tab'],
+        'retrain_available': metadata['retrain_available'],
+        'analysis': pipeline_result['forecast_insight']['insight_text'],
     }
 
+    session_state = ensure_session_state(session_id)
     session_state['forecast_steps']['ml'] = True
     session_state['ml_forecast_result'] = safe_serialize(response)
     append_forecast_version(session_id, 'ml_forecast', response)
@@ -4724,14 +4764,14 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         status='success',
         dataset_id=request.dataset_id,
         server_session_id=session_id,
-        detail=f'Ran ML forecasting with {request.model_type} over {request.forecast_periods} future {period_label} periods.',
+        detail=f'Ran ML forecasting with {selected_model["model_name"]} over {request.forecast_periods} future {frequency_label} periods.',
         metadata={
             'date_column': request.date_column,
             'target_column': request.target_column,
             'forecast_periods': request.forecast_periods,
-            'lag_periods': effective_lag_periods,
+            'lag_periods': response['training_summary']['lag_periods'],
             'feature_groups': request.feature_groups,
-            'model_type': selected['model_type'],
+            'model_type': response['model_details']['model_type'],
             'metrics': metrics,
             'data_quality': data_quality,
         },

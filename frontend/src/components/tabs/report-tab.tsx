@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bot, BrainCircuit, CheckCircle2, Clock3, Database, Download, FileText, FilePenLine, Loader2, MinusCircle, Sparkles, Target, TrendingUp, Upload, type LucideIcon } from 'lucide-react';
+import { Bot, BrainCircuit, CheckCircle2, Clock3, Database, Download, FileText, FilePenLine, Loader2, MinusCircle, Sparkles, Target, TrendingUp, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,7 +10,7 @@ import { useAppStore } from '@/lib/store';
 import { computeEdaStats } from '@/lib/eda';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
-import type { ProfitForecastResult, ReportConfig } from '@/types/forecast';
+import type { ReportConfig } from '@/types/forecast';
 
 const STEP_TAB_MAP = {
   1: 'upload',
@@ -26,13 +26,6 @@ const STEP_TAB_MAP = {
 } as const;
 
 const DEFAULT_REPORT_CONFIG: ReportConfig = { includeLoss: true, includeProfit: true, scenario: 'baseline' };
-
-type ForecastSummaryCard = {
-  key: string;
-  title: string;
-  icon: LucideIcon;
-  rows: [string, string][];
-};
 
 function buildReportFileName(fileName: string | null, extension = 'pdf'): string {
   const baseName = (fileName ?? 'dataset')
@@ -110,26 +103,6 @@ function downloadBlobUrl(blobUrl: string, fileName: string) {
   document.body.removeChild(anchor);
 }
 
-function formatMetric(value: number | null | undefined, digits = 2): string {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: digits }) : 'N/A';
-}
-
-function formatCurrency(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
-    : 'N/A';
-}
-
-function sumProfitRows(rows: ProfitForecastResult[] | undefined, key: 'net_profit' | 'gross_profit'): number | null {
-  if (!rows?.length) return null;
-  return rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
-}
-
-function averageGrossMargin(rows: ProfitForecastResult[] | undefined): number | null {
-  if (!rows?.length) return null;
-  return rows.reduce((total, row) => total + (Number(row.gross_margin_pct) || 0), 0) / rows.length;
-}
-
 export default function ReportTab() {
   const store = useAppStore();
   const {
@@ -138,7 +111,7 @@ export default function ReportTab() {
     cleaningLogs, cleaningDone, cleanedRowCount, aiInsights,
     targetColumn, problemType, selectedFeatures, selectedModel, modelMetrics, featureImportance,
     uploadedModel, predictionResult, predictionAnalysis, predictionProbabilities, predictionHistory,
-    timeSeriesForecastResult, mlForecastResult, lossForecast, profitForecast, lossSegments, lossSummary, scenarios, breakevenPeriod, modelTrained,
+    timeSeriesForecastResult, mlForecastResult, lossForecast, profitForecast, lossSegments, scenarios, breakevenPeriod, modelTrained,
     reportGenerated, reportUrl, setReportGenerated, setReportUrl, setActiveTab,
   } = store;
 
@@ -256,70 +229,6 @@ export default function ReportTab() {
   const completedSteps = workflowSteps.filter((step) => step.status === 'Completed').length;
   const pendingSteps = workflowSteps.filter((step) => step.status === 'Pending').length;
   const optionalSteps = workflowSteps.filter((step) => step.status === 'Skipped').length;
-  const forecastSummaries = useMemo(() => {
-    const summaries: ForecastSummaryCard[] = [];
-    if (timeSeriesForecastResult) {
-      summaries.push({
-        key: 'ts',
-        title: 'TS Forecast',
-        icon: TrendingUp,
-        rows: [
-          ['Model', timeSeriesForecastResult.training_summary.model_name],
-          ['MAE', formatMetric(timeSeriesForecastResult.metrics.mae)],
-          ['RMSE', formatMetric(timeSeriesForecastResult.metrics.rmse)],
-          ['Future Periods', String(timeSeriesForecastResult.future_forecast.length || timeSeriesForecastResult.training_summary.forecast_periods)],
-        ],
-      });
-    }
-    if (mlForecastResult) {
-      const forecastValues = mlForecastResult.future_forecast.slice(0, 3).map((point) => formatMetric(point.predicted)).join(', ');
-      const topFeatures = (mlForecastResult.shap_feature_importance?.length
-        ? mlForecastResult.shap_feature_importance.slice(0, 3).map((feature) => feature.name)
-        : mlForecastResult.generated_features.slice(0, 3)
-      ).join(', ');
-      summaries.push({
-        key: 'ml',
-        title: 'ML Forecast',
-        icon: BrainCircuit,
-        rows: [
-          ['Model', mlForecastResult.training_summary.model_name],
-          ['Top Features', topFeatures || 'N/A'],
-          ['Forecast Values', forecastValues || 'N/A'],
-          ['Future Periods', String(mlForecastResult.future_forecast.length)],
-        ],
-      });
-    }
-    if (lossForecast?.length) {
-      const totalLoss = lossSummary?.total_loss ?? lossForecast.reduce((total, row) => total + (Number(row.total_loss) || 0), 0);
-      const averageRisk = lossSummary?.average_risk_score ?? lossForecast.reduce((total, row) => total + (Number(row.loss_risk_score) || 0), 0) / lossForecast.length;
-      summaries.push({
-        key: 'loss',
-        title: 'Loss Forecast',
-        icon: Target,
-        rows: [
-          ['Total Loss', formatCurrency(totalLoss)],
-          ['Top Driver', lossSummary?.top_loss_driver ?? 'N/A'],
-          ['Risk Score', formatMetric(averageRisk)],
-          ['Periods', String(lossForecast.length)],
-        ],
-      });
-    }
-    if (scenarios?.baseline?.length || profitForecast?.length) {
-      const baselineRows = scenarios?.baseline ?? profitForecast ?? [];
-      summaries.push({
-        key: 'profit',
-        title: 'Profit Forecast',
-        icon: Sparkles,
-        rows: [
-          ['Optimistic Net', formatCurrency(sumProfitRows(scenarios?.optimistic, 'net_profit'))],
-          ['Baseline Net', formatCurrency(sumProfitRows(baselineRows, 'net_profit'))],
-          ['Pessimistic Net', formatCurrency(sumProfitRows(scenarios?.pessimistic, 'net_profit'))],
-          ['Gross Margin', averageGrossMargin(baselineRows) === null ? 'N/A' : `${formatMetric(averageGrossMargin(baselineRows), 1)}%`],
-        ],
-      });
-    }
-    return summaries;
-  }, [lossForecast, lossSummary, mlForecastResult, profitForecast, scenarios, timeSeriesForecastResult]);
 
   const reportPayload = useMemo(() => sanitizeForJson({
     datasetId: datasetId ?? null,
@@ -480,24 +389,24 @@ export default function ReportTab() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 dark:bg-gray-900">
-      <Card className="overflow-hidden border-blue-500/20 bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-950/20 dark:border-blue-400/20 dark:shadow-black/30">
+      <Card className="overflow-hidden border-blue-200 bg-white shadow-lg shadow-blue-950/10 dark:border-gray-700 dark:bg-gray-800 dark:shadow-black/30">
         <CardContent className="p-6 md:p-8">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex gap-4">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-white/15 p-2 text-white shadow-lg shadow-black/10">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 p-2 text-blue-700 shadow-sm dark:border-blue-500/30 dark:bg-blue-950/50 dark:text-blue-300">
                 <Bot className="h-8 w-8" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Intelligent Data Assistant — Analysis Report</h1>
-                <div className="mt-3 flex flex-wrap gap-2 text-sm text-blue-50">
-                  <Badge className="border-white/15 bg-white/10 text-white hover:bg-white/15">{fileName ?? 'Untitled Dataset'}</Badge>
-                  <Badge className="border-white/15 bg-white/10 text-white hover:bg-white/15">Generated {generatedTimestamp}</Badge>
-                  <Badge className="border-white/15 bg-white/10 text-white hover:bg-white/15">{(cleanedRowCount ?? totalRows ?? rawData.length).toLocaleString()} rows</Badge>
+                <h1 className="text-2xl font-bold tracking-tight text-gray-950 md:text-3xl dark:text-gray-100">Intelligent Data Assistant - Analysis Report</h1>
+                <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                  <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-950/50 dark:text-blue-200 dark:hover:bg-blue-900/60">{fileName ?? 'Untitled Dataset'}</Badge>
+                  <Badge className="border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-900">Generated {generatedTimestamp}</Badge>
+                  <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-900/50">{(cleanedRowCount ?? totalRows ?? rawData.length).toLocaleString()} rows</Badge>
                 </div>
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
-              <Button type="button" onClick={handleDownloadReport} className="gap-2 bg-white text-blue-700 hover:bg-blue-50 dark:bg-gray-100 dark:text-blue-700 dark:hover:bg-white">
+              <Button type="button" onClick={handleDownloadReport} className="gap-2 bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:text-white dark:hover:bg-blue-400">
                 <Download className="h-4 w-4" />
                 Download PDF
               </Button>
@@ -505,26 +414,26 @@ export default function ReportTab() {
           </div>
 
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-white/15 bg-white/10 p-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-emerald-100">
-                <CheckCircle2 className="h-4 w-4 text-emerald-300" />
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-500/30 dark:bg-emerald-950/30">
+              <div className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-200">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
                 Completed
               </div>
-              <p className="mt-2 text-3xl font-bold">{completedSteps}</p>
+              <p className="mt-2 text-3xl font-bold text-gray-950 dark:text-gray-100">{completedSteps}</p>
             </div>
-            <div className="rounded-xl border border-white/15 bg-white/10 p-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-amber-100">
-                <Clock3 className="h-4 w-4 text-amber-300" />
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-950/30">
+              <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-200">
+                <Clock3 className="h-4 w-4 text-amber-600 dark:text-amber-300" />
                 Pending
               </div>
-              <p className="mt-2 text-3xl font-bold">{pendingSteps}</p>
+              <p className="mt-2 text-3xl font-bold text-gray-950 dark:text-gray-100">{pendingSteps}</p>
             </div>
-            <div className="rounded-xl border border-white/15 bg-white/10 p-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
-                <MinusCircle className="h-4 w-4 text-slate-300" />
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
+                <MinusCircle className="h-4 w-4 text-gray-500 dark:text-gray-400" />
                 Skipped
               </div>
-              <p className="mt-2 text-3xl font-bold">{optionalSteps}</p>
+              <p className="mt-2 text-3xl font-bold text-gray-950 dark:text-gray-100">{optionalSteps}</p>
             </div>
           </div>
         </CardContent>
@@ -588,38 +497,6 @@ export default function ReportTab() {
           })}
         </CardContent>
       </Card>
-
-      {forecastSummaries.length > 0 && (
-        <Card className="border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-          <CardHeader>
-            <CardTitle className="text-gray-950 dark:text-gray-100">Forecast Summary</CardTitle>
-            <CardDescription className="dark:text-gray-400">Forecast metrics are shown only for workflow branches that have actually been run.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4 lg:grid-cols-2">
-            {forecastSummaries.map((summary) => {
-              const Icon = summary.icon;
-              return (
-                <div key={summary.key} className="rounded-xl border border-gray-200 bg-white p-5 transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-gray-700 dark:bg-gray-800">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-300">
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <h3 className="font-semibold text-gray-950 dark:text-gray-100">{summary.title}</h3>
-                  </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    {summary.rows.map(([label, value]) => (
-                      <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900">
-                        <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">{label}</p>
-                        <p className="mt-1 break-words text-sm font-semibold text-gray-950 dark:text-gray-100">{value}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
 
       <div className="space-y-3">
         <Button type="button" onClick={handleGenerate} disabled={generating} size="lg" className="h-14 w-full gap-3 text-base font-semibold">
