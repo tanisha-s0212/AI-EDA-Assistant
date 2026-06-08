@@ -111,6 +111,43 @@ export interface ForecastTrainingSummary {
   last_observed_period: string;
 }
 
+export interface TsForecastModelComparison {
+  model: string;
+  status: string;
+  mae: number | null;
+  rmse: number | null;
+  mape: number | null;
+  smape: number | null;
+  note?: string;
+}
+
+export interface TsFutureForecast {
+  period: string;
+  forecast: number;
+  lower: number;
+  upper: number;
+}
+
+export interface TsInsight {
+  insight_text: string;
+  risk_flag: string | null;
+  confidence: string;
+  best_model: string;
+  selection_metric: string;
+  stationarity_note: string;
+  top_model_smape: number;
+  audit_trail: string;
+}
+
+export interface TsStationarity {
+  status: string;
+  adf_pvalue: number;
+  kpss_pvalue: number;
+  note: string;
+  recommended_model: string;
+  differencing_required: boolean;
+}
+
 export interface TimeSeriesForecastResult {
   date_column: string;
   target_column: string;
@@ -131,6 +168,17 @@ export interface TimeSeriesForecastResult {
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };
   analysis: string;
+  // New multi-model fields
+  status?: string;
+  best_model?: string;
+  smape?: number;
+  mae?: number;
+  rmse?: number;
+  mape?: number;
+  reason?: string;
+  stationarity?: TsStationarity;
+  model_comparison_new?: TsForecastModelComparison[];
+  insight?: TsInsight;
 }
 
 export interface MlForecastResult {

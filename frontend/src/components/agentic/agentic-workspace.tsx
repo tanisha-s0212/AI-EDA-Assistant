@@ -29,8 +29,59 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
-import type { AgenticStepStatus, Recommendation } from '@/lib/store';
+import type { AgenticStepStatus, Recommendation, TabId } from '@/lib/store';
 import { cn } from '@/lib/utils';
+
+function renderStructuredOrMarkdown(text: string): string {
+  const trimmed = text.trim();
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && (parsed.next_action || parsed.execution_plan || parsed.validation)) {
+      const parts: string[] = [];
+      if (parsed.next_action) parts.push(`<div class="agent-json-field"><span class="agent-field-label">Next Action</span><span class="agent-field-value">${escHtml(String(parsed.next_action))}</span></div>`);
+      if (parsed.execution_plan && Array.isArray(parsed.execution_plan)) {
+        parts.push('<div class="agent-json-field"><span class="agent-field-label">Execution Plan</span><ol class="agent-plan-list">');
+        for (const item of parsed.execution_plan) {
+          parts.push(`<li><strong>Step ${item.step ?? ''}:</strong> ${escHtml(String(item.task ?? ''))}${item.api_call ? ` <code>${escHtml(String(item.api_call))}</code>` : ''}</li>`);
+        }
+        parts.push('</ol></div>');
+      }
+      if (parsed.validation) parts.push(`<div class="agent-json-field"><span class="agent-field-label">Validation</span><span class="agent-field-value">${escHtml(String(parsed.validation))}</span></div>`);
+      if (parsed.reasoning) parts.push(`<div class="agent-json-field"><span class="agent-field-label">Reasoning</span><span class="agent-field-value">${escHtml(String(parsed.reasoning))}</span></div>`);
+      return parts.join('');
+    }
+  } catch {
+    /* not JSON — render as markdown */
+  }
+  return renderMarkdown(trimmed);
+}
+
+function escHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderMarkdown(text: string): string {
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  html = html.replace(/^### (.*$)/gm, '<h3 class="agent-section-heading">$1</h3>');
+  html = html.replace(/^## (.*$)/gm, '<h2 class="agent-section-heading">$1</h2>');
+  html = html.replace(/^# (.*$)/gm, '<h1 class="agent-section-heading">$1</h1>');
+  html = html.replace(/^- (.*)/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+  html = html.replace(/^\d+\. (.*)/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => match.includes('<ul>') ? match : '<ol>' + match + '</ol>');
+  html = html.replace(/\n\n/g, '</p><p class="agent-paragraph">');
+  html = '<p class="agent-paragraph">' + html + '</p>';
+  html = html.replace(/<p class="agent-paragraph"><\/p>/g, '');
+  html = html.replace(/<p class="agent-paragraph">\s*<\/p>/g, '');
+  return html;
+}
 
 const agenticApiClient = axios.create({
   baseURL: (process.env.NEXT_PUBLIC_AGENTIC_API_BASE || '/api/agentic').replace(/\/$/, ''),
@@ -160,6 +211,89 @@ function AgenticWorkspaceStyles() {
       .ida-agent-terminal::-webkit-scrollbar { width: 8px; }
       .ida-agent-terminal::-webkit-scrollbar-track { background: #0a0a0a; }
       .ida-agent-terminal::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 999px; }
+      .agent-response-panel {
+        padding: 4px;
+        line-height: 1.6;
+        font-size: 14px;
+      }
+      .agent-response-panel strong {
+        font-weight: 600;
+        color: var(--color-text-primary, #0f172a);
+        display: block;
+        margin-top: 12px;
+        margin-bottom: 4px;
+      }
+      .agent-response-panel ol,
+      .agent-response-panel ul {
+        padding-left: 20px;
+        margin: 8px 0;
+      }
+      .agent-response-panel li {
+        margin-bottom: 6px;
+      }
+      .agent-markdown p.agent-paragraph {
+        margin: 6px 0;
+      }
+      .agent-markdown h1.agent-section-heading,
+      .agent-markdown h2.agent-section-heading,
+      .agent-markdown h3.agent-section-heading {
+        font-weight: 600;
+        margin-top: 14px;
+        margin-bottom: 6px;
+        font-size: inherit;
+      }
+      .agent-markdown code {
+        background: rgba(0,0,0,0.06);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-size: 0.9em;
+      }
+      .dark .agent-markdown code {
+        background: rgba(255,255,255,0.1);
+      }
+      .agent-markdown pre {
+        background: rgba(0,0,0,0.08);
+        padding: 10px;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 8px 0;
+        font-size: 0.85em;
+      }
+      .dark .agent-markdown pre {
+        background: rgba(255,255,255,0.05);
+      }
+      .agent-json-field {
+        margin: 8px 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: rgba(59,130,246,0.06);
+        border-left: 3px solid #3b82f6;
+      }
+      .dark .agent-json-field {
+        background: rgba(59,130,246,0.1);
+      }
+      .agent-field-label {
+        display: block;
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #3b82f6;
+        margin-bottom: 4px;
+      }
+      .agent-field-value {
+        display: block;
+        font-size: 0.875rem;
+        color: inherit;
+      }
+      .agent-plan-list {
+        margin: 4px 0 0 !important;
+        padding-left: 18px !important;
+      }
+      .agent-plan-list li {
+        margin-bottom: 4px !important;
+        font-size: 0.85rem;
+      }
     `}</style>
   );
 }
@@ -434,13 +568,69 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = React.useState(false);
   const lastSuggestedDatasetRef = React.useRef<string | null>(null);
+  const chatEndRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  const SUGGESTED_QUESTIONS = [
+    'Why was this model selected?',
+    'What changed during cleaning?',
+    'What should I do next?',
+    'Are the forecasts reliable?',
+    'Explain the best model',
+    'What features matter most?',
+  ];
+
+  interface InsightAction {
+    tab?: string;
+    api?: string;
+    fix_type?: string;
+    parameters?: Record<string, unknown>;
+  }
+  const [pipelineStats, setPipelineStats] = React.useState({ steps_completed: 0, steps_total: UI_STEPS.length, best_model: 'Pending' as string, forecast_mae: 'N/A' as string });
+  const [autoAccept, setAutoAccept] = React.useState(false);
+  const pollingRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const pollPipelineStatus = React.useCallback(async () => {
+    if (!agenticSessionId) return;
+    try {
+      const response = await agenticApiClient.get<StatusResponse>(`/session/${agenticSessionId}/status`);
+      const steps = Object.values(response.data.steps ?? {});
+      const completed = steps.filter((s) => s === 'completed' || s === 'skipped').length;
+      const storeState = useAppStore.getState();
+      const best = storeState.mlForecastResult?.training_summary?.model_name ?? storeState.selectedModel ?? storeState.timeSeriesForecastResult?.training_summary?.model_name ?? 'Pending';
+      const mae = storeState.mlForecastResult?.metrics?.mae ?? storeState.timeSeriesForecastResult?.metrics?.mae;
+      setPipelineStats({
+        steps_completed: completed,
+        steps_total: UI_STEPS.length,
+        best_model: best,
+        forecast_mae: typeof mae === 'number' ? mae.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 'N/A',
+      });
+      if (completed >= UI_STEPS.length && pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    } catch {
+      // ignore polling errors
+    }
+  }, [agenticSessionId]);
+
+  const handleSuggestedQuestion = (question: string) => {
+    setChatInput('');
+    void askAgent(question);
+  };
 
   const activeRecommendation = agenticRecommendations[0] ?? null;
   const completedCount = completedUiCount(agenticStepStatuses, datasetId);
   const pendingCount = UI_STEPS.length - completedCount;
   const progress = Math.round((completedCount / UI_STEPS.length) * 100);
+  const pipelineComplete = completedCount >= UI_STEPS.length;
   const activeHandlerStep = normalizeStepName(activeRecommendation?.step ?? runningStep ?? '') || null;
-  const activeUiStep = UI_STEPS.find((step) => step.handler === activeHandlerStep) ?? UI_STEPS.find((step) => getUiStatus(step, agenticStepStatuses, datasetId) === 'pending') ?? UI_STEPS[0];
+  const activeUiStep = !pipelineComplete
+    ? (UI_STEPS.find((step) => step.handler === activeHandlerStep) ?? UI_STEPS.find((step) => getUiStatus(step, agenticStepStatuses, datasetId) === 'pending') ?? UI_STEPS[0])
+    : UI_STEPS[UI_STEPS.length - 1];
   const latestArtifact = artifacts.at(-1) ?? null;
   const confidence = buildConfidence(activeUiStep, completedCount);
   const context = getStepContext(activeUiStep, artifacts);
@@ -449,6 +639,15 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const bestModel = store.mlForecastResult?.training_summary?.model_name ?? store.selectedModel ?? store.timeSeriesForecastResult?.training_summary?.model_name ?? 'Pending';
   const forecastMae = store.mlForecastResult?.metrics?.mae ?? store.timeSeriesForecastResult?.metrics?.mae;
   const previewReady = ['Data Understanding', 'EDA', 'Data Cleaning'].some((step) => agenticStepStatuses[step] === 'completed');
+
+  React.useEffect(() => {
+    if (!agenticSessionId || completedCount === 0) return;
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(() => void pollPipelineStatus(), 3000);
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [agenticSessionId, completedCount, pollPipelineStatus]);
 
   const appendLog = React.useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString([], { hour12: false });
@@ -481,8 +680,19 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
         setAgenticRecommendations(response.data.recommendations.slice(0, 1));
       }
       if (response.data.results) {
-        const nextArtifacts = Object.entries(response.data.results).map(([step, result]) => artifactFromPersisted(step, result));
-        setArtifacts(nextArtifacts.sort((left, right) => left.completedAt - right.completedAt));
+        setArtifacts((current) => {
+          const existingSteps = new Set(current.map((a) => a.step));
+          const newArtifacts = Object.entries(response.data.results ?? {})
+            .filter(([step]) => !existingSteps.has(step))
+            .map(([step, result]) => artifactFromPersisted(step, result));
+          return [...current, ...newArtifacts].sort((left, right) => left.completedAt - right.completedAt);
+        });
+        Object.entries(response.data.results).forEach(([step, persisted]) => {
+          if (persisted.status === 'completed') {
+            const innerResult = (persisted.result as Record<string, unknown> | undefined)?.result ?? persisted.result;
+            bridgeStepResultToStore(step, { status: 'completed', step_name: step, result: innerResult } as ExecuteStepResponse);
+          }
+        });
       }
       if (runningStep) {
         const backendStatus = response.data.steps?.[runningStep];
@@ -571,6 +781,9 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       const finalStatus = response.data.status ?? (decision === 'skipped' ? 'skipped' : 'completed');
       const outputSummary = response.data.output_summary ?? `${stepName} ${finalStatus}.`;
       setAgenticStepStatus(stepName, finalStatus);
+      if (finalStatus === 'completed') {
+        bridgeStepResultToStore(stepName, response.data);
+      }
       const duration = performance.now() - startedAt;
       setStepDurations((current) => ({ ...current, [stepName]: duration }));
       const artifact = { step: stepName, summary: outputSummary, completedAt: Date.now(), status: finalStatus, result: response.data };
@@ -587,6 +800,92 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       throw error;
     } finally {
       setRunningStep(null);
+    }
+  };
+
+  const bridgeStepResultToStore = (stepName: string, response: ExecuteStepResponse) => {
+    const resultPayload = (response.result ?? {}) as Record<string, unknown>;
+    const update: Record<string, unknown> = {};
+
+    switch (stepName) {
+      case 'Data Understanding': {
+        const columns = resultPayload.columns;
+        if (Array.isArray(columns)) update.columns = columns;
+        break;
+      }
+      case 'EDA':
+        break;
+      case 'Data Cleaning': {
+        const cleaned = resultPayload.cleaned_data ?? resultPayload.data;
+        if (Array.isArray(cleaned)) update.cleanedData = cleaned;
+        const clnLogs = resultPayload.cleaning_logs ?? resultPayload.logs;
+        if (Array.isArray(clnLogs)) update.cleaningLogs = clnLogs;
+        update.cleaningDone = true;
+        break;
+      }
+      case 'Time Series Forecast': {
+        const tsResult: Record<string, unknown> = { status: 'completed' };
+        const fields: [string, string][] = [
+          ['best_model', 'best_model'], ['smape', 'smape'], ['mae', 'mae'],
+          ['rmse', 'rmse'], ['mape', 'mape'], ['reason', 'reason'],
+          ['stationarity', 'stationarity'], ['future_forecast', 'future_forecast'],
+          ['model_comparison', 'model_comparison_new'],
+        ];
+        for (const [source, target] of fields) {
+          const value = resultPayload[source];
+          if (value != null) tsResult[target] = value;
+        }
+        const insight = resultPayload.insight as Record<string, unknown> | undefined;
+        if (insight) {
+          tsResult.insight = insight;
+          tsResult.analysis = String(insight.insight_text ?? '');
+        }
+        tsResult.history = resultPayload.history ?? [];
+        tsResult.test_forecast = resultPayload.test_forecast ?? [];
+        const rmae = resultPayload.mae;
+        tsResult.metrics = resultPayload.metrics ?? { mae: typeof rmae === 'number' ? rmae : 0, rmse: typeof resultPayload.rmse === 'number' ? resultPayload.rmse : 0, mape: typeof resultPayload.mape === 'number' ? resultPayload.mape : 0 };
+        tsResult.training_summary = resultPayload.training_summary ?? { model_type: String(resultPayload.best_model ?? ''), model_name: String(resultPayload.best_model ?? ''), status: 'completed' };
+        update.timeSeriesForecastResult = tsResult;
+        break;
+      }
+      case 'ML Forecast': {
+        if (Object.keys(resultPayload).length > 0) update.mlForecastResult = resultPayload;
+        break;
+      }
+      case 'Loss Forecast': {
+        const lossData = resultPayload.forecast ?? resultPayload;
+        if (Array.isArray(lossData)) update.lossForecast = lossData;
+        if (resultPayload.summary) update.lossSummary = resultPayload.summary;
+        break;
+      }
+      case 'Profit Forecast': {
+        const profitData = resultPayload.forecast ?? resultPayload;
+        if (Array.isArray(profitData)) update.profitForecast = profitData;
+        break;
+      }
+      case 'ML Assistant': {
+        const modelName = resultPayload.model_name ?? resultPayload.model_type;
+        if (modelName) update.selectedModel = String(modelName);
+        if (resultPayload.metrics) update.modelMetrics = resultPayload.metrics;
+        if (resultPayload.model_id) update.modelId = String(resultPayload.model_id);
+        update.modelTrained = true;
+        break;
+      }
+      case 'Prediction': {
+        const predResult = resultPayload.prediction_label ?? resultPayload.prediction;
+        if (predResult != null) update.predictionResult = predResult;
+        break;
+      }
+      case 'Report Generation': {
+        update.reportGenerated = true;
+        const reportUrl = resultPayload.download_url ?? resultPayload.url;
+        if (reportUrl) update.reportUrl = String(reportUrl);
+        break;
+      }
+    }
+
+    if (Object.keys(update).length > 0) {
+      useAppStore.setState(update as Partial<typeof store>);
     }
   };
 
@@ -611,14 +910,32 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     const sessionId = agenticSessionId ?? await suggestNextSteps();
     if (!sessionId) return;
     setRunningAll(true);
+    setAutoAccept(true);
+    appendLog('Run All started with auto-accept enabled');
+    const total = EXECUTABLE_STEPS.length;
     try {
-      for (const step of EXECUTABLE_STEPS) {
+      for (let index = 0; index < total; index++) {
+        const step = EXECUTABLE_STEPS[index];
         const status = useAppStore.getState().agenticStepStatuses[step];
-        if (status === 'completed' || status === 'skipped') continue;
-        await executeStep(step as HandlerStep, sessionId);
+        if (status === 'completed' || status === 'skipped') {
+          appendLog(`Run All: ${step} already ${status}, skipping`);
+          continue;
+        }
+        appendLog(`Run All: executing ${step} (${index + 1}/${total})`);
+        try {
+          await executeStep(step as HandlerStep, sessionId);
+          await pollPipelineStatus();
+        } catch {
+          appendLog(`Run All: ${step} failed — flagging and continuing`);
+          setAgenticStepStatus(step, 'failed');
+          await pollPipelineStatus();
+        }
       }
+      appendLog('Run All: pipeline complete');
     } finally {
       setRunningAll(false);
+      setAutoAccept(false);
+      void pollPipelineStatus();
     }
   };
 
@@ -650,8 +967,36 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   };
 
   const applyInsightFix = async () => {
-    await askAgent(`Turn this dataset insight into an executable next action for the IDA workflow: ${insight}`);
+    const parsed = tryParseStructuredInsight(insight);
+    if (parsed?.action?.api) {
+      try {
+        await agenticApiClient.post(parsed.action.api, {
+          dataset_id: datasetId,
+          fix_type: parsed.action.fix_type ?? 'auto',
+          parameters: parsed.action.parameters ?? {},
+        });
+        if (parsed.action.tab) {
+          const { setActiveTab } = useAppStore.getState();
+          setActiveTab(parsed.action.tab as TabId);
+        }
+      } catch (error) {
+        // fallback to asking agent
+        await askAgent(`Turn this dataset insight into an executable next action for the IDA workflow: ${insight}`);
+      }
+    } else {
+      await askAgent(`Turn this dataset insight into an executable next action for the IDA workflow: ${insight}`);
+    }
   };
+
+  function tryParseStructuredInsight(raw: string): { action?: InsightAction } | null {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && parsed.action) return parsed;
+    } catch {
+      /* not JSON */
+    }
+    return null;
+  }
 
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xl dark:border-slate-800 dark:bg-slate-950">
@@ -776,16 +1121,23 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                   {JSON.stringify({ activeStep: activeUiStep, recommendation: activeRecommendation, context, confidence }, null, 2)}
                 </pre>
               )}
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || Boolean(runningStep)} className="bg-blue-600 text-white hover:bg-blue-500">
-                  {runningStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                  Accept & Continue
-                </Button>
-                <Button variant="outline" onClick={() => void skipStep()} disabled={!activeRecommendation || Boolean(runningStep)} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-                  <SkipForward className="mr-2 h-4 w-4" />
-                  Skip
-                </Button>
-              </div>
+              {pipelineComplete ? (
+                <div className="mt-4 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-950/30 dark:text-emerald-200">
+                  <CheckCircle2 className="h-5 w-5" />
+                  Pipeline complete — all steps have been processed
+                </div>
+              ) : (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || Boolean(runningStep) || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
+                    {runningStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Accept & Continue
+                  </Button>
+                  <Button variant="outline" onClick={() => void skipStep()} disabled={!activeRecommendation || Boolean(runningStep) || runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                    <SkipForward className="mr-2 h-4 w-4" />
+                    Skip
+                  </Button>
+                </div>
+              )}
             </div>
 
             <ExecutionLog logs={executionLogs} running={Boolean(runningStep)} />
@@ -795,18 +1147,18 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                 <h3 className="font-semibold text-red-800 dark:text-red-200">{structuredError.step} failed</h3>
                 <p className="mt-1 text-sm text-red-700 dark:text-red-300">{structuredError.reason}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => agenticSessionId && void executeStep(structuredError.step as HandlerStep, agenticSessionId)}><RefreshCw className="mr-2 h-4 w-4" />Retry</Button>
-                  <Button size="sm" variant="outline" onClick={() => void skipStep(structuredError.step)} className="dark:border-slate-700 dark:text-slate-200">Skip</Button>
-                  <Button size="sm" variant="outline" onClick={() => void askAgentToFix()} className="dark:border-slate-700 dark:text-slate-200"><Wand2 className="mr-2 h-4 w-4" />Ask agent to fix</Button>
+                  <Button size="sm" onClick={() => agenticSessionId && void executeStep(structuredError.step as HandlerStep, agenticSessionId)} disabled={runningAll}><RefreshCw className="mr-2 h-4 w-4" />Retry</Button>
+                  <Button size="sm" variant="outline" onClick={() => void skipStep(structuredError.step)} disabled={runningAll} className="dark:border-slate-700 dark:text-slate-200">Skip</Button>
+                  <Button size="sm" variant="outline" onClick={() => void askAgentToFix()} disabled={runningAll} className="dark:border-slate-700 dark:text-slate-200"><Wand2 className="mr-2 h-4 w-4" />Ask agent to fix</Button>
                 </div>
               </div>
             )}
 
             <div className="grid gap-3 md:grid-cols-4">
-              <MetricCard label="Steps Completed" value={String(completedCount)} />
-              <MetricCard label="Steps Pending" value={String(pendingCount)} />
-              <MetricCard label="Best Model Selected" value={bestModel} />
-              <MetricCard label="Forecast MAE" value={formatNumber(forecastMae)} />
+              <MetricCard label="Steps Completed" value={`${pipelineStats.steps_completed}/${pipelineStats.steps_total}`} />
+              <MetricCard label="Steps Pending" value={String(pipelineStats.steps_total - pipelineStats.steps_completed)} />
+              <MetricCard label="Best Model Selected" value={pipelineStats.best_model} />
+              <MetricCard label="Forecast MAE" value={pipelineStats.forecast_mae} />
             </div>
 
             <StepResultCard artifact={latestArtifact} />
@@ -839,13 +1191,54 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
             </button>
             {chatOpen && (
               <div className="space-y-3">
-                <div className="max-h-48 space-y-2 overflow-auto rounded-lg bg-slate-50 p-3 dark:bg-slate-950">
-                  {chatMessages.length ? chatMessages.map((message) => (
-                    <div key={message.id} className={cn('rounded-lg px-3 py-2 text-sm', message.role === 'user' ? 'ml-auto max-w-[85%] bg-blue-600 text-white' : 'mr-auto max-w-[90%] bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-200')}>
-                      {message.content}
+                <div className="agent-response-panel max-h-72 space-y-2 overflow-auto rounded-lg border border-slate-100 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950">
+                  {chatMessages.length ? (
+                    <>
+                      {chatMessages.map((message) => (
+                        <div key={message.id} className={cn('flex flex-col', message.role === 'user' ? 'items-end' : 'items-start')}>
+                          <span className={cn('mb-0.5 text-[10px] font-medium tracking-wide uppercase', message.role === 'user' ? 'text-blue-500' : 'text-slate-400')}>
+                            {message.role === 'user' ? 'You' : 'Agent'}
+                          </span>
+                          {message.role === 'user' ? (
+                            <div className="rounded-xl px-3.5 py-2.5 text-sm leading-relaxed bg-blue-600 text-white">
+                              {message.content}
+                            </div>
+                          ) : (
+                            <div
+                              className="agent-markdown rounded-xl px-3.5 py-2.5 text-sm leading-relaxed bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700"
+                              dangerouslySetInnerHTML={{ __html: renderStructuredOrMarkdown(message.content) }}
+                            />
+                          )}
+                        </div>
+                      ))}
+                      <div ref={chatEndRef} />
+                    </>
+                  ) : (
+                    <div className="space-y-3 py-2">
+                      <p className="text-center text-xs text-slate-400 dark:text-slate-500">Pick a question or type your own</p>
+                      <div className="flex flex-wrap justify-center gap-1.5">
+                        {SUGGESTED_QUESTIONS.map((question) => (
+                          <button
+                            key={question}
+                            onClick={() => handleSuggestedQuestion(question)}
+                            disabled={chatLoading}
+                            className="cursor-pointer rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-blue-500 dark:hover:bg-blue-900/30 dark:hover:text-blue-300"
+                          >
+                            {question}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  )) : <p className="text-sm text-slate-500 dark:text-slate-400">Ask why a model was selected, what changed during cleaning, or what the agent recommends next.</p>}
-                  {chatLoading && <div className="text-sm text-slate-500 dark:text-slate-400">Agent is thinking...</div>}
+                  )}
+                  {chatLoading && (
+                    <div className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-50 to-slate-50 px-3 py-2 text-sm text-slate-500 dark:from-blue-950/20 dark:to-slate-900">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                      </span>
+                      Agent is thinking…
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <input
@@ -854,8 +1247,8 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') void sendChat();
                     }}
-                    placeholder="Why did you choose XGBoost?"
-                    className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    placeholder="Ask anything about the results…"
+                    className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500"
                   />
                   <Button onClick={() => void sendChat()} disabled={chatLoading || !chatInput.trim()} className="bg-blue-600 text-white hover:bg-blue-500">
                     <Send className="h-4 w-4" />

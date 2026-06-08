@@ -347,6 +347,10 @@ def core_chat_respond(message: str, ui_mode: str = 'ask', provider: str = 'auto'
             'role': 'system',
             'content': (
                 'You are the embedded Agentic Core for this FastAPI backend. '
+                'Respond only in JSON format with this structure: '
+                '{ "next_action": string, "execution_plan": [{step: int, task: string, api_call: string}], '
+                '"validation": string, "reasoning": string }. '
+                'Never use markdown asterisks or bold syntax. '
                 'Use the local workflow context, do not reveal API keys, and keep answers concise.'
             ),
         },
@@ -1117,16 +1121,50 @@ def execute_time_series_forecast(session_id: str, request: Request) -> Any:
     backend = get_backend_module()
     dataset_id = session_dataset_id(session_id)
     frame = session_frame(session_id)
-    payload = backend.TimeSeriesForecastRequest(
-        dataset_id=dataset_id,
-        session_id=dataset_id,
-        date_column=preferred_date_column(frame),
-        target_column=preferred_target_column(frame),
-        forecast_periods=3,
-        test_percentage=20,
-        model_type='sarima',
+    if frame is None or frame.empty:
+        raise HTTPException(status_code=400, detail='No data frame available for time series forecast.')
+    date_col = preferred_date_column(frame)
+    target_col = preferred_target_column(frame)
+    if not date_col or not target_col:
+        raise HTTPException(status_code=422, detail='Could not auto-detect date and target columns.')
+    df, _freq, _period_label = backend.prepare_sales_series(frame, date_col, target_col)
+    frequency, freq_period = backend.detect_ts_frequency(df, date_col)
+    stationarity = backend.check_stationarity(df[target_col], frequency)
+    try:
+        results, _y_train, _y_test, train, test, clean_df, first_nonzero_date = backend.train_all_ts_models(
+            df, target_col, date_col, frequency, freq_period, 0.8, 3
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    best_name, best_metrics, reason = backend.auto_select_ts_model(results)
+    future_forecast = backend.generate_ts_future_forecast(
+        best_name, clean_df, target_col, date_col, frequency, freq_period, 3
     )
-    return backend.forecast_time_series(payload, request)
+    model_comparison_list = [{'model': k, 'smape': v.get('smape'), 'mae': v.get('mae'), 'status': v['status']} for k, v in results.items()]
+    insight = backend.generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list)
+    output_dir = backend.get_ts_output_dir(dataset_id)
+    try:
+        backend.write_ts_output_files(output_dir, frequency, freq_period, target_col, date_col, df, clean_df, train, test, stationarity, results, best_name, best_metrics, reason, future_forecast, insight)
+    except Exception as exc:
+        backend.logger.warning('write_ts_output_files failed: %s', exc)
+    try:
+        backend.write_ts_to_postgres(dataset_id, best_name, best_metrics, results, stationarity, future_forecast, insight)
+    except Exception as exc:
+        backend.logger.warning('write_ts_to_postgres failed: %s', exc)
+    backend.save_workspace_context(dataset_id, 'ts_forecast_context', {
+        'frequency': frequency, 'freq_period': freq_period, 'date_col': date_col,
+        'target_col': target_col, 'clean_start_date': first_nonzero_date,
+        'pipeline_status': 'completed', 'next_tab': 'ml_forecast'
+    })
+    response_data = {
+        'status': 'completed', 'best_model': best_name,
+        'smape': best_metrics['smape'], 'mae': best_metrics['mae'],
+        'rmse': best_metrics.get('rmse'), 'mape': best_metrics.get('mape'),
+        'reason': reason, 'stationarity': stationarity,
+        'future_forecast': future_forecast, 'insight': insight,
+        'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()],
+    }
+    return JSONResponse(content=response_data)
 
 
 def execute_ml_forecast(session_id: str, request: Request) -> Any:
@@ -1614,6 +1652,124 @@ def get_session_status(session_id: str) -> JSONResponse:
             'last_result': last_result,
         }
     )
+
+
+@agentic_router.post('/pipeline/step/accept')
+def pipeline_step_accept(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
+    if not agentic_enabled():
+        return disabled_response()
+    payload.decision = 'accepted'
+    payload.approved_by = 'pipeline_auto'
+    return execute_step(payload, request)
+
+
+@agentic_router.post('/pipeline/step/skip')
+def pipeline_step_skip(payload: ExecuteStepRequest, request: Request) -> JSONResponse:
+    if not agentic_enabled():
+        return disabled_response()
+    payload.decision = 'skipped'
+    payload.approved_by = 'pipeline_auto'
+    payload.reasoning = 'Skipped via pipeline step/skip endpoint.'
+    return execute_step(payload, request)
+
+
+@agentic_router.get('/pipeline/status/{dataset_id}')
+def pipeline_status(dataset_id: str) -> JSONResponse:
+    if not agentic_enabled():
+        return disabled_response()
+    backend = get_backend_module()
+    state = {}
+    try:
+        state = backend.ensure_session_state(dataset_id)
+    except Exception:
+        pass
+    best_model = (
+        state.get('best_model')
+        or (state.get('ml_forecast_result') or {}).get('training_summary', {}).get('model_name')
+        or (state.get('time_series_result') or {}).get('best_model')
+        or None
+    )
+    forecast_mae = (
+        (state.get('ml_forecast_result') or {}).get('metrics', {}).get('mae')
+        or (state.get('time_series_result') or {}).get('mae')
+        or None
+    )
+    pipeline_steps = PIPELINE_STEPS
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f'pipeline-{dataset_id}'))
+    session = _sessions.get(session_id, {})
+    persisted_statuses = latest_agentic_step_statuses(session_id) if session_id in _sessions else {}
+    steps_data = {**{step: 'pending' for step in pipeline_steps}, **session.get('steps', {}), **persisted_statuses}
+    completed = sum(1 for s in steps_data.values() if s in ('completed', 'skipped'))
+    running_step_name = next((step for step, status in steps_data.items() if status == 'running'), None)
+    return JSONResponse(content={
+        'steps_completed': completed,
+        'steps_total': len(pipeline_steps),
+        'current_step_name': running_step_name or '',
+        'best_model': best_model,
+        'forecast_mae': forecast_mae,
+        'pipeline_status': 'running' if running_step_name else 'completed' if completed >= len(pipeline_steps) else 'idle',
+        'steps': steps_data,
+    })
+
+
+@agentic_router.post('/pipeline/run-all')
+async def pipeline_run_all(request: Request) -> JSONResponse:
+    if not agentic_enabled():
+        return disabled_response()
+    body = await request.json() if request.headers.get('content-type') else {}
+    dataset_id = str(body.get('dataset_id', ''))
+    steps = body.get('steps', PIPELINE_STEPS)
+    auto_accept = body.get('auto_accept', True)
+    if not dataset_id:
+        raise HTTPException(status_code=400, detail='dataset_id is required.')
+    profile = read_dataset_profile(dataset_id)
+    session_id = uuid.uuid4().hex
+    session = ensure_session(session_id)
+    session['dataset_path'] = dataset_id
+    session['dataset_id'] = dataset_id
+    session['profile'] = profile
+    session['recommendations'] = []
+    results: list[dict[str, Any]] = []
+    for step_name in steps:
+        if step_name not in STEP_HANDLERS:
+            results.append({'step_name': step_name, 'status': 'skipped', 'reason': f'No handler for {step_name}'})
+            continue
+        session['steps'][step_name] = 'running'
+        session['updated_at'] = datetime.utcnow().isoformat()
+        try:
+            handler = STEP_HANDLERS[step_name]
+            response = handler(session_id, request)
+            raw_result = response_payload(response)
+            output_summary = summarize_response(response)
+            session['steps'][step_name] = 'completed'
+            session['events'].append({'step_name': step_name, 'status': 'completed', 'approved_by': 'pipeline_auto', 'completed_at': datetime.utcnow().isoformat(), 'output_summary': output_summary})
+            results.append({'step_name': step_name, 'status': 'completed', 'output_summary': output_summary, 'result': raw_result})
+            record_agentic_execution(session_id, step_name, 'completed', output_summary, None, {'result': raw_result})
+            persist_agentic_audit(session_id, 'pipeline_step_completed', {'step': step_name, 'output_summary': output_summary})
+        except HTTPException as exc:
+            error_detail = exc.detail
+            error_message = error_detail.get('message') if isinstance(error_detail, dict) else str(error_detail)
+            session['steps'][step_name] = 'failed'
+            results.append({'step_name': step_name, 'status': 'failed', 'error': error_message})
+            record_agentic_execution(session_id, step_name, 'failed', None, error_message)
+            if auto_accept:
+                break
+        except Exception as exc:
+            session['steps'][step_name] = 'failed'
+            results.append({'step_name': step_name, 'status': 'failed', 'error': str(exc)})
+            record_agentic_execution(session_id, step_name, 'failed', None, str(exc))
+            if auto_accept:
+                break
+    final_statuses = latest_agentic_step_statuses(session_id)
+    completed_count = sum(1 for s in final_statuses.values() if s in ('completed', 'skipped'))
+    return JSONResponse(content={
+        'session_id': session_id,
+        'results': results,
+        'steps_completed': completed_count,
+        'steps_total': len(steps),
+        'pipeline_status': 'completed' if completed_count >= len(steps) else 'failed',
+        'step_statuses': final_statuses,
+    })
 
 
 @agentic_router.get('/session/{session_id}/report', response_model=None)
