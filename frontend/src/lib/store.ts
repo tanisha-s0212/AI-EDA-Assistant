@@ -293,10 +293,13 @@ export interface AppState extends DatasetWorkspaceState {
   agenticRecommendations: Recommendation[];
   agenticLastSyncedAt: number | null;
   agenticEnabled: boolean;
+  highlightedColumns: string[];
   setAgenticSessionId: (sessionId: string | null) => void;
   setAgenticStepStatus: (step: string, status: AgenticStepStatus) => void;
   setAgenticRecommendations: (recommendations: Recommendation[]) => void;
   setAgenticLastSyncedAt: (value: number | null) => void;
+  setHighlightedColumns: (columns: string[]) => void;
+  clearHighlightedColumns: () => void;
   // # AGENTIC LAYER END
   setActiveTab: (tab: TabId) => void;
   requestUploadPicker: (sourceTab?: TabId) => void;
@@ -500,6 +503,7 @@ const store = create<AppState>()(
       ...initialPersistedState,
       uploadPickerRequestId: 0,
       uploadPickerSourceTab: null,
+      highlightedColumns: [],
       // # AGENTIC LAYER START
       setAgenticSessionId: (sessionId) => set({ agenticSessionId: sessionId }),
       setAgenticStepStatus: (step, status) =>
@@ -516,6 +520,8 @@ const store = create<AppState>()(
           agenticLastSyncedAt: Date.now(),
         }),
       setAgenticLastSyncedAt: (value) => set({ agenticLastSyncedAt: value }),
+      setHighlightedColumns: (columns) => set({ highlightedColumns: columns }),
+      clearHighlightedColumns: () => set({ highlightedColumns: [] }),
       // # AGENTIC LAYER END
       setActiveTab: (tab) => set({ activeTab: tab }),
       requestUploadPicker: (sourceTab) =>
@@ -535,6 +541,7 @@ const store = create<AppState>()(
           ...initialPersistedState,
           uploadPickerRequestId: 0,
           uploadPickerSourceTab: null,
+          highlightedColumns: [],
           currentUser,
           isAuthenticated,
           hasHydrated: true,

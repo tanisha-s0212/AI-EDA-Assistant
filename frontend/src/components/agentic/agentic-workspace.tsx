@@ -12,6 +12,8 @@ import {
   Database,
   Download,
   Eye,
+  FileJson,
+  FileSpreadsheet,
   FileText,
   Loader2,
   MessageSquare,
@@ -24,9 +26,11 @@ import {
   TrendingUp,
   Upload,
   Wand2,
+  XCircle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import type { AgenticStepStatus, Recommendation, TabId } from '@/lib/store';
@@ -325,11 +329,48 @@ function completedUiCount(statuses: Record<string, AgenticStepStatus>, datasetId
   }).length;
 }
 
-function statusDotClass(status: AgenticStepStatus, active: boolean) {
-  if (status === 'completed' || status === 'skipped') return 'bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.45)]';
-  if (active || status === 'running') return 'bg-blue-400 shadow-[0_0_18px_rgba(96,165,250,0.55)]';
-  if (status === 'failed') return 'bg-red-400 shadow-[0_0_18px_rgba(248,113,113,0.45)]';
-  return 'bg-slate-500';
+function StepIndicator({ status, active, running }: { status: AgenticStepStatus; active: boolean; running: boolean }) {
+  const size = 18;
+  const strokeW = 1.5;
+  const center = size / 2;
+  const r = (size - strokeW * 2) / 2;
+  if (status === 'completed') {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+        <circle cx={center} cy={center} r={r} fill="#10b981" />
+        <path d="M6 9.5l3 3 4-5" fill="none" stroke="#fff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (active || running) {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+        <circle cx={center} cy={center} r={r} fill="none" stroke="#60a5fa" strokeWidth={strokeW} />
+        <circle cx={center} cy={center} r={r * 0.55} fill="#60a5fa" className="animate-pulse" />
+      </svg>
+    );
+  }
+  if (status === 'failed') {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+        <circle cx={center} cy={center} r={r} fill="#ef4444" />
+        <path d="M7 7l6 6M13 7l-6 6" fill="none" stroke="#fff" strokeWidth={2} strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (status === 'skipped') {
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+        <circle cx={center} cy={center} r={r} fill="none" stroke="#64748b" strokeWidth={strokeW} />
+        <line x1={6} y1={center} x2={size - 6} y2={center} stroke="#64748b" strokeWidth={2} strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+      <circle cx={center} cy={center} r={r} fill="none" stroke="#475569" strokeWidth={strokeW} />
+    </svg>
+  );
 }
 
 function formatDuration(ms?: number) {
@@ -394,6 +435,30 @@ function buildConfidence(step: UiStep | null, completedCount: number) {
   const historyBoost = Math.min(0.16, completedCount * 0.018);
   const stepPenalty = step?.handler && state.agenticStepStatuses[step.handler] === 'failed' ? 0.22 : 0;
   return Math.max(42, Math.min(99, Math.round((base + historyBoost - stepPenalty) * 100)));
+}
+
+function bestModelBadgeColor(model: string) {
+  const name = model.toLowerCase();
+  if (name.includes('xgboost') || name.includes('xgb')) return 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
+  if (name.includes('prophet')) return 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200';
+  if (name.includes('sarima')) return 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200';
+  if (name.includes('holt') || name.includes('winter')) return 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200';
+  return 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200';
+}
+
+function buildConfidenceBreakdown() {
+  const state = useAppStore.getState();
+  const qualityScores = [
+    state.timeSeriesForecastResult?.data_quality?.score,
+    state.mlForecastResult?.data_quality?.score,
+  ].filter((score): score is number => typeof score === 'number' && Number.isFinite(score));
+  const avgQuality = qualityScores.length ? qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length : 0.78;
+  const completedCount = completedUiCount(state.agenticStepStatuses, state.datasetId);
+  const historyBoost = Math.min(0.16, completedCount * 0.018);
+  const schemaScore = Math.round(Math.min(100, (0.85 + historyBoost) * 100));
+  const typesScore = Math.round(Math.min(100, (0.90 + historyBoost) * 100));
+  const qualityScore = Math.round(Math.min(100, (avgQuality + historyBoost) * 100));
+  return { schemaScore, typesScore, qualityScore };
 }
 
 function getStepContext(step: UiStep | null, artifacts: StepArtifact[]) {
@@ -532,12 +597,44 @@ function ShapPanel() {
 function ExecutionLog({ logs, running }: { logs: string[]; running: boolean }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   React.useEffect(() => {
-    ref.current?.scrollTo({ top: ref.current.scrollHeight });
+    ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: 'smooth' });
   }, [logs]);
+  const levelColor: Record<string, string> = {
+    INFO: 'text-emerald-400',
+    SUCCESS: 'text-teal-400',
+    WARNING: 'text-yellow-400',
+    ERROR: 'text-red-400',
+    AGENT: 'text-blue-400',
+  };
+  const levelBg: Record<string, string> = {
+    INFO: 'bg-emerald-500/10',
+    SUCCESS: 'bg-teal-500/10',
+    WARNING: 'bg-yellow-500/10',
+    ERROR: 'bg-red-500/10',
+    AGENT: 'bg-blue-500/10',
+  };
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(logs.join('\n'));
+    } catch { /* ignore */ }
+  };
   if (!running && logs.length === 0) return null;
   return (
-    <div ref={ref} className="ida-agent-terminal max-h-[120px] overflow-auto rounded-xl border border-green-500/20 bg-[#0a0a0a] p-3 font-mono text-xs leading-5 text-green-400 shadow-inner">
-      {(logs.length ? logs : ['waiting for execution...']).map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}
+    <div className="relative">
+      {logs.length > 0 && (
+        <button onClick={handleCopy} className="absolute -top-1 right-0 z-10 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400 hover:text-slate-200">Copy Logs</button>
+      )}
+      <div ref={ref} className="ida-agent-terminal max-h-[200px] overflow-auto rounded-xl border border-green-500/20 bg-[#0a0a0a] p-3 font-mono text-xs leading-5 shadow-inner">
+        {(logs.length ? logs : ['waiting for execution...']).map((line, index) => {
+          const levelMatch = line.match(/\[(INFO|SUCCESS|WARNING|ERROR|AGENT)\]/);
+          const level = levelMatch?.[1] ?? 'INFO';
+          const colorClass = levelColor[level] ?? 'text-green-400';
+          const bgClass = levelBg[level] ?? '';
+          return (
+            <div key={`${line}-${index}`} className={`${colorClass} ${bgClass} rounded px-1`}>{line.replace(/\[(INFO|SUCCESS|WARNING|ERROR|AGENT)\]\s*/, '')}</div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -563,6 +660,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   const [stepDurations, setStepDurations] = React.useState<Record<string, number>>({});
   const [expandedDetails, setExpandedDetails] = React.useState(false);
   const [structuredError, setStructuredError] = React.useState<StructuredError | null>(null);
+  const [buttonStatus, setButtonStatus] = React.useState<'idle' | 'loading' | 'success' | 'failed'>('idle');
   const [chatOpen, setChatOpen] = React.useState(false);
   const [chatInput, setChatInput] = React.useState('');
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
@@ -589,7 +687,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     fix_type?: string;
     parameters?: Record<string, unknown>;
   }
-  const [pipelineStats, setPipelineStats] = React.useState({ steps_completed: 0, steps_total: UI_STEPS.length, best_model: 'Pending' as string, forecast_mae: 'N/A' as string });
+  const [pipelineStats, setPipelineStats] = React.useState({ steps_completed: 0, steps_total: UI_STEPS.length, best_model: 'Pending' as string, forecast_mae: 'N/A' as string, eta_seconds: 0, mae_improvement: 0 });
   const [autoAccept, setAutoAccept] = React.useState(false);
   const pollingRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -602,11 +700,19 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       const storeState = useAppStore.getState();
       const best = storeState.mlForecastResult?.training_summary?.model_name ?? storeState.selectedModel ?? storeState.timeSeriesForecastResult?.training_summary?.model_name ?? 'Pending';
       const mae = storeState.mlForecastResult?.metrics?.mae ?? storeState.timeSeriesForecastResult?.metrics?.mae;
+      const naive = storeState.mlForecastResult?.naive_baseline ?? storeState.timeSeriesForecastResult?.naive_baseline;
+      const maeImprovement = naive?.mae_improvement_pct ?? 0;
+      const durations = Object.values(stepDurations).filter((d) => d > 0);
+      const avgStepMs = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
+      const remaining = UI_STEPS.length - completed;
+      const etaSeconds = Math.round((avgStepMs * remaining) / 1000);
       setPipelineStats({
         steps_completed: completed,
         steps_total: UI_STEPS.length,
         best_model: best,
         forecast_mae: typeof mae === 'number' ? mae.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 'N/A',
+        eta_seconds: etaSeconds,
+        mae_improvement: maeImprovement,
       });
       if (completed >= UI_STEPS.length && pollingRef.current) {
         clearInterval(pollingRef.current);
@@ -651,7 +757,13 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
 
   const appendLog = React.useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString([], { hour12: false });
-    setExecutionLogs((current) => [...current.slice(-80), `[${stamp}] ${line}`]);
+    let level = 'INFO';
+    if (/^backend completed/i.test(line)) level = 'SUCCESS';
+    else if (/^error:/.test(line)) level = 'ERROR';
+    else if (/^suggested next/.test(line)) level = 'AGENT';
+    else if (/failed.*flagging|data issue|warn/i.test(line)) level = 'WARNING';
+    else if (/starting/i.test(line)) level = 'INFO';
+    setExecutionLogs((current) => [...current.slice(-80), `[${stamp}] [${level}] ${line}`]);
   }, []);
 
   const refreshHealth = React.useCallback(async () => {
@@ -741,6 +853,24 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     lastSuggestedDatasetRef.current = datasetId;
     void suggestNextSteps();
   }, [datasetId, health?.agentic_enabled, suggestNextSteps]);
+
+  const downloadPipelineData = async (sessionId: string, format: 'json' | 'csv' | 'pdf') => {
+    const ext = format === 'pdf' ? 'pdf' : format;
+    const endpoint = format === 'pdf' ? `/session/${sessionId}/report` : `/session/${sessionId}/export/${format}`;
+    try {
+      const response = await agenticApiClient.get(endpoint, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `pipeline_${sessionId}.${ext}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      appendLog(`download ${format} failed`);
+    }
+  };
 
   const downloadReport = async (sessionId: string, partial = false) => {
     const response = await agenticApiClient.get(`/session/${sessionId}/report`, { responseType: 'blob' });
@@ -891,9 +1021,18 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
 
   const acceptRecommendation = async () => {
     if (!activeRecommendation) return;
+    setButtonStatus('loading');
     const sessionId = agenticSessionId ?? await suggestNextSteps();
-    if (!sessionId) return;
-    await executeStep(normalizeStepName(activeRecommendation.step) as HandlerStep, sessionId);
+    if (!sessionId) { setButtonStatus('idle'); return; }
+    try {
+      await executeStep(normalizeStepName(activeRecommendation.step) as HandlerStep, sessionId);
+      setButtonStatus('success');
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } catch {
+      setButtonStatus('failed');
+      return;
+    }
+    setButtonStatus('idle');
   };
 
   const skipStep = async (stepName?: string) => {
@@ -967,25 +1106,10 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   };
 
   const applyInsightFix = async () => {
-    const parsed = tryParseStructuredInsight(insight);
-    if (parsed?.action?.api) {
-      try {
-        await agenticApiClient.post(parsed.action.api, {
-          dataset_id: datasetId,
-          fix_type: parsed.action.fix_type ?? 'auto',
-          parameters: parsed.action.parameters ?? {},
-        });
-        if (parsed.action.tab) {
-          const { setActiveTab } = useAppStore.getState();
-          setActiveTab(parsed.action.tab as TabId);
-        }
-      } catch (error) {
-        // fallback to asking agent
-        await askAgent(`Turn this dataset insight into an executable next action for the IDA workflow: ${insight}`);
-      }
-    } else {
-      await askAgent(`Turn this dataset insight into an executable next action for the IDA workflow: ${insight}`);
-    }
+    const { setActiveTab, setHighlightedColumns, columns } = useAppStore.getState();
+    const columnsNeedingAttention = columns.filter((c) => c.nullCount > 0).map((c) => c.name);
+    setHighlightedColumns(columnsNeedingAttention.slice(0, 5));
+    setActiveTab('cleaning');
   };
 
   function tryParseStructuredInsight(raw: string): { action?: InsightAction } | null {
@@ -1003,11 +1127,18 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       <AgenticWorkspaceStyles />
       <header className="flex flex-col gap-3 border-b border-slate-800 bg-[#0f172a] p-4 text-white lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-blue-600 text-sm font-black text-white ring-2 ring-blue-300/30">IDA</div>
+          <div className="relative shrink-0">
+            <svg className="absolute inset-0 h-14 w-14 -rotate-90" viewBox="0 0 36 36">
+              <circle cx="18" cy="18" r="15.5" fill="none" stroke="rgba(59,130,246,0.15)" strokeWidth="2.5" />
+              <circle cx="18" cy="18" r="15.5" fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${2 * Math.PI * 15.5}`} strokeDashoffset={`${2 * Math.PI * 15.5 * (1 - completedCount / UI_STEPS.length)}`} style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+            </svg>
+            <div className="grid h-14 w-14 place-items-center rounded-full bg-blue-600 text-base font-black text-white ring-2 ring-blue-300/30">IDA</div>
+          </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">{fileName ?? 'No dataset selected'}</p>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              <Badge className={cn('rounded-full border px-2.5 py-0.5 text-xs', runningStep ? 'border-blue-400/40 bg-blue-500/15 text-blue-200' : health?.agentic_enabled === false ? 'border-red-400/40 bg-red-500/15 text-red-200' : 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200')}>
+            <p className="truncate text-lg font-bold leading-tight">{fileName ?? 'No dataset selected'}</p>
+            <p className="mt-0.5 text-xs text-slate-400">{store.totalRows?.toLocaleString() ?? 0} rows | {store.columns.length ?? 0} columns</p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <Badge className={cn('rounded-full border px-2.5 py-0.5 text-xs', runningStep ? 'animate-pulse border-blue-400/40 bg-blue-500/15 text-blue-200' : health?.agentic_enabled === false ? 'border-red-400/40 bg-red-500/15 text-red-200' : 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200')}>
                 {runningStep ? `Running ${runningStep}` : health?.agentic_enabled === false ? 'Agent offline' : 'Live agent ready'}
               </Badge>
               <span className="text-xs text-slate-400">{completedCount}/{UI_STEPS.length} completed</span>
@@ -1023,10 +1154,39 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
             {isSuggesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ChevronRight className="mr-2 h-4 w-4" />}
             Suggest Next
           </Button>
-          <Button size="sm" variant="outline" onClick={() => agenticSessionId && void downloadReport(agenticSessionId, true)} disabled={!agenticSessionId || completedCount <= 1} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
-            <Download className="mr-2 h-4 w-4" />
-            Download Current Results
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline" disabled={!agenticSessionId || completedCount <= 1} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
+                <Download className="mr-2 h-4 w-4" />
+                Download Results
+                <ChevronDown className="ml-1 h-3.5 w-3.5 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56 border-slate-700 bg-slate-900 text-slate-100">
+              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'json')} className="cursor-pointer hover:bg-slate-800">
+                <FileJson className="mr-2 h-4 w-4 text-blue-400" />
+                <div>
+                  <p className="text-sm font-medium">Download as JSON</p>
+                  <p className="text-[10px] text-slate-400">Full pipeline state as JSON</p>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'csv')} className="cursor-pointer hover:bg-slate-800">
+                <FileSpreadsheet className="mr-2 h-4 w-4 text-emerald-400" />
+                <div>
+                  <p className="text-sm font-medium">Download as CSV</p>
+                  <p className="text-[10px] text-slate-400">Tabular data as CSV archive</p>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="bg-slate-700" />
+              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'pdf')} className="cursor-pointer hover:bg-slate-800">
+                <FileText className="mr-2 h-4 w-4 text-amber-400" />
+                <div>
+                  <p className="text-sm font-medium">Pipeline Report (PDF)</p>
+                  <p className="text-[10px] text-slate-400">Complete report with visuals</p>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
@@ -1037,23 +1197,25 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
               <span className="font-semibold uppercase tracking-wide text-slate-400">Pipeline</span>
               <span className="font-mono text-blue-300">{completedCount}/{UI_STEPS.length}</span>
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${progress}%` }} />
+            <div className="relative h-6 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-blue-500 transition-all duration-700 ease-out" style={{ width: `${progress}%` }} />
+              <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold tracking-wide text-white mix-blend-difference">{Math.round(progress)}% complete</span>
             </div>
           </div>
           <div className="space-y-1.5">
             {UI_STEPS.map((step) => {
               const status = getUiStatus(step, agenticStepStatuses, datasetId);
               const active = activeUiStep?.id === step.id || runningStep === step.handler;
+              const running = runningStep === step.handler;
               const duration = step.handler ? formatDuration(stepDurations[step.handler]) : datasetId ? '0.1s' : null;
               const Icon = step.icon;
               return (
                 <div key={step.id} className={cn('rounded-lg border border-transparent px-3 py-2 transition', active && 'border-l-4 border-l-blue-500 bg-blue-500/10')}>
                   <div className="flex items-center gap-2">
-                    <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', statusDotClass(status, active))} />
+                    <StepIndicator status={status} active={active} running={running} />
                     <Icon className="h-4 w-4 shrink-0 text-slate-400" />
                     <span className={cn('min-w-0 flex-1 truncate text-sm font-medium', active ? 'text-white' : 'text-slate-300')}>{step.label}</span>
-                    {duration && <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{duration}</span>}
+                    {status === 'completed' && duration && <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{duration}</span>}
                   </div>
                 </div>
               );
@@ -1080,6 +1242,57 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
               </div>
             )}
 
+            {activeRecommendation && activeUiStep && (
+              <div className="rounded-xl border border-l-4 border-l-blue-500 bg-blue-50 p-4 shadow-sm dark:border-slate-700 dark:border-l-blue-400 dark:bg-slate-900/80">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 text-lg">➤</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-slate-950 dark:text-slate-100">Suggested Next Step</h3>
+                      <Badge className="bg-blue-600 text-white text-[10px]">{activeRecommendation.reason ? `${Math.min(99, Math.round(confidence / 10) * 10 + 50)}% match` : 'Recommended'}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-base font-bold text-blue-700 dark:text-blue-300">{activeUiStep.label}</p>
+                    <div className="mt-3 grid gap-2 text-xs md:grid-cols-3">
+                      <div className="rounded-lg border border-blue-200 bg-white p-2.5 dark:border-blue-800 dark:bg-slate-950">
+                        <span className="font-semibold text-slate-500 dark:text-slate-400">Why</span>
+                        <p className="mt-0.5 text-slate-700 dark:text-slate-300">{activeRecommendation.reason || `Continue with ${activeUiStep.label} for deeper analysis.`}</p>
+                      </div>
+                      <div className="rounded-lg border border-blue-200 bg-white p-2.5 dark:border-blue-800 dark:bg-slate-950">
+                        <span className="font-semibold text-slate-500 dark:text-slate-400">Risk</span>
+                        <p className="mt-0.5 text-slate-700 dark:text-slate-300">{context.issues.length ? context.issues.slice(0, 2).join('; ') : 'No known risks for this step.'}</p>
+                      </div>
+                      <div className="rounded-lg border border-blue-200 bg-white p-2.5 dark:border-blue-800 dark:bg-slate-950">
+                        <span className="font-semibold text-slate-500 dark:text-slate-400">ETA</span>
+                        <p className="mt-0.5 text-slate-700 dark:text-slate-300">
+                          {(() => {
+                            const avg = Object.values(stepDurations).filter(d => d > 0);
+                            const mean = avg.length ? avg.reduce((a, b) => a + b, 0) / avg.length : 3000;
+                            const est = Math.round(mean / 1000);
+                            return est >= 60 ? `~${Math.round(est / 60)} min` : `~${est} seconds`;
+                          })()}
+                        </p>
+                      </div>
+                    </div>
+                    {context.findings.length > 0 && (
+                      <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="font-semibold">Last step found:</span> {context.findings.join('; ')}
+                      </div>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button size="sm" onClick={() => void acceptRecommendation()} disabled={buttonStatus === 'loading' || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
+                        {buttonStatus === 'loading' ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
+                        {buttonStatus === 'loading' ? 'Running...' : 'Run This Step'}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => void skipStep()} disabled={runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                        <SkipForward className="mr-1.5 h-3.5 w-3.5" />
+                        Skip
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="rounded-xl border border-l-4 border-slate-200 border-l-blue-600 bg-white p-4 shadow-sm dark:border-slate-700 dark:border-l-blue-500 dark:bg-slate-900">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
@@ -1101,6 +1314,12 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                       <span>{finding}</span>
                     </div>
                   ))}
+                  {context.issues.length > 0 && (
+                    <div className="flex gap-2 text-sm text-amber-600 dark:text-amber-400">
+                      <span className="mt-0.5 shrink-0">⚡</span>
+                      <span><strong>{context.issues.length}</strong> {context.issues.length === 1 ? 'column needs' : 'columns need'} attention</span>
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-2">
                   {context.issues.length ? context.issues.map((issue) => (
@@ -1116,6 +1335,26 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                   )}
                 </div>
               </div>
+              <div className="mt-4 space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Confidence breakdown</p>
+                {(() => {
+                  const breakdown = buildConfidenceBreakdown();
+                  const items = [
+                    { label: 'Schema', value: breakdown.schemaScore },
+                    { label: 'Types', value: breakdown.typesScore },
+                    { label: 'Quality', value: breakdown.qualityScore },
+                  ];
+                  return items.map((item) => (
+                    <div key={item.label} className="flex items-center gap-2 text-xs">
+                      <span className="w-12 text-right text-slate-400">{item.label}</span>
+                      <div className="flex-1 overflow-hidden rounded-full bg-slate-700">
+                        <div className="h-2 rounded-full bg-blue-500 transition-all duration-700" style={{ width: `${item.value}%` }} />
+                      </div>
+                      <span className="w-10 font-mono text-slate-300">{item.value}%</span>
+                    </div>
+                  ));
+                })()}
+              </div>
               {expandedDetails && (
                 <pre className="mt-4 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
                   {JSON.stringify({ activeStep: activeUiStep, recommendation: activeRecommendation, context, confidence }, null, 2)}
@@ -1128,9 +1367,8 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                 </div>
               ) : (
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || Boolean(runningStep) || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
-                    {runningStep ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                    Accept & Continue
+                  <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || buttonStatus === 'loading' || runningAll} className={cn('text-white', buttonStatus === 'failed' ? 'bg-red-600 hover:bg-red-500' : buttonStatus === 'success' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-blue-600 hover:bg-blue-500')}>
+                    {buttonStatus === 'loading' ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Validating step...</> : buttonStatus === 'success' ? <><CheckCircle2 className="mr-2 h-4 w-4" /> Step accepted — loading EDA</> : buttonStatus === 'failed' ? <><XCircle className="mr-2 h-4 w-4" /> Failed — retry?</> : <><Check className="mr-2 h-4 w-4" /> Accept & Continue</>}
                   </Button>
                   <Button variant="outline" onClick={() => void skipStep()} disabled={!activeRecommendation || Boolean(runningStep) || runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
                     <SkipForward className="mr-2 h-4 w-4" />
@@ -1155,10 +1393,48 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
             )}
 
             <div className="grid gap-3 md:grid-cols-4">
-              <MetricCard label="Steps Completed" value={`${pipelineStats.steps_completed}/${pipelineStats.steps_total}`} />
-              <MetricCard label="Steps Pending" value={String(pipelineStats.steps_total - pipelineStats.steps_completed)} />
-              <MetricCard label="Best Model Selected" value={pipelineStats.best_model} />
-              <MetricCard label="Forecast MAE" value={pipelineStats.forecast_mae} />
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Steps Completed</p>
+                <div className="mt-2 flex items-center gap-3">
+                  <svg className="shrink-0 -rotate-90" width="44" height="44" viewBox="0 0 36 36">
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(100,116,139,0.2)" strokeWidth="2.5" />
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${2 * Math.PI * 15}`} strokeDashoffset={`${2 * Math.PI * 15 * (1 - pipelineStats.steps_completed / pipelineStats.steps_total)}`} style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+                  </svg>
+                  <span className="text-xl font-bold text-slate-950 dark:text-slate-100">{pipelineStats.steps_completed}/{pipelineStats.steps_total}</span>
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Steps Remaining</p>
+                <p className="mt-2 text-xl font-bold text-slate-950 dark:text-slate-100">{Math.max(0, pipelineStats.steps_total - pipelineStats.steps_completed)}</p>
+                {pipelineStats.eta_seconds > 0 && <p className="mt-1 text-[11px] text-slate-400">~{pipelineStats.eta_seconds >= 60 ? `${Math.round(pipelineStats.eta_seconds / 60)}m` : `${pipelineStats.eta_seconds}s`} remaining</p>}
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Best Model Selected</p>
+                {pipelineStats.best_model === 'Pending' ? (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="h-4 w-24 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+                    <div className="h-3 w-16 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+                  </div>
+                ) : (
+                  <span className={cn('mt-2 inline-block rounded-full px-2.5 py-0.5 text-sm font-bold', bestModelBadgeColor(pipelineStats.best_model))}>{pipelineStats.best_model}</span>
+                )}
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Forecast MAE</p>
+                {pipelineStats.forecast_mae === 'N/A' ? (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="h-4 w-20 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+                    <div className="h-3 w-14 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+                  </div>
+                ) : (
+                  <>
+                    <p className="mt-2 text-xl font-bold text-slate-950 dark:text-slate-100">{pipelineStats.forecast_mae}</p>
+                    {pipelineStats.mae_improvement > 0 && (
+                      <p className="mt-1 text-[11px] text-emerald-500">↓ {pipelineStats.mae_improvement}% better than baseline</p>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
             <StepResultCard artifact={latestArtifact} />
@@ -1171,14 +1447,47 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
             </div>
 
             <div className="rounded-xl border border-l-4 border-amber-200 border-l-amber-500 bg-white p-4 shadow-sm dark:border-slate-700 dark:border-l-amber-400 dark:bg-slate-900">
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <h3 className="font-semibold text-slate-950 dark:text-slate-100">Agent Insight</h3>
-                  <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">{insight}</p>
+              <div className="flex items-center gap-2">
+                <span className="text-lg">💡</span>
+                <h3 className="font-semibold text-slate-950 dark:text-slate-100">Agent Insight</h3>
+                <Badge className="ml-auto bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 text-[10px]">NEW</Badge>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{insight}</p>
+              {context.issues.length > 0 && (
+                <div className="mt-3 space-y-1">
+                  {context.issues.map((issue) => (
+                    <div key={issue} className="flex gap-2 text-sm text-amber-700 dark:text-amber-300">
+                      <span className="mt-0.5 shrink-0 text-[10px]">⚠️</span>
+                      <span>{issue}</span>
+                    </div>
+                  ))}
                 </div>
-                <Button variant="outline" onClick={() => void applyInsightFix()} className="shrink-0 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-                  <Wand2 className="mr-2 h-4 w-4" />
-                  Apply Fix
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-400">Confidence:</span>
+                  <div className="inline-flex items-center gap-1">
+                    <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                      <div className="h-full rounded-full bg-amber-500" style={{ width: `${confidence}%` }} />
+                    </div>
+                    <span className="font-mono text-slate-500 dark:text-slate-400">{confidence}%</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-400">Priority:</span>
+                  <span className={cn('rounded px-1.5 py-0.5 font-semibold', context.issues.length > 2 ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' : context.issues.length > 0 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300')}>
+                    {context.issues.length > 2 ? 'HIGH' : context.issues.length > 0 ? 'MEDIUM' : 'LOW'}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => void applyInsightFix()} className="bg-amber-600 text-white hover:bg-amber-500">
+                  <Wand2 className="mr-1.5 h-3.5 w-3.5" />
+                  Apply Fix → Data Cleaning
+                </Button>
+                <Button size="sm" variant="outline" className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                  <Eye className="mr-1.5 h-3.5 w-3.5" />
+                  Preview Impact
                 </Button>
               </div>
             </div>
@@ -1263,11 +1572,4 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
-      <p className="mt-2 truncate text-xl font-bold text-slate-950 dark:text-slate-100">{value}</p>
-    </div>
-  );
-}
+

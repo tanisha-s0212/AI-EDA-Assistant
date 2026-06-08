@@ -39,6 +39,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { cn } from '@/lib/utils';
 import { useAppStore, type DataRow, type ColumnInfo, type CleaningLog } from '@/lib/store';
 import { toast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
@@ -337,6 +338,7 @@ export default function CleaningTab() {
   const cleanedData = useAppStore((s) => s.cleanedData);
   const cleaningLogs = useAppStore((s) => s.cleaningLogs);
   const cleaningDone = useAppStore((s) => s.cleaningDone);
+  const highlightedColumns = useAppStore((s) => s.highlightedColumns);
 
   // Operation enable states
   const [ops, setOps] = useState<Record<string, boolean>>({
@@ -1152,7 +1154,8 @@ export default function CleaningTab() {
                           SNo
                         </TableHead>
                         {previewColumns.map((col) => (
-                          <TableHead key={col} className="font-semibold whitespace-nowrap">
+                          <TableHead key={col} className={cn('font-semibold whitespace-nowrap', highlightedColumns.includes(col) && 'bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200')}>
+                            {highlightedColumns.includes(col) && <span className="mr-1">⚡</span>}
                             {col}
                           </TableHead>
                         ))}
@@ -1175,11 +1178,12 @@ export default function CleaningTab() {
                             return (
                               <TableCell
                                 key={col}
-                                className={
+                                className={cn(
                                   val === null || val === undefined
                                     ? 'text-muted-foreground italic'
-                                    : 'tabular-nums'
-                                }
+                                    : 'tabular-nums',
+                                  highlightedColumns.includes(col) && 'bg-amber-50 dark:bg-amber-900/10'
+                                )}
                                 title={
                                   val !== null && val !== undefined ? String(val) : undefined
                                 }
