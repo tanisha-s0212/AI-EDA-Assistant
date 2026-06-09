@@ -9892,7 +9892,8 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
 
     def add_chart_img(b64: str | None, caption: str = '') -> str:
         if not b64: return ''
-        return f'<div class="chart-container"><img src="data:image/png;base64,{b64}" alt="{esc(caption)}"/>{f"<p class=\"chart-caption\">{esc(caption)}</p>" if caption else ""}</div>'
+        cap = esc(caption)
+        return f'<div class="chart-container"><img src="data:image/png;base64,{b64}" alt="{cap}"/>{f"<p class=\'chart-caption\'>{cap}</p>" if caption else ""}</div>'
 
     def add_note_html(title: str, text: str, tone: str = 'blue') -> str:
         return f'<div class="note note-{tone}"><strong>{esc(title)}:</strong> {esc(text)}</div>'
