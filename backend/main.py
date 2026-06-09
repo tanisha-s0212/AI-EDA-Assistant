@@ -7420,6 +7420,147 @@ def build_image_from_base64(data_uri: str | None, *, max_width: float = 480, max
         return None
 
 
+def _chart_to_base64(fig: plt.Figure) -> str:
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=160, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode('utf-8')
+
+
+def _build_line_chart_base64(
+    title: str,
+    history: list[dict[str, Any]],
+    test_forecast: list[dict[str, Any]],
+    future_forecast: list[dict[str, Any]],
+    include_interval: bool = False,
+) -> str:
+    fig, ax = plt.subplots(figsize=(8.4, 3.0))
+    all_periods = [item['period'] for item in history]
+    all_periods.extend(item['period'] for item in future_forecast if item['period'] not in all_periods)
+    x_lookup = {period: idx for idx, period in enumerate(all_periods)}
+    hp = [x_lookup[item['period']] for item in history]
+    hv = [float(item.get('actual', 0) or 0) for item in history]
+    ax.plot(hp, hv, label='Actual', color='#0f766e', linewidth=2)
+    if test_forecast:
+        ax.plot([x_lookup[item['period']] for item in test_forecast],
+                [float(item.get('predicted', 0) or 0) for item in test_forecast],
+                label='Backtest', color='#f59e0b', linestyle='--', linewidth=2)
+    if future_forecast:
+        p = [x_lookup[item['period']] for item in future_forecast]
+        v = [float(item.get('predicted', 0) or 0) for item in future_forecast]
+        ax.plot(p, v, label='Forecast', color='#2563eb', linewidth=2)
+        if include_interval:
+            ax.fill_between(p,
+                            [float(item.get('lower', item.get('predicted', 0)) or 0) for item in future_forecast],
+                            [float(item.get('upper', item.get('predicted', 0)) or 0) for item in future_forecast],
+                            color='#93c5fd', alpha=0.3, label='95% interval')
+    ax.set_title(title)
+    ax.set_xticks(list(x_lookup.values()))
+    ax.set_xticklabels(all_periods, rotation=35, fontsize=8)
+    ax.tick_params(axis='y', labelsize=8)
+    ax.grid(alpha=0.2)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return _chart_to_base64(fig)
+
+
+def _build_bar_chart_base64(title: str, items: list[dict[str, Any]]) -> str:
+    fig, ax = plt.subplots(figsize=(8.4, 3.0))
+    trimmed = items[:10]
+    names = [str(item.get('name', 'Feature')) for item in trimmed][::-1]
+    values = [float(item.get('importance', 0) or 0) for item in trimmed][::-1]
+    ax.barh(names, values, color='#0f766e')
+    ax.set_title(title)
+    ax.grid(axis='x', alpha=0.2)
+    ax.tick_params(axis='y', labelsize=8)
+    fig.tight_layout()
+    return _chart_to_base64(fig)
+
+
+def _build_corr_chart_base64(correlations: list[dict[str, Any]]) -> str | None:
+    if not correlations:
+        return None
+    fig, ax = plt.subplots(figsize=(8.4, 3.0))
+    trimmed = correlations[:8][::-1]
+    names = [str(item.get('pair', 'Pair')) for item in trimmed]
+    values = [float(item.get('correlation', 0) or 0) for item in trimmed]
+    colors_list = ['#0f766e' if v >= 0 else '#dc2626' for v in values]
+    ax.barh(names, values, color=colors_list)
+    ax.set_title('Correlation Heatmap Summary')
+    ax.grid(axis='x', alpha=0.2)
+    ax.tick_params(axis='y', labelsize=8)
+    fig.tight_layout()
+    return _chart_to_base64(fig)
+
+
+def _build_loss_chart_base64(loss_rows: list[dict[str, Any]]) -> str:
+    fig, ax = plt.subplots(figsize=(8.4, 3.0))
+    periods = [str(row.get('period')) for row in loss_rows]
+    ax.plot(periods, [float(row.get('total_loss') or 0) for row in loss_rows],
+            color='#dc2626', linewidth=2.5, label='Total Loss')
+    for key, color, lbl in [
+        ('revenue_loss', '#ef4444', 'Revenue'),
+        ('operational_loss', '#f97316', 'Operational'),
+        ('inventory_loss', '#f59e0b', 'Inventory'),
+        ('discount_loss', '#8b5cf6', 'Discount'),
+    ]:
+        ax.plot(periods, [float(row.get(key) or 0) for row in loss_rows],
+                color=color, linewidth=1.5, label=lbl)
+    ax.set_title('Loss Trend by Driver')
+    ax.tick_params(axis='x', rotation=35, labelsize=7)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=7, ncol=5)
+    fig.tight_layout()
+    return _chart_to_base64(fig)
+
+
+def _build_profit_chart_base64(
+    profit_scenarios: dict[str, list[dict[str, Any]]],
+    profit_rows: list[dict[str, Any]],
+) -> str:
+    fig, ax = plt.subplots(figsize=(8.4, 3.0))
+    for scenario_name, color in [('optimistic', '#10b981'), ('baseline', '#2563eb'), ('pessimistic', '#f43f5e')]:
+        rows = profit_scenarios.get(scenario_name, [])
+        if rows:
+            ax.plot([str(row.get('period')) for row in rows],
+                    [float(row.get('net_profit') or 0) for row in rows],
+                    label=scenario_name.title(), color=color, linewidth=2)
+    ax.axhline(0, color='#64748b', linewidth=1)
+    ax.set_title('Net Profit Forecast by Scenario')
+    ax.tick_params(axis='x', rotation=35, labelsize=7)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return _chart_to_base64(fig)
+
+
+def _generate_report_metadata(payload: ReportPayload) -> dict[str, str]:
+    return {
+        'report_id': str(uuid.uuid4())[:12],
+        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'dataset_name': payload.fileName,
+        'analysis_type': 'Exploratory Data Analysis with Forecasting and ML',
+        'agent_version': 'IDA v2.1.0',
+        'report_format': 'Comprehensive Workflow Report',
+    }
+
+
+TEMP_REPORT_STORE: dict[str, dict[str, Any]] = {}
+
+
+def store_temp_report(report_id: str, pdf_bytes: bytes, html_bytes: bytes, docx_bytes: bytes,
+                      payload: ReportPayload) -> str:
+    TEMP_REPORT_STORE[report_id] = {
+        'pdf': pdf_bytes,
+        'html': html_bytes,
+        'docx': docx_bytes,
+        'payload': payload.model_dump() if hasattr(payload, 'model_dump') else payload,
+        'created_at': datetime.now().isoformat(),
+    }
+    return report_id
+
+
 def build_eda_pdf(payload: EdaPdfPayload) -> bytes:
     loaded_row_count = payload.loadedRowCount or payload.totalRows
     preview_mode = payload.previewLoaded and payload.totalRows > loaded_row_count
@@ -8718,12 +8859,17 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     loaded_rows = payload.loadedRowCount or payload.totalRows
     preview_mode = payload.previewLoaded and payload.totalRows > loaded_rows
     generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    report_id = str(uuid.uuid4())[:12]
+    agent_version = 'IDA v2.1.0'
+    analysis_type = 'Exploratory Data Analysis with Forecasting and ML'
 
     start_section('Data Upload', 'Section 1')
     hero = Table([[
-        para('Aroha Technologies', hero_meta),
-        para('Intelligent Data Assistant Workflow Report', hero_title),
+        para('Intelligent Data Assistant', hero_meta),
+        para('Comprehensive Analysis Report', hero_title),
         para(f'Dataset: {payload.fileName} | Generated: {generated_at}', hero_meta),
+        Spacer(1, 4),
+        para(f'Report ID: {report_id}  |  Agent: {agent_version}  |  Type: {analysis_type}', ParagraphStyle('HeroMetaSmall', parent=hero_meta, fontSize=8, leading=10, textColor=colors.HexColor('#94a3b8'))),
     ]], colWidths=[content_width])
     hero.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#0f172a')),
@@ -9036,6 +9182,144 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
         history.extend([[item.timestamp, item.prediction, 'N/A' if item.confidence is None else f'{round(item.confidence * 100, 2)}%'] for item in payload.predictionHistory])
         add_table(history if len(history) > 1 else history + [['N/A', 'No prediction history captured', 'N/A']], [content_width * 0.45, content_width * 0.3, content_width * 0.21])
         add_note('Analysis Note', payload.predictionAnalysis or 'No prediction analysis note captured.')
+
+    # ---- Section 11: Key Statistical Findings ----
+    start_section('Key Statistical Findings', 'Section 11')
+    add_para(f'Key statistical findings extracted during the analysis of {payload.fileName}:', muted_style)
+    elements.append(Spacer(1, 4))
+    stat_items = [
+        f'Dataset contains {payload.totalRows:,} rows and {len(payload.columns)} columns',
+        f'{len(payload.edaStats.numericColumns)} numeric fields profiled for central tendency and spread',
+        f'{len(payload.edaStats.categoricalColumns)} categorical fields with cardinality assessment',
+        f'{len(payload.edaStats.correlations)} correlation pairs evaluated',
+        f'{len(payload.cleaningLogs)} cleaning operations executed',
+    ]
+    for item in stat_items:
+        elements.append(para(f'- {item}', muted_style))
+    elements.append(Spacer(1, 8))
+    add_cards([
+        ('Total Rows', f'{payload.totalRows:,}'), ('Numeric Fields', len(payload.edaStats.numericColumns)),
+        ('Correlation Pairs', len(payload.edaStats.correlations)), ('Cleaning Ops', len(payload.cleaningLogs)),
+    ])
+
+    # ---- Section 12: Business Insights ----
+    start_section('Business Insights', 'Section 12')
+    completeness = (sum(c.nonNull for c in payload.columns) / max(1, sum(c.nonNull + c.nullCount for c in payload.columns)) * 100) if payload.columns else 0
+    add_para('Business insights derived from the analysis for stakeholder review:', body_style)
+    elements.append(Spacer(1, 4))
+    insight_items = [
+        f'The dataset provides {len(payload.edaStats.numericColumns)} quantifiable metrics for performance tracking and decision-making.',
+        f'Data completeness is at {completeness:.1f}% across all fields.',
+    ]
+    if payload.edaStats.correlations:
+        strong_count = len([c for c in payload.edaStats.correlations if abs(float(c.get('correlation', 0))) > 0.7])
+        insight_items.append(f'Correlation analysis revealed {strong_count} strong relationships (|r| > 0.7) that may indicate redundant features or predictive signals.')
+    rows_removed = max(0, payload.totalRows - (payload.cleanedRowCount or payload.totalRows))
+    if rows_removed > 0:
+        insight_items.append(f'Cleaning removed {rows_removed:,} problematic rows, improving overall data quality for downstream analysis.')
+    else:
+        insight_items.append('Data required minimal cleaning, indicating good upstream data collection practices.')
+    for item in insight_items:
+        elements.append(para(f'- {item}', body_style))
+    elements.append(Spacer(1, 8))
+    add_cards([('Completeness', f'{completeness:.1f}%'), ('Strong Correlations', f'{strong_count if payload.edaStats.correlations else 0}'),
+               ('Data Quality', 'Good' if rows_removed == 0 else 'Improved'), ('Metrics Available', len(payload.edaStats.numericColumns))])
+
+    # ---- Section 13: Agent Summary ----
+    start_section('Agent Summary', 'Section 13')
+    agent_discoveries = []
+    if payload.edaStats.correlations and any(abs(float(c.get('correlation', 0))) > 0.7 for c in payload.edaStats.correlations):
+        agent_discoveries.append(f'{strong_count} strong correlations detected')
+    if payload.cleaningLogs:
+        agent_discoveries.append(f'{len(payload.cleaningLogs)} data quality issues identified and resolved')
+    if ts_result:
+        tst_name = (ts_result.get('training_summary') or {}).get('model_name', 'selected algorithm')
+        agent_discoveries.append(f'Time-series patterns modeled using {tst_name}')
+    if ml_result:
+        agent_discoveries.append(f'ML forecast generated with {len(ml_result.get("generated_features", []))} engineered features')
+    if payload.modelMetrics:
+        agent_discoveries.append(f'{payload.selectedModel or "Trained model"} achieved measurable performance on {payload.problemType or "N/A"} task')
+    risks = []
+    if payload.duplicates > 0:
+        risks.append(f'{payload.duplicates:,} duplicate records detected')
+    if any(c.nullCount > 0 for c in payload.columns):
+        null_cols = [c.name for c in payload.columns if c.nullCount > 0]
+        risks.append(f'{len(null_cols)} columns contain missing values')
+    if loss_rows_raw and any(float(r.get('loss_risk_score') or 0) > 0.7 for r in loss_rows_raw):
+        risks.append('High-risk periods detected in loss forecast')
+    add_cards([('Dataset', payload.fileName), ('Fields Analyzed', len(payload.columns)),
+               ('Report ID', report_id), ('Agent Version', agent_version)])
+    elements.append(Spacer(1, 6))
+    add_para('What Was Analyzed:', body_style)
+    add_para(f'The Intelligent Data Assistant performed a comprehensive analysis of {payload.fileName}, covering data profiling, exploratory data analysis, data quality assessment, {", ".join(filter(None, [("time-series forecasting" if ts_result else None), ("ML forecasting" if ml_result else None), ("loss/profit forecasting" if loss_rows_raw or profit_rows_raw else None)]))}, and machine learning model training with prediction capabilities.', small_style)
+    elements.append(Spacer(1, 4))
+    add_para('Key Discoveries:', body_style)
+    for d in agent_discoveries or ['General data profiling completed']:
+        elements.append(para(f'- {d}', small_style))
+    elements.append(Spacer(1, 4))
+    add_para('Risks Detected:', body_style)
+    if risks:
+        for r in risks:
+            elements.append(para(f'- {r}', small_style))
+    else:
+        add_para('- No significant risks detected during analysis.', small_style)
+    elements.append(Spacer(1, 4))
+    add_para('Recommended Actions:', body_style)
+    actions = ['Review data quality findings and apply recommended cleaning operations for optimal model performance']
+    if payload.edaStats.correlations:
+        top_pairs = [c.get('pair') for c in payload.edaStats.correlations[:3]]
+        actions.append(f'Explore strong correlations ({", ".join(str(p) for p in top_pairs)}) for feature engineering opportunities')
+    if ts_result:
+        fp = (ts_result.get('training_summary') or {}).get('forecast_periods', 'N/A')
+        actions.append(f'Validate time-series forecast and consider scenario planning based on {fp}-period outlook')
+    if payload.selectedModel:
+        actions.append(f'Deploy trained model ({payload.selectedModel}) for ongoing prediction and monitoring')
+    actions.append('Schedule regular re-analysis to track data quality and model performance over time')
+    for a in actions:
+        elements.append(para(f'- {a}', small_style))
+
+    # ---- Section 14: Recommendations ----
+    start_section('Recommendations', 'Section 14')
+    add_para(f'Based on the comprehensive analysis of {payload.fileName}, the following recommendations are provided for stakeholder consideration:', body_style)
+    elements.append(Spacer(1, 6))
+    null_col_count = len([c for c in payload.columns if c.nullCount > 0])
+    dq_text = f'Address {null_col_count} columns with missing values and review {payload.duplicates:,} duplicate records.' if null_col_count > 0 else 'Data quality is satisfactory with no critical issues detected.'
+    add_note('Data Quality Improvements', dq_text, tone='#ecfdf5', border='#22c55e')
+    elements.append(Spacer(1, 4))
+    feat_text = f'Leverage {len(payload.edaStats.correlations)} correlation signals for feature selection and consider interaction effects among top correlated pairs.' if payload.edaStats.correlations else 'Continue exploring feature relationships as more data becomes available.'
+    add_note('Feature Engineering', feat_text, tone='#eff6ff', border='#2563eb')
+    elements.append(Spacer(1, 4))
+    model_text = f'The trained {payload.selectedModel or "model"} is ready for deployment with {len(payload.selectedFeatures)} features. Implement monitoring for prediction drift and periodic retraining.' if payload.selectedModel else 'Train a model using the ML Assistant to enable prediction capabilities.'
+    add_note('Model Deployment', model_text, tone='#f0fdf4', border='#22c55e')
+    elements.append(Spacer(1, 4))
+    forecast_text = 'Track actual vs forecasted values regularly and update forecast assumptions as new data becomes available.' if ts_result or ml_result else 'Run forecasting modules to generate forward-looking projections.'
+    add_note('Forecast Monitoring', forecast_text, tone='#fffbeb', border='#f59e0b')
+
+    # ---- Section 15: Appendix ----
+    start_section('Appendix', 'Section 15')
+    add_para(f'Additional technical details and supporting information for the analysis of {payload.fileName}.', body_style)
+    elements.append(Spacer(1, 6))
+    add_table([
+        ['Field', 'Value'],
+        ['Report ID', report_id],
+        ['Generated At', generated_at],
+        ['Dataset', payload.fileName],
+        ['Analysis Type', analysis_type],
+        ['Agent Version', agent_version],
+        ['Rows Analyzed', f'{payload.totalRows:,}'],
+        ['Columns Profiled', str(len(payload.columns))],
+        ['Numeric Fields', str(len(payload.edaStats.numericColumns))],
+        ['Categorical Fields', str(len(payload.edaStats.categoricalColumns))],
+        ['Correlations Evaluated', str(len(payload.edaStats.correlations))],
+        ['Cleaning Actions', str(len(payload.cleaningLogs))],
+        ['Forecasting Paths', ', '.join(filter(None, ['TS' if ts_result else '', 'ML' if ml_result else '', 'Loss' if loss_rows_raw else '', 'Profit' if profit_rows_raw else ''])) or 'None'],
+        ['ML Model', payload.selectedModel or 'Not trained'],
+        ['Prediction Available', 'Yes' if payload.predictionResult is not None else 'No'],
+    ], [content_width * 0.3, content_width * 0.66])
+    elements.append(Spacer(1, 8))
+    add_para('Report generated by the Intelligent Data Assistant (IDA) agentic layer. Charts rendered using Matplotlib. PDF compiled using ReportLab.', small_style)
+    elements.append(Spacer(1, 6))
+    add_para(f'Technical support: hr@aroha.co.in | +91 9886228615', small_style)
 
     doc.build(elements, onFirstPage=decorate, onLaterPages=decorate)
     return buffer.getvalue()
@@ -9515,14 +9799,1007 @@ def generate_eda_report(payload: EdaPdfPayload, http_request: Request) -> Respon
     )
 
 
+def build_dynamic_report_html(payload: ReportPayload) -> bytes:
+    session_id = get_session_id(payload.datasetId, payload.sessionId)
+    session_state = ensure_session_state(session_id)
+    ts_raw = payload.timeSeriesForecastResult or session_state.get('time_series_result')
+    ml_raw = payload.mlForecastResult or session_state.get('ml_forecast_result')
+    ts_result = ts_raw.model_dump() if hasattr(ts_raw, 'model_dump') else ts_raw
+    ml_result = ml_raw.model_dump() if hasattr(ml_raw, 'model_dump') else ml_raw
+    loss_rows = payload.lossForecast or session_state.get('loss_forecast_result') or []
+    profit_scenarios = payload.scenarios or session_state.get('profit_scenarios') or {}
+    profit_rows = payload.profitForecast or profit_scenarios.get(payload.reportConfig.scenario, []) or profit_scenarios.get('baseline', [])
+    loss_segments = payload.lossSegments or session_state.get('loss_segments') or []
+    breakeven_period = payload.breakevenPeriod or (session_state.get('breakeven') or {}).get('breakeven_period')
+    meta = _generate_report_metadata(payload)
+    loaded_rows = payload.loadedRowCount or payload.totalRows
+    preview_mode = payload.previewLoaded and payload.totalRows > loaded_rows
+    generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    rows_removed = max(0, payload.totalRows - (payload.cleanedRowCount or payload.totalRows))
+    agent_version = 'IDA v2.1.0'
+
+    def esc(text: Any) -> str:
+        return escape(str(text))
+
+    def fmt(value: Any, digits: int = 3) -> str:
+        if value is None: return 'N/A'
+        if isinstance(value, (int, np.integer)): return f'{int(value):,}'
+        if isinstance(value, (float, np.floating)): return f'{float(value):,.{digits}f}'
+        return str(value)
+
+    def mny(value: Any) -> str:
+        try: return f'{float(value):,.0f}'
+        except: return 'N/A'
+
+    def pct(value: Any) -> str:
+        try: return f'{float(value):.1f}%'
+        except: return 'N/A'
+
+    def role_count(*needles: str) -> int:
+        return sum(1 for c in payload.columns if any(n in str(c.role).lower() or n in str(c.dtype).lower() for n in needles))
+
+    corr_b64 = _build_corr_chart_base64(payload.edaStats.correlations) if payload.edaStats.correlations else None
+
+    ts_chart_b64 = None
+    if ts_result:
+        ts_chart_b64 = _build_line_chart_base64(
+            'Time Series Forecast', ts_result.get('history', []), ts_result.get('test_forecast', []),
+            ts_result.get('future_forecast', []), True)
+
+    ml_chart_b64 = ml_bar_b64 = None
+    if ml_result:
+        ml_chart_b64 = _build_line_chart_base64(
+            'ML Forecast', ml_result.get('history', []), ml_result.get('test_forecast', []),
+            ml_result.get('future_forecast', []), False)
+        shap_items = ml_result.get('shap_feature_importance', [])
+        if shap_items:
+            ml_bar_b64 = _build_bar_chart_base64('SHAP Feature Importance', shap_items)
+
+    loss_chart_b64 = None
+    if loss_rows:
+        loss_chart_b64 = _build_loss_chart_base64(loss_rows)
+
+    profit_chart_b64 = None
+    if profit_rows:
+        profit_chart_b64 = _build_profit_chart_base64(profit_scenarios, profit_rows)
+
+    sections_html = ''
+    section_count = 0
+
+    def add_section(title: str, content_html: str) -> None:
+        nonlocal section_count, sections_html
+        section_count += 1
+        sections_html += f'''
+        <div class="section page-break">
+            <div class="section-header">
+                <span class="section-number">Section {section_count}</span>
+                <h2>{esc(title)}</h2>
+            </div>
+            {content_html}
+        </div>'''
+
+    def add_card(label: str, value: Any) -> str:
+        return f'<div class="stat-card"><div class="stat-label">{esc(label)}</div><div class="stat-value">{esc(value)}</div></div>'
+
+    def add_cards_html(cards: list[tuple[str, Any]]) -> str:
+        return f'<div class="card-grid">{"".join(add_card(l, v) for l, v in cards)}</div>'
+
+    def add_table_html(headers: list[str], rows: list[list[Any]]) -> str:
+        if not rows: return '<p class="muted">No data available.</p>'
+        h = ''.join(f'<th>{esc(h)}</th>' for h in headers)
+        r = ''.join(f'<tr>{"".join(f"<td>{esc(c)}</td>" for c in row)}</tr>' for row in rows)
+        return f'<table><thead><tr>{h}</tr></thead><tbody>{r}</tbody></table>'
+
+    def add_chart_img(b64: str | None, caption: str = '') -> str:
+        if not b64: return ''
+        return f'<div class="chart-container"><img src="data:image/png;base64,{b64}" alt="{esc(caption)}"/>{f"<p class=\"chart-caption\">{esc(caption)}</p>" if caption else ""}</div>'
+
+    def add_note_html(title: str, text: str, tone: str = 'blue') -> str:
+        return f'<div class="note note-{tone}"><strong>{esc(title)}:</strong> {esc(text)}</div>'
+
+    tsc = ts_result.get('dataset_profile') if ts_result else {}
+    tst = ts_result.get('training_summary') if ts_result else {}
+    tsm = ts_result.get('metrics') if ts_result else {}
+    mlc = ml_result.get('dataset_profile') if ml_result else {}
+    mlt = ml_result.get('training_summary') if ml_result else {}
+    mlm = ml_result.get('metrics') if ml_result else {}
+
+    section_content = ''
+    # ---- Section 1: Executive Summary ----
+    completed_count = sum(1 for c in [
+        payload.totalRows > 0, bool(payload.columns), bool(payload.cleaningDone),
+        bool(ts_result), bool(ml_result), bool(loss_rows), bool(profit_rows),
+        bool(payload.modelMetrics), payload.predictionResult is not None
+    ] if c)
+    exec_summary = f'''
+    {add_cards_html([
+        ('Dataset', payload.fileName), ('Rows', f'{payload.totalRows:,}'), ('Columns', len(payload.columns)),
+        ('Workflow Progress', f'{completed_count}/9 areas completed')
+    ])}
+    <p>The <strong>{esc(payload.fileName)}</strong> dataset was analyzed through a comprehensive workflow encompassing data profiling, exploratory analysis, cleaning, forecasting (time-series, ML, loss, and profit), machine learning training, and prediction. This report presents all findings in a stakeholder-friendly format.</p>
+    <div class="meta-grid">
+        <div class="meta-item"><span class="meta-label">Report ID</span><span class="meta-value">{esc(meta["report_id"])}</span></div>
+        <div class="meta-item"><span class="meta-label">Generated</span><span class="meta-value">{esc(generated_at)}</span></div>
+        <div class="meta-item"><span class="meta-label">Agent Version</span><span class="meta-value">{esc(agent_version)}</span></div>
+        <div class="meta-item"><span class="meta-label">Analysis Type</span><span class="meta-value">{esc(meta["analysis_type"])}</span></div>
+    </div>
+    '''
+    section_content += f'''
+    <div class="section page-break" id="executive-summary">
+        <div class="section-header"><span class="section-number">Section 1</span><h2>Executive Summary</h2></div>
+        {exec_summary}
+    </div>'''
+
+    # ---- Section 2: Dataset Overview ----
+    ds_overview = f'''
+    {add_cards_html([
+        ('Total Rows', f'{payload.totalRows:,}'), ('Columns', len(payload.columns)),
+        ('Duplicates', f'{payload.duplicates:,}'), ('Memory', payload.memoryUsage)
+    ])}
+    <p>Workspace scope: {"Preview-backed" if preview_mode else "Full dataset"} - {esc(f"{loaded_rows:,} rows available in-browser out of {payload.totalRows:,} total." if preview_mode else f"All {payload.totalRows:,} rows loaded directly.")}</p>
+    {add_table_html(
+        ['Column', 'Type', 'Role', 'Non-null', 'Nulls', 'Unique'],
+        [[c.name, c.dtype, c.role, c.nonNull, c.nullCount, c.uniqueCount] for c in payload.columns[:24]]
+    )}
+    {f'<p class=\"muted\">Showing first 24 of {len(payload.columns)} columns.</p>' if len(payload.columns) > 24 else ''}
+    '''
+    section_content += f'''
+    <div class="section page-break" id="dataset-overview">
+        <div class="section-header"><span class="section-number">Section 2</span><h2>Dataset Overview</h2></div>
+        {ds_overview}
+    </div>'''
+
+    # ---- Section 3: Data Quality Assessment ----
+    dq = f'''
+    {add_cards_html([
+        ('Numeric Fields', role_count('numeric', 'float', 'int')),
+        ('Categorical Fields', role_count('categorical')),
+        ('Datetime Fields', role_count('datetime', 'date', 'time')),
+        ('Identifier Fields', role_count('identifier'))
+    ])}
+    <p>Data quality assessment covers schema completeness, null ratios, uniqueness, and role inference. {f"{len(payload.cleaningLogs)} cleaning actions were applied." if payload.cleaningLogs else "No cleaning was required or applied."}</p>
+    {add_table_html(
+        ['Action', 'Detail', 'Timestamp'],
+        [[l.action, l.detail, l.timestamp] for l in payload.cleaningLogs[:24]]
+    ) if payload.cleaningLogs else '<p class="muted">No cleaning logs recorded.</p>'}
+    {add_cards_html([
+        ('Cleaning Status', 'Completed' if payload.cleaningDone else 'Pending'),
+        ('Rows Removed', f'{rows_removed:,}'), ('Rows Retained', f'{payload.cleanedRowCount:,}')
+    ])}
+    '''
+    section_content += f'''
+    <div class="section page-break" id="data-quality">
+        <div class="section-header"><span class="section-number">Section 3</span><h2>Data Quality Assessment</h2></div>
+        {dq}
+    </div>'''
+
+    # ---- Section 4: Exploratory Data Analysis ----
+    stat_rows = [['Field', 'Mean', 'Std', 'Min', 'Median', 'Max']]
+    for field in payload.edaStats.numericColumns[:12]:
+        s = payload.edaStats.stats.get(field, {})
+        stat_rows.append([field, fmt(s.get('mean')), fmt(s.get('std')), fmt(s.get('min')), fmt(s.get('median')), fmt(s.get('max'))])
+    corr_rows = [['Pair', 'Correlation']] + [[item.get('pair', 'N/A'), fmt(item.get('correlation'))] for item in payload.edaStats.correlations[:10]]
+    eda_content = f'''
+    {add_cards_html([
+        ('Numeric Fields', len(payload.edaStats.numericColumns)),
+        ('Categorical Fields', len(payload.edaStats.categoricalColumns)),
+        ('Correlations', len(payload.edaStats.correlations)),
+        ('AI Insights', 'Available' if payload.aiInsights else 'Not captured')
+    ])}
+    <h3>Statistical Summary</h3>
+    {add_table_html(stat_rows[0], stat_rows[1:]) if len(stat_rows) > 1 else '<p class="muted">No numeric fields to summarize.</p>'}
+    <h3>Correlation Analysis</h3>
+    {add_chart_img(corr_b64, 'Correlation Heatmap')}
+    {add_table_html(corr_rows[0], corr_rows[1:]) if len(corr_rows) > 1 else ''}
+    {add_note_html('AI Insight', payload.aiInsights or 'No AI insight captured.') if payload.aiInsights else ''}
+    '''
+    section_content += f'''
+    <div class="section page-break" id="eda">
+        <div class="section-header"><span class="section-number">Section 4</span><h2>Exploratory Data Analysis</h2></div>
+        {eda_content}
+    </div>'''
+
+    # ---- Section 5: Key Statistical Findings ----
+    ksf = f'''
+    <p>Key statistical findings extracted during the analysis of <strong>{esc(payload.fileName)}</strong>:</p>
+    <ul>
+        <li>Dataset contains <strong>{payload.totalRows:,}</strong> rows and <strong>{len(payload.columns)}</strong> columns</li>
+        <li><strong>{len(payload.edaStats.numericColumns)}</strong> numeric fields profiled for central tendency and spread</li>
+        <li><strong>{len(payload.edaStats.categoricalColumns)}</strong> categorical fields with cardinality assessment</li>
+        <li><strong>{len(payload.edaStats.correlations)}</strong> correlation pairs evaluated</li>
+        <li><strong>{len(payload.cleaningLogs)}</strong> cleaning operations executed, removing <strong>{rows_removed:,}</strong> rows</li>
+    </ul>
+    '''
+    section_content += f'''
+    <div class="section page-break" id="statistical-findings">
+        <div class="section-header"><span class="section-number">Section 5</span><h2>Key Statistical Findings</h2></div>
+        {ksf}
+    </div>'''
+
+    # ---- Section 6: Business Insights ----
+    bis = f'''
+    <p>Business insights derived from the analysis:</p>
+    <ul>
+        <li>The dataset provides <strong>{len(payload.edaStats.numericColumns)}</strong> quantifiable metrics for performance tracking and decision-making.</li>
+        <li>Data completeness is at <strong>{(sum(c.nonNull for c in payload.columns) / max(1, sum(c.nonNull + c.nullCount for c in payload.columns)) * 100):.1f}%</strong> across all fields.</li>
+        <li>{f"Correlation analysis revealed <strong>{len([c for c in payload.edaStats.correlations if abs(float(c.get('correlation', 0))) > 0.7])}</strong> strong relationships (|r| > 0.7) that may indicate redundant features or predictive signals." if payload.edaStats.correlations else "Correlation analysis helps identify feature relationships for model development."}</li>
+        <li>{f"Cleaning removed <strong>{rows_removed:,}</strong> problematic rows, improving overall data quality for downstream analysis." if rows_removed > 0 else "Data required minimal cleaning, indicating good upstream data collection practices."}</li>
+    </ul>
+    '''
+    section_content += f'''
+    <div class="section page-break" id="business-insights">
+        <div class="section-header"><span class="section-number">Section 6</span><h2>Business Insights</h2></div>
+        {bis}
+    </div>'''
+
+    # ---- Section 7: Forecast Results ----
+    forecast_content = ''
+    # TS Forecast
+    if ts_result:
+        selected_model = tst.get('model_name', 'N/A')
+        ts_section = f'''
+        <h3>Time Series Forecast</h3>
+        {add_cards_html([
+            ('Model', selected_model), ('Frequency', tsc.get('detected_frequency', ts_result.get('frequency', 'N/A'))),
+            ('Horizon', f'{len(ts_result.get("future_forecast", []))} periods'),
+            ('MAPE', fmt(tsm.get('mape')))
+        ])}
+        {add_table_html(
+            ['Field', 'Value'],
+            [['Volatility', fmt(tsc.get('volatility'))],
+             ['Stationarity', (ts_result.get('stationarity_check') or {}).get('note', 'N/A')],
+             ['MAE', fmt(tsm.get('mae'))], ['RMSE', fmt(tsm.get('rmse'))],
+             ['Training', f"{tst.get('train_periods', 'N/A')} train / {tst.get('test_periods', 'N/A')} test"]]
+        )}
+        {add_chart_img(ts_chart_b64, 'Time Series Forecast Chart')}
+        {add_table_html(
+            ['Period', 'Forecast', 'Lower 95%', 'Upper 95%'],
+            [[p.get('period', 'N/A'), fmt(p.get('predicted')), fmt(p.get('lower')), fmt(p.get('upper'))]
+             for p in ts_result.get('future_forecast', [])[:12]]
+        )}
+        {add_note_html('Forecast Insight', ts_result.get('analysis') or 'No analysis captured.')}
+        '''
+        forecast_content += ts_section
+
+    # ML Forecast
+    if ml_result:
+        ml_selected = (ml_result.get('model_details') or {}).get('model_name') or mlt.get('model_name') or 'N/A'
+        ml_section = f'''
+        <h3>Machine Learning Forecast</h3>
+        {add_cards_html([
+            ('Model', ml_selected), ('Features', len(ml_result.get('generated_features', []))),
+            ('Horizon', f'{len(ml_result.get("future_forecast", []))} periods'),
+            ('MAPE', fmt(mlm.get('mape')))
+        ])}
+        {add_table_html(
+            ['Candidate', 'Status', 'MAE', 'RMSE', 'MAPE'],
+            [[item.get('model_name', 'N/A'), item.get('status', 'N/A'),
+              fmt((item.get('metrics') or {}).get('mae')), fmt((item.get('metrics') or {}).get('rmse')),
+              fmt((item.get('metrics') or {}).get('mape'))]
+             for item in ml_result.get('model_comparison', [])[:8]]
+        )}
+        {add_chart_img(ml_chart_b64, 'ML Forecast Chart')}
+        {add_chart_img(ml_bar_b64, 'SHAP Feature Importance')}
+        {add_table_html(
+            ['Period', 'Forecast'],
+            [[p.get('period', 'N/A'), fmt(p.get('predicted'))] for p in ml_result.get('future_forecast', [])[:12]]
+        )}
+        {add_note_html('Forecast Insight', ml_result.get('analysis') or 'No analysis captured.')}
+        '''
+        forecast_content += ml_section
+
+    # Loss Forecast
+    if loss_rows:
+        total_loss = sum(float(r.get('total_loss') or 0) for r in loss_rows)
+        peak = max(loss_rows, key=lambda r: float(r.get('total_loss') or 0))
+        drivers = {k: sum(float(r.get(k) or 0) for r in loss_rows)
+                   for k in ['revenue_loss', 'operational_loss', 'inventory_loss', 'discount_loss']}
+        top_driver = max(drivers.items(), key=lambda item: item[1])
+        loss_section = f'''
+        <h3>Loss Forecast Analysis</h3>
+        {add_cards_html([
+            ('Total Loss', mny(total_loss)), ('Peak Period', peak.get('period', 'N/A')),
+            ('Top Driver', f'{top_driver[0].replace("_"," ").title()}'), ('Risk Score', f'{(sum(float(r.get("loss_risk_score") or 0) for r in loss_rows) / max(1, len(loss_rows))):.1%}')
+        ])}
+        {add_chart_img(loss_chart_b64, 'Loss Trend by Driver')}
+        {add_table_html(
+            ['Period', 'Revenue', 'Operational', 'Inventory', 'Discount', 'Total', 'Risk'],
+            [[r.get('period', 'N/A'), mny(r.get('revenue_loss')), mny(r.get('operational_loss')),
+              mny(r.get('inventory_loss')), mny(r.get('discount_loss')), mny(r.get('total_loss')),
+              f"{float(r.get('loss_risk_score') or 0):.1%} {r.get('risk_label', '')}"]
+             for r in loss_rows[:14]]
+        )}
+        '''
+        forecast_content += loss_section
+
+    # Profit Forecast
+    if profit_rows:
+        total_rev = sum(float(r.get('forecasted_revenue') or 0) for r in profit_rows)
+        total_net = sum(float(r.get('net_profit') or 0) for r in profit_rows)
+        profit_section = f'''
+        <h3>Profit Forecast & P&amp;L Projection</h3>
+        {add_cards_html([
+            ('Scenario', payload.reportConfig.scenario.title() if payload.reportConfig else 'Baseline'),
+            ('Revenue', mny(total_rev)), ('Net Profit', mny(total_net)),
+            ('Net Margin', f'{(total_net / total_rev * 100) if total_rev else 0:.1f}%')
+        ])}
+        {add_chart_img(profit_chart_b64, 'Net Profit Forecast by Scenario')}
+        {add_table_html(
+            ['Period', 'Revenue', 'COGS', 'Gross Profit', 'OpEx', 'Losses', 'Net Profit'],
+            [[r.get('period', 'N/A'), mny(r.get('forecasted_revenue')), mny(r.get('forecasted_cogs')),
+              mny(r.get('gross_profit')), mny(r.get('operating_expenses')), mny(r.get('total_losses')),
+              mny(r.get('net_profit'))] for r in profit_rows[:14]]
+        )}
+        <h4>Scenario Comparison (Optimistic / Baseline / Pessimistic)</h4>
+        {add_table_html(
+            ['Scenario', 'Revenue', 'COGS', 'Gross Profit', 'Total Losses', 'Net Profit', 'Net Margin'],
+            [[name.title(),
+              mny(sum(float(r.get('forecasted_revenue') or 0) for r in profit_scenarios.get(name, []))),
+              mny(sum(float(r.get('forecasted_cogs') or 0) for r in profit_scenarios.get(name, []))),
+              mny(sum(float(r.get('gross_profit') or 0) for r in profit_scenarios.get(name, []))),
+              mny(sum(float(r.get('total_losses') or 0) for r in profit_scenarios.get(name, []))),
+              mny(sum(float(r.get('net_profit') or 0) for r in profit_scenarios.get(name, []))),
+              f'{(sum(float(r.get("net_profit") or 0) for r in profit_scenarios.get(name, [])) / max(1, sum(float(r.get("forecasted_revenue") or 0) for r in profit_scenarios.get(name, []))) * 100):.1f}%']
+             for name in ['optimistic', 'baseline', 'pessimistic']]
+        )}
+        {add_note_html('Break-even Analysis', f'Period: {breakeven_period or "Not reached"}')}
+        <h4>Forecast Assumptions</h4>
+        <ul>
+            <li><strong>Optimistic:</strong> Revenue growth accelerates with stable costs and minimal losses</li>
+            <li><strong>Baseline:</strong> Current trends continue with moderate growth and normalized loss patterns</li>
+            <li><strong>Pessimistic:</strong> Revenue contraction with increased costs and elevated losses</li>
+        </ul>
+        <h4>Confidence Indicators</h4>
+        {add_cards_html([
+            ('Optimistic Confidence', 'Medium-High'), ('Baseline Confidence', 'High'),
+            ('Pessimistic Confidence', 'Medium'), ('Model Reliability', 'Based on historical patterns')
+        ])}
+        '''
+        forecast_content += profit_section
+
+    if forecast_content:
+        section_content += f'''
+        <div class="section page-break" id="forecast-results">
+            <div class="section-header"><span class="section-number">Section 7</span><h2>Forecast Results</h2></div>
+            {forecast_content}
+        </div>'''
+
+    # ---- Section 8: Machine Learning Results ----
+    ml_section_content = ''
+    if payload.modelMetrics or payload.selectedModel:
+        ml_section_content = f'''
+        {add_cards_html([
+            ('Target', payload.targetColumn or 'N/A'), ('Problem', payload.problemType.title() if payload.problemType else 'N/A'),
+            ('Model', payload.selectedModel or 'N/A'), ('Features', len(payload.selectedFeatures))
+        ])}
+        <h3>Model Performance Metrics</h3>
+        {add_table_html(
+            ['Metric', 'Value'],
+            [[k, fmt(v)] for k, v in (payload.modelMetrics or {}).items()]
+        ) if payload.modelMetrics else '<p class="muted">No metrics captured.</p>'}
+        <h3>Feature Importance</h3>
+        {add_table_html(
+            ['Feature', 'Importance'],
+            [[item.get('name', 'N/A'), fmt(item.get('importance'))] for item in (payload.featureImportance or [])[:12]]
+        ) if payload.featureImportance else '<p class="muted">No feature importance data available.</p>'}
+        {add_note_html('Model Summary', f'{payload.selectedModel or "Selected model"} trained for {payload.problemType or "N/A"} on {len(payload.selectedFeatures)} features targeting {payload.targetColumn or "N/A"}.')}
+        '''
+    if payload.predictionResult is not None or payload.predictionHistory:
+        ml_section_content += f'''
+        <h3>Prediction Summary</h3>
+        {add_cards_html([
+            ('Latest Prediction', fmt(payload.predictionResult)),
+            ('History Entries', len(payload.predictionHistory)),
+            ('Probabilities', 'Available' if payload.predictionProbabilities else 'N/A'),
+        ])}
+        {add_table_html(
+            ['Timestamp', 'Prediction', 'Confidence'],
+            [[i.timestamp, fmt(i.prediction), 'N/A' if i.confidence is None else f'{round(i.confidence * 100, 2)}%']
+             for i in payload.predictionHistory[-10:]]
+        ) if payload.predictionHistory else ''}
+        {add_note_html('Analysis', payload.predictionAnalysis) if payload.predictionAnalysis else ''}
+        '''
+    if ml_section_content:
+        section_content += f'''
+        <div class="section page-break" id="ml-results">
+            <div class="section-header"><span class="section-number">Section 8</span><h2>Machine Learning Results</h2></div>
+            {ml_section_content}
+        </div>'''
+
+    # ---- Section 9: Agent Summary ----
+    agent_discoveries = []
+    if payload.edaStats.correlations:
+        strong_corrs = [c for c in payload.edaStats.correlations if abs(float(c.get('correlation', 0))) > 0.7]
+        if strong_corrs:
+            agent_discoveries.append(f'{len(strong_corrs)} strong correlations detected')
+    if payload.cleaningLogs:
+        agent_discoveries.append(f'{len(payload.cleaningLogs)} data quality issues identified and resolved')
+    if ts_result:
+        agent_discoveries.append(f'Time-series patterns modeled using {tst.get("model_name", "selected algorithm")}')
+    if ml_result:
+        agent_discoveries.append(f'ML forecast generated with {len(ml_result.get("generated_features", []))} engineered features')
+    if payload.modelMetrics:
+        agent_discoveries.append(f'{payload.selectedModel or "Trained model"} achieved measurable performance on {payload.problemType or "N/A"} task')
+
+    risks = []
+    if payload.duplicates > 0:
+        risks.append(f'{payload.duplicates:,} duplicate records detected')
+    if any(c.nullCount > 0 for c in payload.columns):
+        null_cols = [c.name for c in payload.columns if c.nullCount > 0]
+        risks.append(f'{len(null_cols)} columns contain missing values')
+    if loss_rows:
+        high_risk = [r for r in loss_rows if float(r.get('loss_risk_score') or 0) > 0.7]
+        if high_risk:
+            risks.append(f'{len(high_risk)} high-risk periods in loss forecast')
+
+    agent_summary = f'''
+    {add_cards_html([
+        ('Dataset', payload.fileName), ('Total Rows', f'{payload.totalRows:,}'),
+        ('Fields Analyzed', len(payload.columns)), ('Report ID', meta['report_id'])
+    ])}
+    <h3>What Was Analyzed</h3>
+    <p>The Intelligent Data Assistant performed a comprehensive analysis of <strong>{esc(payload.fileName)}</strong>, covering data profiling, exploratory data analysis, data quality assessment, {f"time-series forecasting, ML forecasting, " if ts_result or ml_result else ""}{f"loss/profit forecasting, " if loss_rows or profit_rows else ""}and machine learning model training with prediction capabilities.</p>
+    <h3>Key Discoveries</h3>
+    <ul>{"".join(f"<li>{esc(d)}</li>" for d in (agent_discoveries or ['General data profiling completed']))}</ul>
+    <h3>Important Trends</h3>
+    <ul>
+        <li>Data quality score: {f"{(sum(c.nonNull for c in payload.columns) / max(1, sum(c.nonNull + c.nullCount for c in payload.columns)) * 100):.1f}%" if payload.columns else "N/A"} completeness</li>
+        <li>{f"{len(payload.edaStats.numericColumns)} metrics available for quantitative analysis" if payload.edaStats.numericColumns else "Analysis focused on qualitative/categorical data"}</li>
+        {f"<li>Time-series forecast indicates {tsm.get('mape', 'N/A')}% MAPE accuracy</li>" if ts_result else ""}
+        {f"<li>ML forecast generates {len(ml_result.get('future_forecast', []))} period outlook</li>" if ml_result else ""}
+    </ul>
+    <h3>Risks Detected</h3>
+    {f"<ul>{''.join(f'<li>{esc(r)}</li>' for r in risks)}</ul>" if risks else '<p>No significant risks detected during analysis.</p>'}
+    <h3>Recommended Actions</h3>
+    <ul>
+        <li>Review data quality findings and apply recommended cleaning operations for optimal model performance</li>
+        {f"<li>Explore strong correlations ({[c.get('pair') for c in (payload.edaStats.correlations or [])[:3]]}) for feature engineering opportunities</li>" if payload.edaStats.correlations else ""}
+        {f"<li>Validate time-series forecast and consider scenario planning based on {tst.get('forecast_periods', 'N/A')}-period outlook</li>" if ts_result else ""}
+        {f"<li>Review ML forecast feature importance to understand key drivers ({[s.get('name') for s in (ml_result.get('shap_feature_importance', []) or [])[:3]]})</li>" if ml_result and ml_result.get('shap_feature_importance') else ""}
+        {f"<li>Monitor loss drivers and implement mitigation strategies for top risk areas</li>" if loss_rows else ""}
+        {f"<li>Deploy trained model ({payload.selectedModel}) for ongoing prediction and monitoring</li>" if payload.selectedModel else ""}
+        <li>Schedule regular re-analysis to track data quality and model performance over time</li>
+    </ul>
+    '''
+    section_content += f'''
+    <div class="section page-break" id="agent-summary">
+        <div class="section-header"><span class="section-number">Section 9</span><h2>Agent Summary</h2></div>
+        {agent_summary}
+    </div>'''
+
+    # ---- Section 10: Recommendations ----
+    recs = f'''
+    <p>Based on the comprehensive analysis of <strong>{esc(payload.fileName)}</strong>, the following recommendations are provided for stakeholder consideration:</p>
+    <div class="recommendation-grid">
+        <div class="rec-card">
+            <h4>Data Quality Improvements</h4>
+            <p>{f"Address {len([c for c in payload.columns if c.nullCount > 0])} columns with missing values and review {payload.duplicates:,} duplicate records." if any(c.nullCount > 0 for c in payload.columns) else "Data quality is satisfactory with no critical issues detected."}</p>
+        </div>
+        <div class="rec-card">
+            <h4>Feature Engineering</h4>
+            <p>{f"Leverage {len(payload.edaStats.correlations)} correlation signals for feature selection and consider interaction effects among top correlated pairs." if payload.edaStats.correlations else "Continue exploring feature relationships as more data becomes available."}</p>
+        </div>
+        <div class="rec-card">
+            <h4>Model Deployment</h4>
+            <p>{f"The trained {payload.selectedModel or 'model'} is ready for deployment with {len(payload.selectedFeatures)} features. Implement monitoring for prediction drift and periodic retraining." if payload.selectedModel else "Train a model using the ML Assistant to enable prediction capabilities."}</p>
+        </div>
+        <div class="rec-card">
+            <h4>Forecast Monitoring</h4>
+            <p>{f"Track actual vs forecasted values regularly and update forecast assumptions as new data becomes available." if ts_result or ml_result else "Run forecasting modules to generate forward-looking projections."}</p>
+        </div>
+    </div>
+    '''
+    section_content += f'''
+    <div class="section page-break" id="recommendations">
+        <div class="section-header"><span class="section-number">Section 10</span><h2>Recommendations</h2></div>
+        {recs}
+    </div>'''
+
+    # ---- Section 11: Appendix ----
+    appendix = f'''
+    <p>Additional technical details and supporting information for the analysis of <strong>{esc(payload.fileName)}</strong>.</p>
+    <h3>Workflow Coverage</h3>
+    {add_table_html(
+        ['Workflow Area', 'Status'],
+        [['Data Upload', 'Completed' if payload.totalRows else 'Skipped'],
+         ['Data Understanding', 'Completed' if payload.columns else 'Skipped'],
+         ['EDA', 'Completed' if payload.columns else 'Skipped'],
+         ['Data Cleaning', 'Completed' if payload.cleaningDone else 'Pending'],
+         ['Time Series Forecast', 'Completed' if ts_result else 'Skipped'],
+         ['ML Forecast', 'Completed' if ml_result else 'Skipped'],
+         ['Loss Forecast', 'Completed' if loss_rows else 'Skipped'],
+         ['Profit Forecast', 'Completed' if profit_rows else 'Skipped'],
+         ['ML Assistant', 'Completed' if payload.modelMetrics else 'Skipped'],
+         ['Prediction', 'Completed' if payload.predictionResult is not None else 'Skipped']]
+    )}
+    <h3>Report Metadata</h3>
+    {add_table_html(
+        ['Field', 'Value'],
+        [['Report ID', meta['report_id']], ['Generated At', meta['generated_at']],
+         ['Dataset', meta['dataset_name']], ['Analysis Type', meta['analysis_type']],
+         ['Agent Version', meta['agent_version']], ['Rows Analyzed', f'{payload.totalRows:,}'],
+         ['Columns Profiled', str(len(payload.columns))]]
+    )}
+    <h3>Technical Environment</h3>
+    <p>Report generated by the Intelligent Data Assistant (IDA) agentic layer. Charts rendered using Matplotlib. Report compiled using HTML/CSS with embedded Base64 images for standalone viewing.</p>
+    '''
+    section_content += f'''
+    <div class="section" id="appendix">
+        <div class="section-header"><span class="section-number">Section 11</span><h2>Appendix</h2></div>
+        {appendix}
+    </div>'''
+
+    toc_links = [
+        ('executive-summary', 'Executive Summary'),
+        ('dataset-overview', 'Dataset Overview'),
+        ('data-quality', 'Data Quality Assessment'),
+        ('eda', 'Exploratory Data Analysis'),
+        ('statistical-findings', 'Key Statistical Findings'),
+        ('business-insights', 'Business Insights'),
+        ('forecast-results', 'Forecast Results'),
+        ('ml-results', 'Machine Learning Results'),
+        ('agent-summary', 'Agent Summary'),
+        ('recommendations', 'Recommendations'),
+        ('appendix', 'Appendix'),
+    ]
+    toc_html = ''.join(f'<li><a href="#{anchor}">{label}</a></li>' for anchor, label in toc_links)
+
+    html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>{esc(payload.fileName)} - Comprehensive Analysis Report</title>
+<style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: 'Segoe UI', Arial, Helvetica, sans-serif; color: #1e293b; background: #f1f5f9; line-height: 1.6; }}
+    .page-break {{ page-break-after: always; }}
+    .cover-page {{
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f766e 100%);
+        color: white; padding: 60px 48px; min-height: 100vh; display: flex; flex-direction: column; justify-content: center;
+        page-break-after: always;
+    }}
+    .cover-page h1 {{ font-size: 42px; font-weight: 700; margin-bottom: 12px; line-height: 1.1; }}
+    .cover-page .subtitle {{ font-size: 18px; color: #a5f3fc; margin-bottom: 32px; }}
+    .cover-meta {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 40px; }}
+    .cover-meta-item {{ background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 16px 20px; }}
+    .cover-meta-item .label {{ font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #a5f3fc; }}
+    .cover-meta-item .value {{ font-size: 16px; font-weight: 600; margin-top: 4px; color: white; }}
+    .company-name {{ font-size: 13px; letter-spacing: 0.15em; text-transform: uppercase; color: #5eead4; margin-bottom: 8px; }}
+    .toc {{ padding: 40px 48px; background: white; page-break-after: always; }}
+    .toc h2 {{ font-size: 28px; color: #0f172a; margin-bottom: 24px; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }}
+    .toc ul {{ list-style: none; columns: 2; column-gap: 40px; }}
+    .toc li {{ margin-bottom: 10px; }}
+    .toc a {{ color: #0369a1; text-decoration: none; font-size: 15px; display: block; padding: 6px 10px; border-radius: 6px; transition: background 0.15s; }}
+    .toc a:hover {{ background: #f0f9ff; }}
+    .toc a::before {{ content: counter(toc-counter) ". "; counter-increment: toc-counter; font-weight: 600; color: #64748b; }}
+    .toc ul {{ counter-reset: toc-counter; }}
+    .section {{ padding: 32px 48px; background: white; margin: 0 0 2px; }}
+    .section-header {{ margin-bottom: 24px; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }}
+    .section-number {{ font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.15em; color: #0284c7; display: block; margin-bottom: 4px; }}
+    .section-header h2 {{ font-size: 26px; color: #0f172a; }}
+    h3 {{ font-size: 20px; color: #0f172a; margin: 24px 0 12px; }}
+    h4 {{ font-size: 16px; color: #334155; margin: 16px 0 8px; }}
+    p {{ margin: 8px 0; color: #475569; }}
+    .muted {{ color: #94a3b8; font-size: 13px; }}
+    ul, ol {{ margin: 8px 0; padding-left: 24px; }}
+    li {{ margin-bottom: 4px; color: #475569; }}
+    .card-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }}
+    .stat-card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px; }}
+    .stat-label {{ font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; }}
+    .stat-value {{ font-size: 20px; font-weight: 700; color: #0369a1; margin-top: 4px; }}
+    .meta-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; padding: 16px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; }}
+    .meta-item {{ }}
+    .meta-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; }}
+    .meta-value {{ font-size: 13px; font-weight: 600; color: #0f172a; display: block; margin-top: 2px; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }}
+    th, td {{ border: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; vertical-align: top; }}
+    th {{ background: #1e3a5f; color: white; font-weight: 600; font-size: 12px; }}
+    tr:nth-child(even) td {{ background: #f8fafc; }}
+    .chart-container {{ margin: 16px 0; text-align: center; }}
+    .chart-container img {{ max-width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 8px; }}
+    .chart-caption {{ font-size: 12px; color: #64748b; margin-top: 4px; }}
+    .note {{ padding: 12px 16px; border-radius: 8px; margin: 12px 0; font-size: 13px; }}
+    .note-blue {{ background: #eff6ff; border-left: 4px solid #2563eb; }}
+    .note-green {{ background: #f0fdf4; border-left: 4px solid #22c55e; }}
+    .note-amber {{ background: #fffbeb; border-left: 4px solid #f59e0b; }}
+    .note-red {{ background: #fef2f2; border-left: 4px solid #dc2626; }}
+    .recommendation-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 16px 0; }}
+    .rec-card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; }}
+    .rec-card h4 {{ color: #0f172a; margin-bottom: 8px; font-size: 15px; }}
+    .rec-card p {{ font-size: 13px; color: #475569; }}
+    @media print {{
+        body {{ background: white; }}
+        .section {{ padding: 24px 32px; margin: 0; }}
+        .cover-page {{ min-height: auto; padding: 48px 32px; }}
+        .page-break {{ page-break-before: always; }}
+        .page-break:first-of-type {{ page-break-before: auto; }}
+    }}
+    @page {{ size: A4; margin: 0; }}
+</style>
+</head>
+<body>
+<div class="cover-page" id="cover">
+    <div class="company-name">Intelligent Data Assistant</div>
+    <h1>Comprehensive Analysis Report</h1>
+    <p class="subtitle">A stakeholder-ready summary of the end-to-end analytics journey for {esc(payload.fileName)}</p>
+    <div class="cover-meta">
+        <div class="cover-meta-item"><div class="label">Report ID</div><div class="value">{esc(meta['report_id'])}</div></div>
+        <div class="cover-meta-item"><div class="label">Generated At</div><div class="value">{esc(generated_at)}</div></div>
+        <div class="cover-meta-item"><div class="label">Dataset Name</div><div class="value">{esc(payload.fileName)}</div></div>
+        <div class="cover-meta-item"><div class="label">Agent Version</div><div class="value">{esc(agent_version)}</div></div>
+        <div class="cover-meta-item"><div class="label">Analysis Type</div><div class="value">{esc(meta['analysis_type'])}</div></div>
+        <div class="cover-meta-item"><div class="label">Total Rows</div><div class="value">{payload.totalRows:,}</div></div>
+    </div>
+</div>
+
+<div class="toc page-break">
+    <h2>Table of Contents</h2>
+    <ul>
+        <li><a href="#executive-summary">Executive Summary</a></li>
+        <li><a href="#dataset-overview">Dataset Overview</a></li>
+        <li><a href="#data-quality">Data Quality Assessment</a></li>
+        <li><a href="#eda">Exploratory Data Analysis</a></li>
+        <li><a href="#statistical-findings">Key Statistical Findings</a></li>
+        <li><a href="#business-insights">Business Insights</a></li>
+        <li><a href="#forecast-results">Forecast Results</a></li>
+        <li><a href="#ml-results">Machine Learning Results</a></li>
+        <li><a href="#agent-summary">Agent Summary</a></li>
+        <li><a href="#recommendations">Recommendations</a></li>
+        <li><a href="#appendix">Appendix</a></li>
+    </ul>
+</div>
+
+{section_content}
+
+<div style="text-align:center;padding:24px;font-size:12px;color:#94a3b8;background:white;border-top:1px solid #e2e8f0;">
+    Generated by Intelligent Data Assistant (IDA) v{esc(agent_version)} | {esc(generated_at)} | Report ID: {esc(meta['report_id'])}
+</div>
+</body>
+</html>'''
+    return html.encode('utf-8')
+
+
+def build_dynamic_report_docx(payload: ReportPayload) -> bytes:
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt, RGBColor, Cm
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+    except ImportError:
+        logger.warning('python-docx not installed, falling back to HTML-based DOC')
+        return build_dynamic_report_doc(payload)
+
+    session_id = get_session_id(payload.datasetId, payload.sessionId)
+    session_state = ensure_session_state(session_id)
+    ts_raw = payload.timeSeriesForecastResult or session_state.get('time_series_result')
+    ml_raw = payload.mlForecastResult or session_state.get('ml_forecast_result')
+    ts_result = ts_raw.model_dump() if hasattr(ts_raw, 'model_dump') else ts_raw
+    ml_result = ml_raw.model_dump() if hasattr(ml_raw, 'model_dump') else ml_raw
+    loss_rows = payload.lossForecast or session_state.get('loss_forecast_result') or []
+    profit_scenarios = payload.scenarios or session_state.get('profit_scenarios') or {}
+    profit_rows = payload.profitForecast or profit_scenarios.get(payload.reportConfig.scenario, []) or profit_scenarios.get('baseline', [])
+    breakeven_period = payload.breakevenPeriod or (session_state.get('breakeven') or {}).get('breakeven_period')
+    meta = _generate_report_metadata(payload)
+    generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+
+    def fmt(value: Any, digits: int = 3) -> str:
+        if value is None: return 'N/A'
+        if isinstance(value, (int, np.integer)): return f'{int(value):,}'
+        if isinstance(value, (float, np.floating)): return f'{float(value):,.{digits}f}'
+        return str(value)
+
+    def mny(value: Any) -> str:
+        try: return f'{float(value):,.0f}'
+        except: return 'N/A'
+
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Calibri'
+    style.font.size = Pt(10)
+    style.paragraph_format.space_after = Pt(4)
+
+    for section in doc.sections:
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+    def add_heading(text: str, level: int = 1) -> None:
+        h = doc.add_heading(text, level=level)
+        for run in h.runs:
+            run.font.color.rgb = RGBColor(15, 23, 42) if level <= 2 else RGBColor(51, 65, 85)
+
+    def add_para(text: str, bold: bool = False, italic: bool = False, size: int = 10) -> None:
+        p = doc.add_paragraph()
+        run = p.add_run(text)
+        run.font.size = Pt(size)
+        run.bold = bold
+        run.italic = italic
+        run.font.color.rgb = RGBColor(71, 85, 105)
+
+    def add_cards(cards: list[tuple[str, Any]]) -> None:
+        p = doc.add_paragraph()
+        for label, value in cards:
+            run = p.add_run(f'  {label}: {value}  ')
+            run.bold = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(3, 105, 161)
+
+    def add_table(headers: list[str], rows: list[list[Any]]) -> None:
+        if not rows:
+            add_para('No data available.', italic=True, size=9)
+            return
+        table = doc.add_table(rows=1 + len(rows), cols=len(headers))
+        table.style = 'Light Grid Accent 1'
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for i, header in enumerate(headers):
+            cell = table.rows[0].cells[i]
+            cell.text = str(header)
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.bold = True
+                    run.font.size = Pt(8)
+        for r_idx, row in enumerate(rows):
+            for c_idx, cell_value in enumerate(row):
+                cell = table.rows[r_idx + 1].cells[c_idx]
+                cell.text = str(cell_value)
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = Pt(8)
+
+    def add_chart(b64: str | None, caption: str = '') -> None:
+        if not b64: return
+        try:
+            img_data = base64.b64decode(b64)
+            doc.add_picture(io.BytesIO(img_data), width=Inches(5.5))
+            if caption:
+                add_para(caption, italic=True, size=8)
+        except Exception:
+            add_para(f'[Chart: {caption}]', italic=True, size=8)
+
+    def add_bullet(text: str) -> None:
+        p = doc.add_paragraph(text, style='List Bullet')
+        for run in p.runs:
+            run.font.size = Pt(9)
+
+    # Cover page
+    for _ in range(6):
+        doc.add_paragraph()
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run('Intelligent Data Assistant')
+    run.font.size = Pt(14)
+    run.font.color.rgb = RGBColor(94, 234, 212)
+    run.bold = True
+
+    title2 = doc.add_paragraph()
+    title2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run2 = title2.add_run('Comprehensive Analysis Report')
+    run2.font.size = Pt(28)
+    run2.bold = True
+    run2.font.color.rgb = RGBColor(15, 23, 42)
+
+    subtitle = doc.add_paragraph()
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run3 = subtitle.add_run(f'A stakeholder-ready summary for {payload.fileName}')
+    run3.font.size = Pt(12)
+    run3.font.color.rgb = RGBColor(100, 116, 139)
+
+    doc.add_paragraph()
+    meta_items = [
+        ('Report ID', meta['report_id']), ('Generated', generated_at),
+        ('Dataset', payload.fileName), ('Agent Version', meta['agent_version']),
+        ('Analysis Type', meta['analysis_type']), ('Total Rows', f'{payload.totalRows:,}'),
+    ]
+    meta_table = doc.add_table(rows=len(meta_items), cols=2)
+    meta_table.style = 'Light Shading Accent 1'
+    for i, (k, v) in enumerate(meta_items):
+        meta_table.rows[i].cells[0].text = k
+        meta_table.rows[i].cells[1].text = v
+        for cell in meta_table.rows[i].cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(9)
+    doc.add_page_break()
+
+    # TOC
+    add_heading('Table of Contents', level=1)
+    toc_items = [
+        'Executive Summary', 'Dataset Overview', 'Data Quality Assessment',
+        'Exploratory Data Analysis', 'Key Statistical Findings', 'Business Insights',
+        'Forecast Results', 'Machine Learning Results', 'Agent Summary',
+        'Recommendations', 'Appendix',
+    ]
+    for i, item in enumerate(toc_items, 1):
+        add_para(f'{i}. {item}', size=10)
+    doc.add_page_break()
+
+    # Section 1: Executive Summary
+    add_heading('1. Executive Summary', level=1)
+    add_cards([
+        ('Dataset', payload.fileName), ('Rows', f'{payload.totalRows:,}'),
+        ('Columns', str(len(payload.columns))), ('Report ID', meta['report_id']),
+    ])
+    add_para(f'The {payload.fileName} dataset was analyzed through a comprehensive workflow encompassing data profiling, exploratory analysis, cleaning, forecasting, machine learning training, and prediction. This report presents all findings for stakeholder review.')
+    add_para(f'Report ID: {meta["report_id"]} | Generated: {generated_at} | Agent: {meta["agent_version"]}', italic=True, size=9)
+    doc.add_page_break()
+
+    # Section 2: Dataset Overview
+    add_heading('2. Dataset Overview', level=1)
+    add_cards([('Total Rows', f'{payload.totalRows:,}'), ('Columns', str(len(payload.columns))),
+               ('Duplicates', f'{payload.duplicates:,}'), ('Memory', payload.memoryUsage)])
+    add_table(['Column', 'Type', 'Role', 'Non-null', 'Nulls', 'Unique'],
+              [[c.name, c.dtype, c.role, str(c.nonNull), str(c.nullCount), str(c.uniqueCount)]
+               for c in payload.columns[:20]])
+    doc.add_page_break()
+
+    # Section 3: Data Quality
+    add_heading('3. Data Quality Assessment', level=1)
+    add_cards([('Cleaning Status', 'Completed' if payload.cleaningDone else 'Pending'),
+               ('Actions', str(len(payload.cleaningLogs))),
+               ('Rows Removed', f'{max(0, payload.totalRows - (payload.cleanedRowCount or payload.totalRows)):,}'),
+               ('Rows Retained', f'{payload.cleanedRowCount:,}')])
+    if payload.cleaningLogs:
+        add_table(['Action', 'Detail', 'Timestamp'],
+                  [[l.action, l.detail, l.timestamp] for l in payload.cleaningLogs[:20]])
+    doc.add_page_break()
+
+    # Section 4: EDA
+    add_heading('4. Exploratory Data Analysis', level=1)
+    add_cards([('Numeric', str(len(payload.edaStats.numericColumns))),
+               ('Categorical', str(len(payload.edaStats.categoricalColumns))),
+               ('Correlations', str(len(payload.edaStats.correlations)))])
+    stat_rows = [['Field', 'Mean', 'Std', 'Min', 'Median', 'Max']]
+    for field in payload.edaStats.numericColumns[:10]:
+        s = payload.edaStats.stats.get(field, {})
+        stat_rows.append([field, fmt(s.get('mean')), fmt(s.get('std')), fmt(s.get('min')), fmt(s.get('median')), fmt(s.get('max'))])
+    if len(stat_rows) > 1:
+        add_table(stat_rows[0], stat_rows[1:])
+    corr_rows = [[item.get('pair', 'N/A'), fmt(item.get('correlation'))] for item in payload.edaStats.correlations[:10]]
+    if corr_rows:
+        add_table(['Pair', 'Correlation'], corr_rows)
+    doc.add_page_break()
+
+    # Section 5: Key Statistical Findings
+    add_heading('5. Key Statistical Findings', level=1)
+    add_bullet(f'Dataset contains {payload.totalRows:,} rows and {len(payload.columns)} columns')
+    add_bullet(f'{len(payload.edaStats.numericColumns)} numeric fields profiled')
+    add_bullet(f'{len(payload.edaStats.categoricalColumns)} categorical fields analyzed')
+    add_bullet(f'{len(payload.cleaningLogs)} cleaning operations executed')
+    doc.add_page_break()
+
+    # Section 6: Business Insights
+    add_heading('6. Business Insights', level=1)
+    completeness = (sum(c.nonNull for c in payload.columns) / max(1, sum(c.nonNull + c.nullCount for c in payload.columns)) * 100) if payload.columns else 0
+    add_bullet(f'Data completeness: {completeness:.1f}%')
+    add_bullet(f'{len(payload.edaStats.numericColumns)} quantifiable metrics available')
+    if payload.edaStats.correlations:
+        strong = len([c for c in payload.edaStats.correlations if abs(float(c.get('correlation', 0))) > 0.7])
+        add_bullet(f'{strong} strong correlations detected')
+    doc.add_page_break()
+
+    # Section 7: Forecast Results
+    add_heading('7. Forecast Results', level=1)
+    if ts_result:
+        add_heading('Time Series Forecast', level=2)
+        tsm = ts_result.get('metrics') or {}
+        tst = ts_result.get('training_summary') or {}
+        add_cards([('MAPE', fmt(tsm.get('mape'))), ('MAE', fmt(tsm.get('mae'))),
+                   ('Horizon', f'{len(ts_result.get("future_forecast", []))} periods')])
+        add_table(['Period', 'Forecast', 'Lower', 'Upper'],
+                  [[p.get('period', 'N/A'), fmt(p.get('predicted')), fmt(p.get('lower')), fmt(p.get('upper'))]
+                   for p in ts_result.get('future_forecast', [])[:10]])
+        ts_chart = _build_line_chart_base64('Time Series Forecast', ts_result.get('history', []),
+                                            ts_result.get('test_forecast', []), ts_result.get('future_forecast', []), True)
+        add_chart(ts_chart, 'Time Series Forecast Chart')
+    if ml_result:
+        add_heading('Machine Learning Forecast', level=2)
+        mlm = ml_result.get('metrics') or {}
+        add_cards([('MAPE', fmt(mlm.get('mape'))), ('MAE', fmt(mlm.get('mae'))),
+                   ('Features', str(len(ml_result.get('generated_features', []))))])
+        add_table(['Period', 'Forecast'],
+                  [[p.get('period', 'N/A'), fmt(p.get('predicted'))] for p in ml_result.get('future_forecast', [])[:10]])
+        ml_chart = _build_line_chart_base64('ML Forecast', ml_result.get('history', []),
+                                            ml_result.get('test_forecast', []), ml_result.get('future_forecast', []), False)
+        add_chart(ml_chart, 'ML Forecast Chart')
+        shap = ml_result.get('shap_feature_importance', [])
+        if shap:
+            shap_chart = _build_bar_chart_base64('SHAP Feature Importance', shap)
+            add_chart(shap_chart, 'Feature Importance')
+    if loss_rows:
+        add_heading('Loss Forecast', level=2)
+        total_loss = sum(float(r.get('total_loss') or 0) for r in loss_rows)
+        add_cards([('Total Loss', mny(total_loss))])
+        loss_chart = _build_loss_chart_base64(loss_rows)
+        add_chart(loss_chart, 'Loss Trend by Driver')
+    if profit_rows:
+        add_heading('Profit Forecast', level=2)
+        total_rev = sum(float(r.get('forecasted_revenue') or 0) for r in profit_rows)
+        add_cards([('Revenue', mny(total_rev))])
+        profit_chart = _build_profit_chart_base64(profit_scenarios, profit_rows)
+        add_chart(profit_chart, 'Net Profit Forecast by Scenario')
+    doc.add_page_break()
+
+    # Section 8: ML Results
+    add_heading('8. Machine Learning Results', level=1)
+    if payload.modelMetrics:
+        add_cards([('Target', payload.targetColumn or 'N/A'), ('Model', payload.selectedModel or 'N/A'),
+                   ('Problem', payload.problemType or 'N/A')])
+        add_table(['Metric', 'Value'], [[k, fmt(v)] for k, v in payload.modelMetrics.items()])
+    if payload.featureImportance:
+        add_table(['Feature', 'Importance'],
+                  [[item.get('name', 'N/A'), fmt(item.get('importance'))] for item in payload.featureImportance[:10]])
+    if payload.predictionResult is not None:
+        add_cards([('Latest Prediction', fmt(payload.predictionResult)),
+                   ('History', str(len(payload.predictionHistory)))])
+    doc.add_page_break()
+
+    # Section 9: Agent Summary
+    add_heading('9. Agent Summary', level=1)
+    add_para(f'The Intelligent Data Assistant analyzed {payload.fileName} comprehensively.')
+    add_heading('Key Discoveries', level=2)
+    if payload.edaStats.correlations:
+        add_bullet(f'{len(payload.edaStats.correlations)} correlation pairs evaluated')
+    if payload.cleaningLogs:
+        add_bullet(f'{len(payload.cleaningLogs)} data quality issues resolved')
+    add_heading('Recommended Actions', level=2)
+    add_bullet('Review data quality findings and apply recommended cleaning')
+    if ts_result:
+        add_bullet('Validate time-series forecast and develop scenario plans')
+    if payload.selectedModel:
+        add_bullet(f'Deploy {payload.selectedModel} for ongoing predictions')
+    doc.add_page_break()
+
+    # Section 10: Recommendations
+    add_heading('10. Recommendations', level=1)
+    null_cols = len([c for c in payload.columns if c.nullCount > 0])
+    if null_cols > 0:
+        add_bullet(f'Address missing values in {null_cols} columns')
+    if payload.duplicates > 0:
+        add_bullet(f'Review and remove {payload.duplicates:,} duplicate records')
+    if payload.edaStats.correlations:
+        add_bullet('Use correlation insights for feature engineering')
+    if payload.selectedModel:
+        add_bullet(f'Deploy {payload.selectedModel} with monitoring for drift detection')
+    else:
+        add_bullet('Train a model using the ML Assistant workflow')
+    doc.add_page_break()
+
+    # Section 11: Appendix
+    add_heading('11. Appendix', level=1)
+    add_table(['Field', 'Value'],
+              [['Report ID', meta['report_id']], ['Generated', meta['generated_at']],
+               ['Dataset', meta['dataset_name']], ['Agent Version', meta['agent_version']],
+               ['Rows', f'{payload.totalRows:,}'], ['Columns', str(len(payload.columns))]])
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+REPORT_FORMATS = {
+    'pdf': ('application/pdf', 'pdf', build_dynamic_report_pdf),
+    'html': ('text/html', 'html', build_dynamic_report_html),
+    'docx': ('application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx', build_dynamic_report_docx),
+    'doc': ('application/msword', 'doc', build_dynamic_report_doc),
+}
+
+
 @router.post('/report/generate')
 @router.post('/generate-report')
-def generate_report(payload: ReportPayload, http_request: Request, format: Literal['pdf', 'doc'] = Query(default='pdf')) -> Response:
+def generate_report(payload: ReportPayload, http_request: Request, format: Literal['pdf', 'html', 'docx', 'doc'] = Query(default='pdf')) -> Response:
+    fmt_info = REPORT_FORMATS.get(format)
+    if not fmt_info:
+        raise HTTPException(status_code=400, detail=f'Unsupported format: {format}')
+
+    media_type, extension, builder = fmt_info
     try:
-        report_bytes = build_dynamic_report_pdf(payload) if format == 'pdf' else build_dynamic_report_doc(payload)
+        report_bytes = builder(payload)
     except Exception as error:
-        logger.exception('Report generation failed file_name=%s', payload.fileName)
-        raise HTTPException(status_code=400, detail=f'Failed to generate report: {error}') from error
+        logger.exception('Report generation failed format=%s file_name=%s', format, payload.fileName)
+        raise HTTPException(status_code=400, detail=f'Failed to generate {format.upper()} report: {error}') from error
 
     file_stem = ''.join(ch for ch in payload.fileName.rsplit('.', 1)[0] if ch.isalnum() or ch in ('-', '_', ' ')).strip() or 'dataset'
     server_session_id = get_session_id(payload.datasetId, payload.sessionId)
@@ -9542,10 +10819,24 @@ def generate_report(payload: ReportPayload, http_request: Request, format: Liter
             'prediction_available': payload.predictionResult is not None,
         },
     )
+
+    # Store temporarily for re-download
+    report_id = str(uuid.uuid4())[:12]
+    TEMP_REPORT_STORE[report_id] = {
+        'pdf': report_bytes if format == 'pdf' else None,
+        'html': report_bytes if format == 'html' else None,
+        'docx': report_bytes if format in ('docx', 'doc') else None,
+        'payload': payload.model_dump() if hasattr(payload, 'model_dump') else payload,
+        'created_at': datetime.now().isoformat(),
+    }
+
     return Response(
         content=report_bytes,
-        media_type='application/pdf' if format == 'pdf' else 'application/msword',
-        headers={'Content-Disposition': f'attachment; filename="{file_stem}_analysis_report.{"pdf" if format == "pdf" else "doc"}"'},
+        media_type=media_type,
+        headers={
+            'Content-Disposition': f'attachment; filename="{file_stem}_analysis_report.{extension}"',
+            'X-Report-Id': report_id,
+        },
     )
 
 

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bot, BrainCircuit, CheckCircle2, Clock3, Database, Download, FileText, FilePenLine, Loader2, MinusCircle, Sparkles, Target, TrendingUp, Upload } from 'lucide-react';
+import { Bot, BrainCircuit, CheckCircle2, Clock3, Database, Download, FileCode2, FileText, FilePenLine, Loader2, MinusCircle, Sparkles, Target, TrendingUp, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -118,6 +118,8 @@ export default function ReportTab() {
   const { toast } = useToast();
   const [generating, setGenerating] = useState(false);
   const [generatingDocument, setGeneratingDocument] = useState(false);
+  const [generatingHtml, setGeneratingHtml] = useState(false);
+  const [generatingDocx, setGeneratingDocx] = useState(false);
   const [reportFileName, setReportFileName] = useState(() => buildReportFileName(fileName));
   const generatedTimestamp = useMemo(() => new Date().toLocaleString(), []);
   const analysisData = cleanedData ?? rawData ?? [];
@@ -301,17 +303,19 @@ export default function ReportTab() {
     return nextUrl;
   }, [reportUrl, setReportGenerated, setReportUrl]);
 
-  const generateReport = useCallback(async (options?: { autoDownload?: boolean }) => {
-    setGenerating(true);
+  const generateReport = useCallback(async (options?: { autoDownload?: boolean; format?: string }) => {
+    const format = options?.format ?? 'pdf';
+    if (format === 'pdf') setGenerating(true);
     try {
-      const response = await apiClient.post('/report/generate', reportPayload, { params: { format: 'pdf' }, responseType: 'blob' });
+      const response = await apiClient.post('/report/generate', reportPayload, { params: { format }, responseType: 'blob' });
       const blob = response.data as Blob;
       if (!blob || blob.size === 0) {
         throw new Error('The report service returned an empty PDF.');
       }
 
       const contentType = response.headers['content-type'] ?? blob.type;
-      if (typeof contentType === 'string' && !contentType.includes('application/pdf')) {
+      const allowedTypes: string[] = format === 'pdf' ? ['application/pdf'] : format === 'html' ? ['text/html', 'application/octet-stream'] : ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/octet-stream'];
+      if (typeof contentType === 'string' && !allowedTypes.some(t => contentType.includes(t))) {
         const errorText = await blob.text();
         throw new Error(errorText || 'The report service returned an unexpected response.');
       }
@@ -321,14 +325,14 @@ export default function ReportTab() {
 
       if (options?.autoDownload) {
         downloadBlobUrl(nextUrl, responseFileName);
-        toast({ title: 'Report downloaded', description: 'The PDF workflow report was regenerated and downloaded successfully.' });
+        toast({ title: 'Report downloaded', description: `The ${format.toUpperCase()} workflow report was regenerated and downloaded successfully.` });
       } else {
-        toast({ title: 'Report ready', description: 'The PDF workflow report has been generated and is ready to download.' });
+        toast({ title: 'Report ready', description: `The ${format.toUpperCase()} workflow report has been generated and is ready to download.` });
       }
     } catch (error) {
-      toast({ title: 'Generation failed', description: await getBlobErrorMessage(error, 'Failed to generate the workflow report.'), variant: 'destructive' });
+      toast({ title: 'Generation failed', description: await getBlobErrorMessage(error, `Failed to generate the ${(options?.format ?? 'pdf').toUpperCase()} workflow report.`), variant: 'destructive' });
     } finally {
-      setGenerating(false);
+      if (format === 'pdf') setGenerating(false);
     }
   }, [
     cacheGeneratedReport, fileName, reportPayload, toast,
@@ -350,6 +354,46 @@ export default function ReportTab() {
   const handleRegenerateReport = useCallback(() => {
     void generateReport({ autoDownload: true });
   }, [generateReport]);
+
+  const handleDownloadHtml = useCallback(async () => {
+    setGeneratingHtml(true);
+    try {
+      const response = await apiClient.post('/report/generate', reportPayload, { params: { format: 'html' }, responseType: 'blob' });
+      const blob = response.data as Blob;
+      if (!blob || blob.size === 0) {
+        throw new Error('The report service returned an empty HTML document.');
+      }
+      const responseFileName = getDownloadFileName(response.headers['content-disposition'], buildReportFileName(fileName, 'html'));
+      const url = URL.createObjectURL(blob);
+      downloadBlobUrl(url, responseFileName);
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      toast({ title: 'HTML report downloaded', description: 'The standalone HTML report has been downloaded.' });
+    } catch (error) {
+      toast({ title: 'HTML report failed', description: await getBlobErrorMessage(error, 'Failed to generate the HTML report.'), variant: 'destructive' });
+    } finally {
+      setGeneratingHtml(false);
+    }
+  }, [fileName, reportPayload, toast]);
+
+  const handleDownloadDocx = useCallback(async () => {
+    setGeneratingDocx(true);
+    try {
+      const response = await apiClient.post('/report/generate', reportPayload, { params: { format: 'docx' }, responseType: 'blob' });
+      const blob = response.data as Blob;
+      if (!blob || blob.size === 0) {
+        throw new Error('The report service returned an empty DOCX document.');
+      }
+      const responseFileName = getDownloadFileName(response.headers['content-disposition'], buildReportFileName(fileName, 'docx'));
+      const url = URL.createObjectURL(blob);
+      downloadBlobUrl(url, responseFileName);
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      toast({ title: 'DOCX report downloaded', description: 'The editable Word document report has been downloaded.' });
+    } catch (error) {
+      toast({ title: 'DOCX report failed', description: await getBlobErrorMessage(error, 'Failed to generate the DOCX report.'), variant: 'destructive' });
+    } finally {
+      setGeneratingDocx(false);
+    }
+  }, [fileName, reportPayload, toast]);
 
   const handleDownloadDocument = useCallback(async () => {
     setGeneratingDocument(true);
@@ -406,6 +450,14 @@ export default function ReportTab() {
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
+              <Button type="button" onClick={handleDownloadHtml} disabled={generatingHtml} className="gap-2" variant="outline">
+                {generatingHtml ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCode2 className="h-4 w-4" />}
+                HTML
+              </Button>
+              <Button type="button" onClick={handleDownloadDocx} disabled={generatingDocx} className="gap-2" variant="outline">
+                {generatingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FilePenLine className="h-4 w-4" />}
+                DOCX
+              </Button>
               <Button type="button" onClick={handleDownloadReport} className="gap-2 bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:text-white dark:hover:bg-blue-400">
                 <Download className="h-4 w-4" />
                 Download PDF
@@ -517,9 +569,13 @@ export default function ReportTab() {
                   <FileText className="h-4 w-4" />
                   Download PDF
                 </Button>
-                <Button type="button" onClick={handleDownloadDocument} variant="outline" disabled={generatingDocument} className="gap-2">
-                  {generatingDocument ? <Loader2 className="h-4 w-4 animate-spin" /> : <FilePenLine className="h-4 w-4" />}
-                  Download Document
+                <Button type="button" onClick={handleDownloadHtml} variant="outline" disabled={generatingHtml} className="gap-2">
+                  {generatingHtml ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCode2 className="h-4 w-4" />}
+                  Download HTML
+                </Button>
+                <Button type="button" onClick={handleDownloadDocx} variant="outline" disabled={generatingDocx} className="gap-2">
+                  {generatingDocx ? <Loader2 className="h-4 w-4 animate-spin" /> : <FilePenLine className="h-4 w-4" />}
+                  Download DOCX
                 </Button>
                 <Button type="button" onClick={handleRegenerateReport} disabled={generating} className="gap-2">
                   {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
