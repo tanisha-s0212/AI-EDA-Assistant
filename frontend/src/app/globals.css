@@ -495,3 +495,17 @@
     border-color: rgba(5, 150, 105, 0.28);
   }
 }
+
+@media (max-width: 768px) {
+  .agentic-core-modal {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+  }
+  .pipeline-sidebar {
+    display: none;
+  }
+  .step-cards {
+    padding: 12px;
+  }
+}

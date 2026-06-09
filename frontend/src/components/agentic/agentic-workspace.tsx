@@ -31,6 +31,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import type { AgenticStepStatus, Recommendation, TabId } from '@/lib/store';
@@ -1122,8 +1123,43 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     return null;
   }
 
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      const isInputFocused = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+      if ((event.metaKey || event.ctrlKey) && event.key === 'r') {
+        event.preventDefault();
+        if (datasetId && !runningStep && !runningAll) void runAll();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+        event.preventDefault();
+        if (datasetId && !isSuggesting) void suggestNextSteps();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === 'd') {
+        event.preventDefault();
+        if (agenticSessionId && completedCount > 1) void downloadPipelineData(agenticSessionId, 'json');
+        return;
+      }
+      if (event.key === 'Enter' && !isInputFocused) {
+        event.preventDefault();
+        if (activeRecommendation && buttonStatus !== 'loading' && !runningAll) void acceptRecommendation();
+        return;
+      }
+      if (event.key === 'Escape' && !isInputFocused) {
+        event.preventDefault();
+        if (agenticSessionId) void skipStep();
+        return;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [datasetId, runningStep, runningAll, isSuggesting, agenticSessionId, completedCount, activeRecommendation, buttonStatus]);
+
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xl dark:border-slate-800 dark:bg-slate-950">
+    <section className="agentic-core-modal overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xl dark:border-slate-800 dark:bg-slate-950">
       <AgenticWorkspaceStyles />
       <header className="flex flex-col gap-3 border-b border-slate-800 bg-[#0f172a] p-4 text-white lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
@@ -1146,21 +1182,42 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => void runAll()} disabled={!datasetId || Boolean(runningStep) || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
-            {runningAll ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-            Run All
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => void suggestNextSteps()} disabled={!datasetId || isSuggesting} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
-            {isSuggesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ChevronRight className="mr-2 h-4 w-4" />}
-            Suggest Next
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" onClick={() => void runAll()} disabled={!datasetId || Boolean(runningStep) || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
+                {runningAll ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                Run All
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <span>Run All <kbd className="ml-1 rounded border border-current px-1 font-mono">Ctrl+R</kbd></span>
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" variant="outline" onClick={() => void suggestNextSteps()} disabled={!datasetId || isSuggesting} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
+                {isSuggesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+                Suggest Next
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <span>Suggest Next <kbd className="ml-1 rounded border border-current px-1 font-mono">Ctrl+S</kbd></span>
+            </TooltipContent>
+          </Tooltip>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" disabled={!agenticSessionId || completedCount <= 1} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
-                <Download className="mr-2 h-4 w-4" />
-                Download Results
-                <ChevronDown className="ml-1 h-3.5 w-3.5 opacity-60" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button size="sm" variant="outline" disabled={!agenticSessionId || completedCount <= 1} className="border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white">
+                    <Download className="mr-2 h-4 w-4" />
+                    Download Results
+                    <ChevronDown className="ml-1 h-3.5 w-3.5 opacity-60" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  <span>Download Results <kbd className="ml-1 rounded border border-current px-1 font-mono">Ctrl+D</kbd></span>
+                </TooltipContent>
+              </Tooltip>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56 border-slate-700 bg-slate-900 text-slate-100">
               <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'json')} className="cursor-pointer hover:bg-slate-800">
@@ -1191,7 +1248,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       </header>
 
       <div className="grid min-h-[720px] lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="border-r border-slate-800 bg-slate-950 p-4 text-slate-200">
+        <aside className="pipeline-sidebar border-r border-slate-800 bg-slate-950 p-4 text-slate-200">
           <div className="mb-4">
             <div className="mb-2 flex items-center justify-between text-xs">
               <span className="font-semibold uppercase tracking-wide text-slate-400">Pipeline</span>
@@ -1223,7 +1280,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-col bg-slate-100 dark:bg-slate-950">
+        <main className="step-cards flex min-w-0 flex-col bg-slate-100 dark:bg-slate-950">
           <div className="border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
             <div className="overflow-hidden">
               <div className="ida-memory-marquee flex w-max gap-2">
@@ -1279,14 +1336,28 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                       </div>
                     )}
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Button size="sm" onClick={() => void acceptRecommendation()} disabled={buttonStatus === 'loading' || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
-                        {buttonStatus === 'loading' ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
-                        {buttonStatus === 'loading' ? 'Running...' : 'Run This Step'}
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => void skipStep()} disabled={runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-                        <SkipForward className="mr-1.5 h-3.5 w-3.5" />
-                        Skip
-                      </Button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button size="sm" onClick={() => void acceptRecommendation()} disabled={buttonStatus === 'loading' || runningAll} className="bg-blue-600 text-white hover:bg-blue-500">
+                            {buttonStatus === 'loading' ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
+                            {buttonStatus === 'loading' ? 'Running...' : 'Run This Step'}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                          <span>Run This Step <kbd className="ml-1 rounded border border-current px-1 font-mono">Enter</kbd></span>
+                        </TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button size="sm" variant="outline" onClick={() => void skipStep()} disabled={runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                            <SkipForward className="mr-1.5 h-3.5 w-3.5" />
+                            Skip
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                          <span>Skip Step <kbd className="ml-1 rounded border border-current px-1 font-mono">Esc</kbd></span>
+                        </TooltipContent>
+                      </Tooltip>
                     </div>
                   </div>
                 </div>
@@ -1367,13 +1438,27 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
                 </div>
               ) : (
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || buttonStatus === 'loading' || runningAll} className={cn('text-white', buttonStatus === 'failed' ? 'bg-red-600 hover:bg-red-500' : buttonStatus === 'success' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-blue-600 hover:bg-blue-500')}>
-                    {buttonStatus === 'loading' ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Validating step...</> : buttonStatus === 'success' ? <><CheckCircle2 className="mr-2 h-4 w-4" /> Step accepted — loading EDA</> : buttonStatus === 'failed' ? <><XCircle className="mr-2 h-4 w-4" /> Failed — retry?</> : <><Check className="mr-2 h-4 w-4" /> Accept & Continue</>}
-                  </Button>
-                  <Button variant="outline" onClick={() => void skipStep()} disabled={!activeRecommendation || Boolean(runningStep) || runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-                    <SkipForward className="mr-2 h-4 w-4" />
-                    Skip
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button onClick={() => void acceptRecommendation()} disabled={!activeRecommendation || buttonStatus === 'loading' || runningAll} className={cn('text-white', buttonStatus === 'failed' ? 'bg-red-600 hover:bg-red-500' : buttonStatus === 'success' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-blue-600 hover:bg-blue-500')}>
+                        {buttonStatus === 'loading' ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Validating step...</> : buttonStatus === 'success' ? <><CheckCircle2 className="mr-2 h-4 w-4" /> Step accepted — loading EDA</> : buttonStatus === 'failed' ? <><XCircle className="mr-2 h-4 w-4" /> Failed — retry?</> : <><Check className="mr-2 h-4 w-4" /> Accept & Continue</>}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      <span>Accept & Continue <kbd className="ml-1 rounded border border-current px-1 font-mono">Enter</kbd></span>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="outline" onClick={() => void skipStep()} disabled={!activeRecommendation || Boolean(runningStep) || runningAll} className="dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                        <SkipForward className="mr-2 h-4 w-4" />
+                        Skip
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      <span>Skip Step <kbd className="ml-1 rounded border border-current px-1 font-mono">Esc</kbd></span>
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
               )}
             </div>
