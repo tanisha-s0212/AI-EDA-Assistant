@@ -2707,10 +2707,38 @@ def is_identifier_like_categorical(series: pd.Series, column_name: str) -> bool:
     cleaned = series.dropna().astype(str).replace(r'^\s*$', np.nan, regex=True).dropna()
     if cleaned.empty:
         return False
+    total_rows = max(1, len(cleaned))
     unique_count = int(cleaned.nunique())
-    unique_ratio = unique_count / max(1, len(cleaned))
+    unique_ratio = unique_count / total_rows
     average_length = float(cleaned.str.len().mean()) if not cleaned.empty else 0.0
-    return unique_count >= 50 and unique_ratio >= 0.85 and average_length >= 8
+
+    # Heuristic 1: High cardinality + high uniqueness ratio (adapts to any dataset size)
+    if unique_count >= 50 and unique_ratio > 0.90:
+        return True
+
+    # Heuristic 2: Alphanumeric ID pattern (e.g., "ORD12345", "INV-2024-001", "AZ-001")
+    alpha_num_ratio = cleaned.str.match(r'^[A-Za-z]+[-_ ]?[0-9]+$', na=False).mean()
+    if alpha_num_ratio > 0.50:
+        return True
+
+    # Heuristic 3: Mostly-digit strings (phone numbers, zip codes, account numbers stored as strings)
+    mostly_digit_ratio = cleaned.str.replace(r'[\s\-\(\)\.]', '', regex=True, n=0).str.match(r'^\d{5,}$', na=False).mean()
+    if mostly_digit_ratio > 0.50:
+        return True
+
+    # Heuristic 4: UUID / GUID patterns
+    uuid_ratio = cleaned.str.match(
+        r'^[0-9a-fA-F]{8}[-]?[0-9a-fA-F]{4}[-]?[0-9a-fA-F]{4}[-]?[0-9a-fA-F]{4}[-]?[0-9a-fA-F]{12}$',
+        na=False,
+    ).mean()
+    if uuid_ratio > 0.50:
+        return True
+
+    # Heuristic 5: Long average length combined with moderate uniqueness (code-like fields)
+    if unique_count >= 30 and unique_ratio >= 0.80 and average_length >= 12:
+        return True
+
+    return False
 
 
 def is_identifier_like_numeric(series: pd.Series, column_name: str) -> bool:
@@ -3055,16 +3083,45 @@ def build_categorical_payload(frame: pd.DataFrame) -> dict[str, Any]:
             or pd.api.types.is_bool_dtype(frame[column])
         )
     ]
-    categorical_columns = [column for column in all_categorical_columns if not is_identifier_like_categorical(frame[column], column)]
+    excluded_columns: list[str] = []
+    categorical_columns: list[str] = []
+    for column in all_categorical_columns:
+        if is_identifier_like_categorical(frame[column], column):
+            excluded_columns.append(column)
+        else:
+            categorical_columns.append(column)
+
+    total_categorical = len(all_categorical_columns)
+    excluded_count = len(excluded_columns)
+    selected_count = len(categorical_columns)
+
+    logger.info(
+        'Categorical analysis: %d total categorical columns, %d excluded as identifier-like, %d selected for charting',
+        total_categorical, excluded_count, selected_count,
+    )
+
     if not categorical_columns:
-        message = 'No categorical columns available for this analysis.'
-        if all_categorical_columns:
-            message = 'Categorical-looking columns were detected, but they appear to be identifier-like fields and were excluded from charting.'
+        if excluded_columns:
+            excluded_list = ', '.join(f"'{c}'" for c in excluded_columns[:8])
+            remainder = excluded_count - 8
+            if remainder > 0:
+                excluded_list += f' and {remainder} more'
+            message = (
+                f'All {excluded_count} categorical-looking {"column" if excluded_count == 1 else "columns"} '
+                f'appear to be identifier-like fields ({excluded_list}) and were excluded from charting. '
+                'Identifier-like fields are detected using uniqueness ratio, cardinality, and value patterns.'
+            )
+        else:
+            message = 'No categorical columns available for this analysis.'
         return {
             'status': 'empty',
             'message': message,
             'charts': [],
             'warnings': [],
+            'excluded_columns': excluded_columns,
+            'total_categorical': total_categorical,
+            'excluded_count': excluded_count,
+            'selected_count': selected_count,
         }
 
     warnings_payload: list[dict[str, Any]] = []
@@ -3115,9 +3172,12 @@ def build_categorical_payload(frame: pd.DataFrame) -> dict[str, Any]:
 
     status = 'chart' if chart_payloads else 'error'
     message_parts: list[str] = []
-    excluded_identifier_like = len(all_categorical_columns) - len(categorical_columns)
-    if excluded_identifier_like > 0:
-        message_parts.append(f'Excluded {excluded_identifier_like} identifier-like categorical column{"s" if excluded_identifier_like != 1 else ""} from charting.')
+    if excluded_count > 0:
+        excluded_list = ', '.join(f"'{c}'" for c in excluded_columns[:5])
+        remainder = excluded_count - 5
+        if remainder > 0:
+            excluded_list += f' and {remainder} more'
+        message_parts.append(f'Excluded {excluded_count} identifier-like categorical {"column" if excluded_count == 1 else "columns"} ({excluded_list}) from charting.')
     if len(categorical_columns) > EDA_MAX_CATEGORICAL_CHARTS:
         message_parts.append(f'Displaying the first {EDA_MAX_CATEGORICAL_CHARTS} categorical columns to keep the analysis responsive.')
     message = ' '.join(message_parts) or None
@@ -3128,6 +3188,10 @@ def build_categorical_payload(frame: pd.DataFrame) -> dict[str, Any]:
         'message': message,
         'charts': chart_payloads,
         'warnings': warnings_payload[:12],
+        'excluded_columns': excluded_columns,
+        'total_categorical': total_categorical,
+        'excluded_count': excluded_count,
+        'selected_count': selected_count,
     }
 
 

@@ -34,6 +34,10 @@ export type AdvancedEdaResponse = {
     message: string | null;
     charts: { column: string; unique_count: number; chart_base64: string | null }[];
     warnings: { column: string; unique_count: number; message: string }[];
+    excluded_columns: string[];
+    total_categorical: number;
+    excluded_count: number;
+    selected_count: number;
   };
   interactions: {
     status: 'chart' | 'empty' | 'error';
@@ -382,6 +386,26 @@ export default function EdaAdvancedModules({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {analysis.categorical.total_categorical > 0 && (
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">{analysis.categorical.total_categorical} categorical columns</Badge>
+              {analysis.categorical.excluded_count > 0 && (
+                <Badge variant="outline" className="border-slate-300 text-muted-foreground dark:border-slate-600">
+                  {analysis.categorical.excluded_count} identifier-like excluded
+                </Badge>
+              )}
+              {analysis.categorical.selected_count > 0 && (
+                <Badge variant="default">{analysis.categorical.selected_count} selected for charting</Badge>
+              )}
+            </div>
+          )}
+          {analysis.categorical.excluded_count > 0 && analysis.categorical.selected_count > 0 && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 text-sm text-blue-800 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-200">
+              <span className="font-medium">{analysis.categorical.excluded_count} identifier-like column{analysis.categorical.excluded_count !== 1 ? 's' : ''} excluded:</span>{' '}
+              {analysis.categorical.excluded_columns.slice(0, 8).join(', ')}
+              {analysis.categorical.excluded_count > 8 && ` and ${analysis.categorical.excluded_count - 8} more`}.
+            </div>
+          )}
           {analysis.categorical.warnings.length > 0 && (
             <div className="space-y-3">
               {analysis.categorical.warnings.map((warning) => (

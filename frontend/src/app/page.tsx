@@ -242,8 +242,8 @@ function BrandWordmark({
 }
 
 function CompanyLogo({ compact = false, mark = false }: { compact?: boolean; mark?: boolean }) {
-  const width = mark ? 48 : compact ? 112 : 148;
-  const height = mark ? 48 : compact ? 40 : 52;
+  const width = mark ? 96 : compact ? 224 : 296;
+  const height = mark ? 96 : compact ? 80 : 104;
 
   return (
     <img
@@ -252,8 +252,8 @@ function CompanyLogo({ compact = false, mark = false }: { compact?: boolean; mar
       width={width}
       height={height}
       className={cn(
-        'shrink-0 object-contain mix-blend-multiply dark:mix-blend-screen',
-        mark ? 'h-12 w-12' : 'h-auto w-auto'
+        'shrink-0 object-contain',
+        mark ? 'h-24 w-24' : 'h-auto w-auto'
       )}
     />
   );
@@ -583,7 +583,7 @@ function SidebarContent({
       <div className="relative px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
         <div className="group relative bg-transparent p-0 shadow-none transition-all duration-300 hover:-translate-y-0.5 dark:bg-transparent dark:shadow-none">
           <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="relative flex items-center gap-3">
-            <span className="flex h-16 w-32 shrink-0 items-center justify-start bg-transparent shadow-none dark:bg-transparent dark:shadow-none">
+            <span className="flex h-24 w-56 shrink-0 items-center justify-start bg-transparent shadow-none dark:bg-transparent dark:shadow-none">
               <CompanyLogo compact />
             </span>
             <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-white/70 bg-white/58 text-muted-foreground shadow-sm transition-all duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary dark:border-white/10 dark:bg-white/8">
