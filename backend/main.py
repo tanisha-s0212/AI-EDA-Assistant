@@ -9933,6 +9933,11 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
     </div>'''
 
     # ---- Section 2: Dataset Overview ----
+    extra_columns_note = (
+        f'<p class="muted">Showing first 24 of {len(payload.columns)} columns.</p>'
+        if len(payload.columns) > 24
+        else ''
+    )
     ds_overview = f'''
     {add_cards_html([
         ('Total Rows', f'{payload.totalRows:,}'), ('Columns', len(payload.columns)),
@@ -9943,7 +9948,7 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
         ['Column', 'Type', 'Role', 'Non-null', 'Nulls', 'Unique'],
         [[c.name, c.dtype, c.role, c.nonNull, c.nullCount, c.uniqueCount] for c in payload.columns[:24]]
     )}
-    {f'<p class=\"muted\">Showing first 24 of {len(payload.columns)} columns.</p>' if len(payload.columns) > 24 else ''}
+    {extra_columns_note}
     '''
     section_content += f'''
     <div class="section page-break" id="dataset-overview">
