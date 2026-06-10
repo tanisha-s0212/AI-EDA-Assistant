@@ -36,9 +36,11 @@ try:
 except Exception:  # pragma: no cover - pandas normally installs python-dateutil
     date_parser = None
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 from reportlab.lib import colors
@@ -195,6 +197,25 @@ router = APIRouter(prefix='/api')
 MODEL_CACHE: dict[str, dict[str, Any]] = {}
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
 SESSION_STATE: dict[str, dict[str, Any]] = {}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def structured_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    if exc.status_code >= 500:
+        logger.exception('HTTP error %s on %s %s: %s', exc.status_code, request.method, request.url.path, exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={'error': exc.detail, 'status': 'failed'})
+
+
+@app.exception_handler(RequestValidationError)
+async def structured_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    logger.exception('Validation error on %s %s: %s', request.method, request.url.path, exc)
+    return JSONResponse(status_code=422, content={'error': exc.errors(), 'status': 'failed'})
+
+
+@app.exception_handler(Exception)
+async def structured_unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception('Unhandled error on %s %s', request.method, request.url.path)
+    return JSONResponse(status_code=500, content={'error': str(exc), 'status': 'failed'})
 
 
 @app.on_event('startup')
@@ -550,17 +571,31 @@ def load_ts_dataset(dataset_id: str) -> tuple[pd.DataFrame, str, str]:
     target_col = target_candidates[0]
     series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, date_col, target_col)
     series_frame.rename(columns={'period': date_col, 'sales': target_col}, inplace=True)
+    frequency, freq_period = normalize_ts_frequency(freq, period_label)
+    store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
     return series_frame, date_col, target_col
 
 
 # ── Frequency detection ───────────────────────────────────────
 
+def normalize_ts_frequency(freq: str | None, period_label: str | None = None) -> tuple[str, int]:
+    label = str(period_label or '').lower()
+    raw = str(freq or '').upper()
+    if label == 'day' or raw.startswith('D'):
+        return 'daily', 7
+    if label == 'week' or raw.startswith('W'):
+        return 'weekly', 52
+    return 'monthly', 12
+
+
 def detect_ts_frequency(df: pd.DataFrame, date_col: str) -> tuple[str, int]:
-    """Detect weekly or monthly from median date gaps."""
+    """Detect daily, weekly, or monthly from median date gaps."""
     gaps = df[date_col].sort_values().diff().dt.days.dropna()
     median_gap = gaps.median() if not gaps.empty else 30
     if pd.isna(median_gap):
         median_gap = 30
+    if median_gap <= 2:
+        return 'daily', 7
     if median_gap <= 10:
         return 'weekly', 52
     elif median_gap <= 40:
@@ -570,16 +605,55 @@ def detect_ts_frequency(df: pd.DataFrame, date_col: str) -> tuple[str, int]:
         return 'monthly', 12
 
 
+def detect_time_frequency_metadata(frame: pd.DataFrame) -> dict[str, Any] | None:
+    date_columns = [
+        column for column in frame.columns
+        if pd.api.types.is_datetime64_any_dtype(frame[column])
+        or any(token in str(column).lower() for token in ['date', 'week', 'month', 'period', 'start', 'time'])
+    ]
+    for column in date_columns:
+        parsed = pd.to_datetime(frame[column], errors='coerce')
+        if parsed.notna().sum() < 2:
+            continue
+        probe = pd.DataFrame({'period': parsed.dropna().sort_values().drop_duplicates()})
+        frequency, freq_period = detect_ts_frequency(probe, 'period')
+        return {'frequency': frequency, 'freq_period': freq_period, 'date_col': str(column)}
+    return None
+
+
+def store_ts_frequency_metadata(dataset_id: str, frequency: str, freq_period: int, date_col: str | None = None, target_col: str | None = None) -> None:
+    metadata = {
+        'frequency': frequency,
+        'freq_period': int(freq_period),
+        'detected_frequency': frequency,
+        'date_col': date_col,
+        'target_col': target_col,
+    }
+    dataset_entry = DATASET_CACHE.get(dataset_id)
+    if dataset_entry is not None:
+        dataset_entry.update({key: value for key, value in metadata.items() if value is not None})
+    save_workspace_context(dataset_id, 'ts_frequency_context', metadata)
+
+
+def maybe_store_dataset_frequency(dataset_id: str, frame: pd.DataFrame) -> None:
+    metadata = detect_time_frequency_metadata(frame)
+    if metadata:
+        store_ts_frequency_metadata(dataset_id, metadata['frequency'], metadata['freq_period'], metadata.get('date_col'))
+
+
 # ── Stationarity check ────────────────────────────────────────
 
 def check_stationarity(series: pd.Series, frequency: str) -> dict[str, Any]:
-    """Run ADF + KPSS tests and return stationarity report dict."""
-    from statsmodels.tsa.stattools import adfuller, kpss
+    """Run ADF test and return API-compatible stationarity metadata."""
+    from statsmodels.tsa.stattools import adfuller
     clean = series.dropna()
-    clean = clean[clean > 0]
+    clean = pd.to_numeric(clean, errors='coerce').dropna()
     if len(clean) < 4:
         return {
             'status': 'insufficient_data',
+            'is_stationary': False,
+            'adf_stat': None,
+            'p_value': None,
             'adf_pvalue': None, 'kpss_pvalue': None,
             'note': 'Insufficient data for stationarity tests (need >= 4 non-zero values).',
             'recommended_model': 'Prophet',
@@ -587,35 +661,31 @@ def check_stationarity(series: pd.Series, frequency: str) -> dict[str, Any]:
         }
     try:
         adf_result = adfuller(clean, autolag='AIC')
+        adf_stat = float(adf_result[0])
         adf_p = float(adf_result[1])
     except Exception as exc:
         logger.warning('ADF test failed: %s', exc)
+        adf_stat = 0.0
         adf_p = 0.5
-    try:
-        kpss_result = kpss(clean, regression='c', nlags='auto')
-        kpss_p = float(kpss_result[1])
-    except Exception as exc:
-        logger.warning('KPSS test failed: %s', exc)
-        kpss_p = 0.5
-    if adf_p < 0.05 and kpss_p > 0.05:
+    is_stationary = adf_p < 0.05
+    if is_stationary:
         status = 'stationary'
         note = 'Series is stationary. SARIMA, Prophet and Holt-Winters all applicable.'
         recommendation = 'SARIMA'
-    elif adf_p >= 0.05 and kpss_p <= 0.05:
-        status = 'non_stationary'
-        note = 'Series is non-stationary. Prophet recommended; SARIMA will auto-difference.'
-        recommendation = 'Prophet'
     else:
-        status = 'trend_stationary'
-        note = 'Trend-stationary series detected. Holt-Winters with damped trend recommended.'
+        status = 'non_stationary'
         recommendation = 'HoltWinters'
+        note = 'Series is non-stationary by ADF. Differencing will be applied during model validation.'
     return {
         'status': status,
+        'is_stationary': is_stationary,
+        'adf_stat': round(float(adf_stat), 4),
+        'p_value': round(float(adf_p), 4),
         'adf_pvalue': round(float(adf_p), 4),
-        'kpss_pvalue': round(float(kpss_p), 4),
+        'kpss_pvalue': None,
         'note': note,
         'recommended_model': recommendation,
-        'differencing_required': adf_p >= 0.05
+        'differencing_required': not is_stationary
     }
 
 
@@ -637,16 +707,73 @@ def compute_ts_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, f
     return {'mae': round(mae, 2), 'rmse': round(rmse, 2), 'mape': round(mape, 2) if mape is not None else None, 'smape': round(smape_val, 2)}
 
 
+def pandas_freq_for_ts(frequency: str) -> str:
+    return {'daily': 'D', 'weekly': 'W-MON', 'monthly': 'MS'}.get(frequency, 'MS')
+
+
+def _fit_predict_ts_candidate(model_name: str, train_frame: pd.DataFrame, next_date: pd.Timestamp, target_col: str, date_col: str, frequency: str, freq_period: int) -> tuple[float, float | None, float | None, dict[str, Any]]:
+    y_train = train_frame[target_col].values.astype(float)
+    meta: dict[str, Any] = {}
+    if model_name == 'SARIMA':
+        import pmdarima as pm
+        model = pm.auto_arima(
+            y_train, seasonal=True, m=freq_period,
+            stepwise=True, suppress_warnings=True,
+            error_action='ignore', max_p=3, max_q=3,
+            max_P=2, max_Q=2, information_criterion='aic',
+            random_state=42
+        )
+        preds, ci = model.predict(n_periods=1, return_conf_int=True)
+        meta = {'order': str(model.order), 'seasonal_order': str(model.seasonal_order), 'aic': round(float(model.aic()), 2)}
+        return float(preds[0]), float(ci[0, 0]), float(ci[0, 1]), meta
+    if model_name == 'Prophet':
+        from prophet import Prophet
+        prophet_train = pd.DataFrame({'ds': train_frame[date_col].values, 'y': y_train})
+        model = Prophet(
+            seasonality_mode='multiplicative',
+            yearly_seasonality=True,
+            weekly_seasonality=(frequency == 'weekly'),
+            daily_seasonality=(frequency == 'daily'),
+            interval_width=0.95,
+        )
+        model.fit(prophet_train)
+        fc = model.predict(pd.DataFrame({'ds': [next_date]}))
+        return float(fc['yhat'].iloc[0]), float(fc['yhat_lower'].iloc[0]), float(fc['yhat_upper'].iloc[0]), meta
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    has_zeros = (y_train == 0).any()
+    has_neg = (y_train < 0).any()
+    seasonal_type = 'add' if (has_zeros or has_neg) else 'mul'
+    model = ExponentialSmoothing(y_train, trend='add', seasonal=seasonal_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
+    pred = float(model.forecast(1)[0])
+    try:
+        sim = model.simulate(1, repetitions=100, error='add', random_errors='bootstrap')
+        lower = float(sim.quantile(0.025, axis=1).iloc[0])
+        upper = float(sim.quantile(0.975, axis=1).iloc[0])
+    except Exception:
+        lower = None
+        upper = None
+    meta = {
+        'alpha': round(float(model.params['smoothing_level']), 4),
+        'beta': round(float(model.params['smoothing_trend']), 4),
+        'gamma': round(float(model.params['smoothing_seasonal']), 4),
+    }
+    return pred, lower, upper, meta
+
+
 # ── 3-model training ──────────────────────────────────────────
 
 def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, training_split: float = 0.8, horizon: int = 3) -> tuple[dict[str, Any], np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
-    """Train SARIMA, Prophet, HoltWinters. Returns results dict and split data."""
+    """Train SARIMA, Prophet, HoltWinters with expanding walk-forward validation."""
     first_nonzero_idx = df[df[target_col] > 0].index[0]
     clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
+    clean_df[date_col] = pd.to_datetime(clean_df[date_col], errors='coerce')
+    clean_df[target_col] = pd.to_numeric(clean_df[target_col], errors='coerce')
+    clean_df = clean_df.dropna(subset=[date_col, target_col]).sort_values(date_col).reset_index(drop=True)
     first_nonzero_date = str(clean_df[date_col].iloc[0])[:10]
     if len(clean_df) < 24:
         raise ValueError(f'Insufficient data after trimming: {len(clean_df)} rows. Min 24 required.')
     split_idx = int(len(clean_df) * training_split)
+    split_idx = min(max(split_idx, 12), len(clean_df) - 1)
     train = clean_df.iloc[:split_idx]
     test = clean_df.iloc[split_idx:]
     y_train = train[target_col].values.astype(float)
@@ -656,79 +783,53 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
         logger.warning('freq_period %s reduced to %s - insufficient data.', freq_period, max_period)
         freq_period = max_period
     results: dict[str, Any] = {}
+    differencing_required = bool(check_stationarity(clean_df[target_col], frequency).get('differencing_required'))
 
-    # SARIMA
-    try:
-        import pmdarima as pm
-        sarima_model = pm.auto_arima(
-            y_train, seasonal=True, m=freq_period,
-            stepwise=True, suppress_warnings=True,
-            error_action='ignore', max_p=3, max_q=3,
-            max_P=2, max_Q=2, information_criterion='aic',
-            random_state=42
-        )
-        sarima_pred, conf_int = sarima_model.predict(n_periods=len(y_test), return_conf_int=True)
-        results['SARIMA'] = {
-            'status': 'completed', 'model_object': sarima_model,
-            'predictions': sarima_pred.tolist(),
-            'conf_int_lower': conf_int[:, 0].tolist(),
-            'conf_int_upper': conf_int[:, 1].tolist(),
-            'order': str(sarima_model.order),
-            'seasonal_order': str(sarima_model.seasonal_order),
-            'aic': round(float(sarima_model.aic()), 2),
-            **compute_ts_metrics(y_test, sarima_pred)
-        }
-    except Exception as exc:
-        logger.warning('SARIMA training failed: %s', exc)
-        results['SARIMA'] = {'status': 'failed', 'error': str(exc), 'mae': None, 'rmse': None, 'mape': None, 'smape': None}
-
-    # Prophet
-    try:
-        from prophet import Prophet
-        prophet_train = pd.DataFrame({'ds': train[date_col].values, 'y': y_train})
-        prophet_model = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True, weekly_seasonality=(frequency == 'weekly'), changepoint_prior_scale=0.05, seasonality_prior_scale=10, interval_width=0.95)
-        prophet_model.fit(prophet_train)
-        freq_str = 'W' if frequency == 'weekly' else 'MS'
-        future = prophet_model.make_future_dataframe(periods=len(y_test), freq=freq_str)
-        fc = prophet_model.predict(future)
-        prophet_pred = fc['yhat'].iloc[-len(y_test):].values
-        results['Prophet'] = {
-            'status': 'completed', 'model_object': prophet_model,
-            'predictions': prophet_pred.tolist(),
-            'conf_int_lower': fc['yhat_lower'].iloc[-len(y_test):].tolist(),
-            'conf_int_upper': fc['yhat_upper'].iloc[-len(y_test):].tolist(),
-            **compute_ts_metrics(y_test, prophet_pred)
-        }
-    except Exception as exc:
-        logger.warning('Prophet training failed: %s', exc)
-        results['Prophet'] = {'status': 'failed', 'error': str(exc), 'mae': None, 'rmse': None, 'mape': None, 'smape': None}
-
-    # Holt-Winters
-    try:
-        from statsmodels.tsa.holtwinters import ExponentialSmoothing
-        has_zeros = (y_train == 0).any()
-        has_neg = (y_train < 0).any()
-        seasonal_type = 'add' if (has_zeros or has_neg) else 'mul'
-        if has_zeros or has_neg:
-            logger.warning('HoltWinters: additive mode - zeros/negatives detected.')
-        hw_model = ExponentialSmoothing(y_train, trend='add', seasonal=seasonal_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
-        hw_pred = hw_model.forecast(len(y_test))
-        sim = hw_model.simulate(len(y_test), repetitions=100, error='add', random_errors='bootstrap')
-        lower = sim.quantile(0.025, axis=1).values
-        upper = sim.quantile(0.975, axis=1).values
-        results['HoltWinters'] = {
-            'status': 'completed', 'model_object': hw_model,
-            'predictions': hw_pred.tolist(),
-            'conf_int_lower': lower.tolist(),
-            'conf_int_upper': upper.tolist(),
-            'alpha': round(float(hw_model.params['smoothing_level']), 4),
-            'beta': round(float(hw_model.params['smoothing_trend']), 4),
-            'gamma': round(float(hw_model.params['smoothing_seasonal']), 4),
-            **compute_ts_metrics(y_test, hw_pred)
-        }
-    except Exception as exc:
-        logger.warning('HoltWinters training failed: %s', exc)
-        results['HoltWinters'] = {'status': 'failed', 'error': str(exc), 'mae': None, 'rmse': None, 'mape': None, 'smape': None}
+    for model_name in ['SARIMA', 'Prophet', 'HoltWinters']:
+        predictions: list[float] = []
+        lower_bounds: list[float | None] = []
+        upper_bounds: list[float | None] = []
+        model_meta: dict[str, Any] = {}
+        try:
+            for offset, row in test.reset_index(drop=True).iterrows():
+                fold_train = clean_df.iloc[:split_idx + offset]
+                fit_frame = fold_train
+                baseline = 0.0
+                if differencing_required:
+                    baseline = float(fold_train[target_col].iloc[-1])
+                    fit_frame = fold_train.copy()
+                    fit_frame[target_col] = fit_frame[target_col].astype(float).diff()
+                    fit_frame = fit_frame.dropna(subset=[target_col]).reset_index(drop=True)
+                pred, lower, upper, meta = _fit_predict_ts_candidate(
+                    model_name,
+                    fit_frame,
+                    pd.Timestamp(row[date_col]),
+                    target_col,
+                    date_col,
+                    frequency,
+                    freq_period,
+                )
+                if differencing_required:
+                    pred = baseline + pred
+                    lower = None if lower is None else baseline + lower
+                    upper = None if upper is None else baseline + upper
+                predictions.append(max(0.0, float(pred)))
+                lower_bounds.append(None if lower is None else max(0.0, float(lower)))
+                upper_bounds.append(None if upper is None else max(0.0, float(upper)))
+                model_meta.update(meta)
+            metrics = compute_ts_metrics(y_test, np.array(predictions, dtype=float))
+            results[model_name] = {
+                'status': 'completed',
+                'predictions': predictions,
+                'conf_int_lower': lower_bounds,
+                'conf_int_upper': upper_bounds,
+                'differencing_applied': differencing_required,
+                **model_meta,
+                **metrics,
+            }
+        except Exception as exc:
+            logger.exception('%s walk-forward validation failed', model_name)
+            results[model_name] = {'status': 'failed', 'error': str(exc), 'mae': None, 'rmse': None, 'mape': None, 'smape': None}
 
     return results, y_train, y_test, train, test, clean_df, first_nonzero_date
 
@@ -740,17 +841,9 @@ def auto_select_ts_model(results: dict[str, Any]) -> tuple[str, dict[str, Any], 
     completed = {k: v for k, v in results.items() if v['status'] == 'completed' and v.get('smape') is not None}
     if not completed:
         raise ValueError('All 3 TS models failed. Check data quality and logs.')
-    ranked = sorted(completed.items(), key=lambda x: x[1]['smape'])
+    priority = {'SARIMA': 0, 'HoltWinters': 1, 'Prophet': 2}
+    ranked = sorted(completed.items(), key=lambda x: (float(x[1]['smape']), priority.get(x[0], 99)))
     best_name = ranked[0][0]
-    best_smape = ranked[0][1]['smape']
-    if len(ranked) > 1:
-        second_smape = ranked[1][1]['smape']
-        if abs(best_smape - second_smape) < 2.0:
-            priority = ['SARIMA', 'HoltWinters', 'Prophet']
-            for p in priority:
-                if p in [r[0] for r in ranked[:2]]:
-                    best_name = p
-                    break
     others = ', '.join([f'{k}={v["smape"]}%' for k, v in completed.items() if k != best_name])
     reason = f'{best_name} selected by lowest SMAPE ({results[best_name]["smape"]}%). Compared: {others}'
     return best_name, results[best_name], reason
@@ -760,43 +853,64 @@ def auto_select_ts_model(results: dict[str, Any]) -> tuple[str, dict[str, Any], 
 
 def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, horizon: int = 3) -> list[dict[str, Any]]:
     """Retrain best model on full dataset and generate horizon periods."""
-    import pmdarima as pm
-    from prophet import Prophet
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
     y_full = clean_df[target_col].values.astype(float)
     last_date = clean_df[date_col].max()
-    freq_str = 'W' if frequency == 'weekly' else 'MS'
+    freq_str = pandas_freq_for_ts(frequency)
     future_dates = pd.date_range(start=last_date, periods=horizon + 1, freq=freq_str)[1:]
     forecast_vals: list[float] = []
     lower_bounds: list[float] = []
     upper_bounds: list[float] = []
+    differencing_required = bool(check_stationarity(clean_df[target_col], frequency).get('differencing_required'))
+    y_model = np.diff(y_full) if differencing_required and len(y_full) > 1 else y_full
+    baseline = float(y_full[-1]) if differencing_required and len(y_full) else 0.0
     if best_model_name == 'SARIMA':
-        model = pm.auto_arima(y_full, seasonal=True, m=freq_period, stepwise=True, suppress_warnings=True, error_action='ignore', random_state=42)
+        import pmdarima as pm
+        model = pm.auto_arima(y_model, seasonal=True, m=freq_period, stepwise=True, suppress_warnings=True, error_action='ignore', random_state=42)
         preds, ci = model.predict(n_periods=horizon, return_conf_int=True)
+        if differencing_required:
+            preds = baseline + np.cumsum(preds)
+            ci = baseline + np.cumsum(ci, axis=0)
         forecast_vals = preds.tolist()
         lower_bounds = ci[:, 0].tolist()
         upper_bounds = ci[:, 1].tolist()
     elif best_model_name == 'Prophet':
-        prophet_df = pd.DataFrame({'ds': clean_df[date_col].values, 'y': y_full})
-        model = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True, weekly_seasonality=(frequency == 'weekly'), interval_width=0.95)
+        from prophet import Prophet
+        prophet_dates = clean_df[date_col].iloc[1:].values if differencing_required else clean_df[date_col].values
+        prophet_df = pd.DataFrame({'ds': prophet_dates, 'y': y_model})
+        model = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True, weekly_seasonality=(frequency == 'weekly'), daily_seasonality=(frequency == 'daily'), interval_width=0.95)
         model.fit(prophet_df)
         future = model.make_future_dataframe(periods=horizon, freq=freq_str)
         fc = model.predict(future)
-        forecast_vals = fc['yhat'].iloc[-horizon:].tolist()
-        lower_bounds = fc['yhat_lower'].iloc[-horizon:].tolist()
-        upper_bounds = fc['yhat_upper'].iloc[-horizon:].tolist()
+        preds = fc['yhat'].iloc[-horizon:].values
+        lower = fc['yhat_lower'].iloc[-horizon:].values
+        upper = fc['yhat_upper'].iloc[-horizon:].values
+        if differencing_required:
+            preds = baseline + np.cumsum(preds)
+            lower = baseline + np.cumsum(lower)
+            upper = baseline + np.cumsum(upper)
+        forecast_vals = preds.tolist()
+        lower_bounds = lower.tolist()
+        upper_bounds = upper.tolist()
     elif best_model_name == 'HoltWinters':
-        has_zeros = (y_full == 0).any()
-        has_neg = (y_full < 0).any()
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        has_zeros = (y_model == 0).any()
+        has_neg = (y_model < 0).any()
         s_type = 'add' if (has_zeros or has_neg) else 'mul'
-        model = ExponentialSmoothing(y_full, trend='add', seasonal=s_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
-        forecast_vals = model.forecast(horizon).tolist()
+        model = ExponentialSmoothing(y_model, trend='add', seasonal=s_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
+        preds = np.array(model.forecast(horizon), dtype=float)
         sim = model.simulate(horizon, repetitions=100, error='add', random_errors='bootstrap')
-        lower_bounds = sim.quantile(0.025, axis=1).tolist()
-        upper_bounds = sim.quantile(0.975, axis=1).tolist()
-    fmt = '%Y-%m-%d' if frequency == 'weekly' else '%Y-%m'
-    label_t = 'Week of {}' if frequency == 'weekly' else 'Month of {}'
-    return [{'period': label_t.format(d.strftime(fmt)), 'forecast': round(f, 2), 'lower': round(l, 2), 'upper': round(u, 2)} for d, f, l, u in zip(future_dates, forecast_vals, lower_bounds, upper_bounds)]
+        lower = np.array(sim.quantile(0.025, axis=1).tolist(), dtype=float)
+        upper = np.array(sim.quantile(0.975, axis=1).tolist(), dtype=float)
+        if differencing_required:
+            preds = baseline + np.cumsum(preds)
+            lower = baseline + np.cumsum(lower)
+            upper = baseline + np.cumsum(upper)
+        forecast_vals = preds.tolist()
+        lower_bounds = lower.tolist()
+        upper_bounds = upper.tolist()
+    fmt = '%Y-%m-%d' if frequency in {'daily', 'weekly'} else '%Y-%m'
+    label_t = '{}' if frequency == 'daily' else ('Week of {}' if frequency == 'weekly' else 'Month of {}')
+    return [{'period': label_t.format(d.strftime(fmt)), 'forecast': round(max(0.0, f), 2), 'lower': round(max(0.0, l), 2), 'upper': round(max(0.0, u), 2)} for d, f, l, u in zip(future_dates, forecast_vals, lower_bounds, upper_bounds)]
 
 
 # ── Programmatic insight ──────────────────────────────────────
@@ -1403,8 +1517,8 @@ def load_dataset(filepath: str) -> pd.DataFrame:
     path = Path(filepath)
     ext = path.suffix.lower()
     loaders = {
-        '.csv': lambda f: pd.read_csv(f),
-        '.tsv': lambda f: pd.read_csv(f, sep='\t'),
+        '.csv': lambda f: read_delimited_frame(f),
+        '.tsv': lambda f: read_delimited_frame(f),
         '.txt': lambda f: pd.read_csv(f, sep=None, engine='python'),
         '.xlsx': lambda f: pd.read_excel(f, engine='openpyxl'),
         '.xls': lambda f: pd.read_excel(f, engine='xlrd'),
@@ -2604,6 +2718,7 @@ def persist_inferred_dataset_frame(dataset_id: str, source_entry: dict[str, Any]
         'columns': list(frame.columns),
         'duplicate_count': duplicate_rows,
     }
+    maybe_store_dataset_frequency(dataset_id, frame)
     return cached_path
 
 
@@ -5207,63 +5322,102 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
 
 # ── TS Forecast: Stationarity endpoint ─────────────────────────
 
-@router.post('/api/ts-forecast/stationarity')
+@router.post('/ts-forecast/stationarity')
 def get_ts_stationarity(request: TsStationarityRequest) -> JSONResponse:
     """Load stationarity when TS Models step opens."""
-    dataset_id = request.dataset_id
-    if not dataset_id:
-        raise HTTPException(status_code=400, detail='dataset_id is required.')
-    df, date_col, target_col = load_ts_dataset(dataset_id)
-    frequency, freq_period = detect_ts_frequency(df, date_col)
-    result = check_stationarity(df[target_col], frequency)
-    return JSONResponse(content=result)
+    try:
+        dataset_id = request.dataset_id
+        if not dataset_id:
+            return JSONResponse(status_code=400, content={'error': 'dataset_id is required.', 'status': 'failed'})
+        df, date_col, target_col = load_ts_dataset(dataset_id)
+        frequency, freq_period = detect_ts_frequency(df, date_col)
+        store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
+        result = check_stationarity(df[target_col], frequency)
+        return JSONResponse(content=safe_serialize(result))
+    except Exception as error:
+        logger.exception('TS stationarity check failed dataset_id=%s', request.dataset_id)
+        return JSONResponse(status_code=500, content={'error': str(error), 'status': 'failed'})
 
 
 # ── TS Forecast: Run (train all 3 + auto-select) ───────────────
 
-@router.post('/api/ts-forecast/run')
+@router.post('/ts-forecast/run')
 def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
     """Train all 3 models, auto-select best, generate future forecast."""
-    dataset_id = request.dataset_id
-    horizon = request.horizon
-    split = request.training_split
-    if not dataset_id:
-        raise HTTPException(status_code=400, detail='dataset_id is required.')
-    df, date_col, target_col = load_ts_dataset(dataset_id)
-    frequency, freq_period = detect_ts_frequency(df, date_col)
-    stationarity = check_stationarity(df[target_col], frequency)
     try:
+        dataset_id = request.dataset_id
+        horizon = request.horizon
+        split = request.training_split
+        if not dataset_id:
+            return JSONResponse(status_code=400, content={'error': 'dataset_id is required.', 'status': 'failed'})
+        df, date_col, target_col = load_ts_dataset(dataset_id)
+        frequency, freq_period = detect_ts_frequency(df, date_col)
+        store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
+        stationarity = check_stationarity(df[target_col], frequency)
         results, y_train, y_test, train, test, clean_df, first_nonzero_date = train_all_ts_models(df, target_col, date_col, frequency, freq_period, split, horizon)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    best_name, best_metrics, reason = auto_select_ts_model(results)
-    future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
-    model_comparison_list = [{'model': k, 'smape': v.get('smape'), 'mae': v.get('mae'), 'status': v['status']} for k, v in results.items()]
-    insight = generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list)
-    output_dir = get_ts_output_dir(dataset_id)
-    try:
-        write_ts_output_files(output_dir, frequency, freq_period, target_col, date_col, df, clean_df, train, test, stationarity, results, best_name, best_metrics, reason, future_forecast, insight)
-    except Exception as exc:
-        logger.warning('write_ts_output_files failed: %s', exc)
-    try:
+        best_name, best_metrics, reason = auto_select_ts_model(results)
+        future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
+        model_comparison_list = [{'model': k, 'smape': v.get('smape'), 'mae': v.get('mae'), 'status': v['status']} for k, v in results.items()]
+        insight = generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list)
+        output_dir = get_ts_output_dir(dataset_id)
+        try:
+            write_ts_output_files(output_dir, frequency, freq_period, target_col, date_col, df, clean_df, train, test, stationarity, results, best_name, best_metrics, reason, future_forecast, insight)
+        except Exception:
+            logger.exception('write_ts_output_files failed dataset_id=%s', dataset_id)
         write_ts_to_postgres(dataset_id, best_name, best_metrics, results, stationarity, future_forecast, insight)
-    except Exception as exc:
-        logger.warning('write_ts_to_postgres failed: %s', exc)
-    save_workspace_context(dataset_id, 'ts_forecast_context', {'frequency': frequency, 'freq_period': freq_period, 'date_col': date_col, 'target_col': target_col, 'clean_start_date': first_nonzero_date, 'training_split': split, 'pipeline_status': 'completed', 'next_tab': 'ml_forecast', 'retrain_available': True})
-    response_data = {
-        'status': 'completed',
-        'best_model': best_name,
-        'smape': best_metrics['smape'],
-        'mae': best_metrics['mae'],
-        'rmse': best_metrics.get('rmse'),
-        'mape': best_metrics.get('mape'),
-        'reason': reason,
-        'stationarity': stationarity,
-        'future_forecast': future_forecast,
-        'insight': insight,
-        'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()]
-    }
-    return JSONResponse(content=response_data)
+        save_workspace_context(dataset_id, 'ts_forecast_context', {'frequency': frequency, 'freq_period': freq_period, 'date_col': date_col, 'target_col': target_col, 'clean_start_date': first_nonzero_date, 'training_split': split, 'pipeline_status': 'completed', 'next_tab': 'ml_forecast', 'retrain_available': True, 'best_model': best_name})
+        response_data = {
+            'status': 'completed',
+            'best_model': best_name,
+            'selected_best_model': best_name,
+            'smape': best_metrics['smape'],
+            'mae': best_metrics['mae'],
+            'rmse': best_metrics.get('rmse'),
+            'mape': best_metrics.get('mape'),
+            'reason': reason,
+            'stationarity': stationarity,
+            'future_forecast': future_forecast,
+            'insight': insight,
+            'model_metrics': {k: {'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape')} for k, v in results.items()},
+            'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()]
+        }
+        return JSONResponse(content=safe_serialize(response_data))
+    except Exception as error:
+        logger.exception('TS multi-model training failed dataset_id=%s', request.dataset_id)
+        return JSONResponse(status_code=500, content={'error': str(error), 'status': 'failed'})
+
+
+@router.post('/ts-forecast/forecast')
+def forecast_ts_best_model(request: TsForecastRunRequest) -> JSONResponse:
+    """Generate forecast from the latest stored best model for the dataset."""
+    try:
+        dataset_id = request.dataset_id
+        if not dataset_id:
+            return JSONResponse(status_code=400, content={'error': 'dataset_id is required.', 'status': 'failed'})
+        best_model = None
+        if ACTIVITY_DB_AVAILABLE:
+            try:
+                with get_activity_connection() as conn:
+                    row = conn.execute(
+                        'SELECT best_model FROM ts_forecast_results WHERE dataset_id = %s ORDER BY created_at DESC LIMIT 1',
+                        [dataset_id],
+                    ).fetchone()
+                    best_model = row['best_model'] if row else None
+            except Exception:
+                logger.exception('Failed to read latest TS best model dataset_id=%s', dataset_id)
+        context = get_workspace_context(dataset_id, 'ts_forecast_context') or {}
+        best_model = best_model or context.get('best_model')
+        if not best_model:
+            return JSONResponse(status_code=400, content={'error': 'No selected TS model found. Run multi-model training first.', 'status': 'failed'})
+        df, date_col, target_col = load_ts_dataset(dataset_id)
+        frequency, freq_period = detect_ts_frequency(df, date_col)
+        first_nonzero_idx = df[df[target_col] > 0].index[0]
+        clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
+        future_forecast = generate_ts_future_forecast(str(best_model), clean_df, target_col, date_col, frequency, freq_period, request.horizon)
+        return JSONResponse(content=safe_serialize({'status': 'completed', 'best_model': best_model, 'forecast': future_forecast, 'future_forecast': future_forecast}))
+    except Exception as error:
+        logger.exception('TS forecast failed dataset_id=%s', request.dataset_id)
+        return JSONResponse(status_code=500, content={'error': str(error), 'status': 'failed'})
 
 
 @router.post('/forecast/ml/run')
@@ -9347,6 +9501,7 @@ def cache_dataset(request: DatasetCacheRequest, http_request: Request) -> JSONRe
         'column_count': int(len(data_frame.columns)),
         'columns': list(data_frame.columns),
     }
+    maybe_store_dataset_frequency(dataset_id, data_frame)
 
     response = {
         'datasetId': dataset_id,
@@ -9562,6 +9717,8 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'duplicate_count': int(preview_duplicate_rows),
         })
         DATASET_CACHE[dataset_id] = dataset_entry
+        pandas_frame = frame.to_pandas(use_pyarrow_extension_array=False) if hasattr(frame, 'to_pandas') else pd.DataFrame(frame)
+        maybe_store_dataset_frequency(dataset_id, pandas_frame)
 
         preview_loaded = int(total_rows) > len(rows)
         response = {
@@ -9665,6 +9822,7 @@ def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_re
         'duplicate_count': duplicate_rows,
     })
     DATASET_CACHE[request.dataset_id] = dataset_entry
+    maybe_store_dataset_frequency(request.dataset_id, frame)
 
     response = {
         'datasetId': request.dataset_id,
