@@ -12,8 +12,6 @@ import {
   Database,
   Download,
   Eye,
-  FileJson,
-  FileSpreadsheet,
   FileText,
   Loader2,
   MessageSquare,
@@ -30,7 +28,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
@@ -855,21 +853,19 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
     void suggestNextSteps();
   }, [datasetId, health?.agentic_enabled, suggestNextSteps]);
 
-  const downloadPipelineData = async (sessionId: string, format: 'json' | 'csv' | 'pdf') => {
-    const ext = format === 'pdf' ? 'pdf' : format;
-    const endpoint = format === 'pdf' ? `/session/${sessionId}/report` : `/session/${sessionId}/export/${format}`;
+  const downloadPipelineReport = async (sessionId: string) => {
     try {
-      const response = await agenticApiClient.get(endpoint, { responseType: 'blob' });
+      const response = await agenticApiClient.get(`/session/${sessionId}/report`, { responseType: 'blob' });
       const url = URL.createObjectURL(response.data);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `pipeline_${sessionId}.${ext}`;
+      link.download = `pipeline_${sessionId}.html`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
     } catch {
-      appendLog(`download ${format} failed`);
+      appendLog('download failed');
     }
   };
 
@@ -1140,7 +1136,7 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
       }
       if ((event.metaKey || event.ctrlKey) && event.key === 'd') {
         event.preventDefault();
-        if (agenticSessionId && completedCount > 1) void downloadPipelineData(agenticSessionId, 'json');
+        if (agenticSessionId && completedCount > 1) void downloadPipelineReport(agenticSessionId);
         return;
       }
       if (event.key === 'Enter' && !isInputFocused) {
@@ -1220,26 +1216,11 @@ export default function AgenticWorkspace({ datasetId, fileName }: AgenticWorkspa
               </Tooltip>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56 border-slate-700 bg-slate-900 text-slate-100">
-              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'json')} className="cursor-pointer hover:bg-slate-800">
-                <FileJson className="mr-2 h-4 w-4 text-blue-400" />
-                <div>
-                  <p className="text-sm font-medium">Download as JSON</p>
-                  <p className="text-[10px] text-slate-400">Full pipeline state as JSON</p>
-                </div>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'csv')} className="cursor-pointer hover:bg-slate-800">
-                <FileSpreadsheet className="mr-2 h-4 w-4 text-emerald-400" />
-                <div>
-                  <p className="text-sm font-medium">Download as CSV</p>
-                  <p className="text-[10px] text-slate-400">Tabular data as CSV archive</p>
-                </div>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-slate-700" />
-              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineData(agenticSessionId, 'pdf')} className="cursor-pointer hover:bg-slate-800">
+              <DropdownMenuItem onClick={() => agenticSessionId && void downloadPipelineReport(agenticSessionId)} className="cursor-pointer hover:bg-slate-800">
                 <FileText className="mr-2 h-4 w-4 text-amber-400" />
                 <div>
-                  <p className="text-sm font-medium">Pipeline Report (PDF)</p>
-                  <p className="text-[10px] text-slate-400">Complete report with visuals</p>
+                  <p className="text-sm font-medium">Pipeline Report (HTML)</p>
+                  <p className="text-[10px] text-slate-400">Complete report as an HTML file</p>
                 </div>
               </DropdownMenuItem>
             </DropdownMenuContent>
