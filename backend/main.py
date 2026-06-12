@@ -19,7 +19,7 @@ from math import erf, sqrt
 from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import joblib
 import matplotlib
@@ -484,6 +484,22 @@ def init_activity_db() -> None:
             '''
         )
         connection.execute('CREATE INDEX IF NOT EXISTS idx_workspace_context_dataset_key ON workspace_context (dataset_id, context_key)')
+        connection.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS ml_forecast_results (
+                id SERIAL PRIMARY KEY,
+                dataset_id TEXT,
+                target_column TEXT,
+                model_name TEXT,
+                mape FLOAT,
+                smape FLOAT,
+                feature_importances JSONB,
+                predictions JSONB,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            '''
+        )
+        connection.execute('CREATE INDEX IF NOT EXISTS idx_ml_forecast_results_dataset_id ON ml_forecast_results (dataset_id)')
 
 
 def sanitize_metadata(metadata: dict[str, Any] | None) -> str | None:
@@ -2368,7 +2384,7 @@ class MlForecastRequest(BaseModel):
     dataset_id: str | None = None
     session_id: str | None = None
     date_column: str
-    target_column: str
+    target_column: Optional[str] = None
     forecast_periods: int = Field(default=3, ge=1, le=24)
     test_percentage: int = Field(default=20, ge=10, le=50)
     lag_periods: int = Field(default=3, ge=1, le=12)
@@ -5423,7 +5439,24 @@ def forecast_ts_best_model(request: TsForecastRunRequest) -> JSONResponse:
 @router.post('/forecast/ml/run')
 def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONResponse:
     session_id = get_session_id(request.dataset_id, request.session_id)
-    required_columns = [request.date_column, request.target_column]
+    target_col = request.target_column
+    if not target_col and request.dataset_id:
+        context = get_workspace_context(request.dataset_id, 'ts_forecast_context') or {}
+        target_col = context.get('target_column') or context.get('target_col')
+    if not target_col and request.dataset_id and ACTIVITY_DB_AVAILABLE:
+        try:
+            with get_activity_connection() as conn:
+                row = conn.execute(
+                    'SELECT target_column FROM ml_forecast_results WHERE dataset_id=%s ORDER BY created_at DESC LIMIT 1',
+                    [request.dataset_id],
+                ).fetchone()
+                target_col = row['target_column'] if row else None
+        except Exception:
+            logger.exception('Failed to read latest ML target column dataset_id=%s', request.dataset_id)
+    if not target_col:
+        return JSONResponse({'error': 'Target column not set. Complete Feature Setup first.', 'status': 'failed'}, status_code=400)
+
+    required_columns = [request.date_column, target_col]
     pipeline_frame: pd.DataFrame | None = None
     input_path: Path
     if request.dataset_id:
@@ -5442,7 +5475,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
     try:
         pipeline_result = run_full_pipeline(
             input_path,
-            target_col=request.target_column,
+            target_col=target_col,
             date_col=request.date_column,
             horizon=request.forecast_periods,
             frequency='auto',
@@ -5571,7 +5604,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         detail=f'Ran ML forecasting with {selected_model["model_name"]} over {request.forecast_periods} future {frequency_label} periods.',
         metadata={
             'date_column': request.date_column,
-            'target_column': request.target_column,
+            'target_column': target_col,
             'forecast_periods': request.forecast_periods,
             'lag_periods': response['training_summary']['lag_periods'],
             'feature_groups': request.feature_groups,

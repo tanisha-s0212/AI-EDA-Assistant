@@ -89,8 +89,8 @@ def _detect_target_column(frame: pd.DataFrame) -> str | None:
     return None
 
 
-def load_and_detect(path: str | Path) -> tuple[pd.DataFrame, str, str]:
-    """Load a parquet file or directory of parquet files and detect date and target columns."""
+def load_and_detect(path: str | Path, date_col: str | None = None, target_col: str | None = None) -> tuple[pd.DataFrame, str, str]:
+    """Load a parquet, csv, tsv, or excel file/directory and detect/override date and target columns."""
     source = Path(path)
     if source.is_dir():
         parquet_files = sorted(source.glob('*.parquet'))
@@ -98,30 +98,38 @@ def load_and_detect(path: str | Path) -> tuple[pd.DataFrame, str, str]:
             raise ValueError(f'No parquet files found in directory: {source}')
         frame = pd.concat([pd.read_parquet(file) for file in parquet_files], ignore_index=True)
     else:
-        frame = pd.read_parquet(source)
+        suffix = source.suffix.lower()
+        if suffix == '.parquet':
+            frame = pd.read_parquet(source)
+        elif suffix in ('.xlsx', '.xls'):
+            frame = pd.read_excel(source)
+        elif suffix == '.tsv':
+            frame = pd.read_csv(source, sep='\t')
+        else:
+            frame = pd.read_csv(source)
 
     frame = _parse_object_dates(frame)
-    date_col = _detect_date_column(frame)
-    target_col = _detect_target_column(frame)
-    if not date_col or not target_col:
+    resolved_date = date_col if date_col in frame.columns else _detect_date_column(frame)
+    resolved_target = target_col if target_col in frame.columns else _detect_target_column(frame)
+    if not resolved_date or not resolved_target:
         columns = ', '.join(map(str, frame.columns.tolist()))
         missing = []
-        if not date_col:
+        if not resolved_date:
             missing.append('date column')
-        if not target_col:
+        if not resolved_target:
             missing.append('target column')
         raise ValueError(f'Missing {" and ".join(missing)}. Available columns: {columns}')
 
-    frame[date_col] = pd.to_datetime(frame[date_col], errors='coerce')
-    frame[target_col] = pd.to_numeric(frame[target_col], errors='coerce')
-    frame = frame.dropna(subset=[date_col])
-    numeric_cols = [column for column in frame.select_dtypes(include=[np.number]).columns if column != target_col]
-    categorical_cols = [column for column in frame.columns if column not in set(numeric_cols + [date_col, target_col])]
-    aggregations: dict[str, Any] = {target_col: 'sum'}
+    frame[resolved_date] = pd.to_datetime(frame[resolved_date], errors='coerce')
+    frame[resolved_target] = pd.to_numeric(frame[resolved_target], errors='coerce')
+    frame = frame.dropna(subset=[resolved_date])
+    numeric_cols = [column for column in frame.select_dtypes(include=[np.number]).columns if column != resolved_target]
+    categorical_cols = [column for column in frame.columns if column not in set(numeric_cols + [resolved_date, resolved_target])]
+    aggregations: dict[str, Any] = {resolved_target: 'sum'}
     aggregations.update({column: 'mean' for column in numeric_cols})
     aggregations.update({column: 'first' for column in categorical_cols})
-    deduped = frame.groupby(date_col, as_index=False).agg(aggregations).sort_values(date_col)
-    return deduped, date_col, target_col
+    deduped = frame.groupby(resolved_date, as_index=False).agg(aggregations).sort_values(resolved_date)
+    return deduped, str(resolved_date), str(resolved_target)
 
 
 def load_and_detect_frame(frame: pd.DataFrame, date_col: str | None = None, target_col: str | None = None) -> tuple[pd.DataFrame, str, str]:
@@ -197,37 +205,106 @@ def _add_calendar_features(frame: pd.DataFrame, date_col: str, frequency: str, c
 
 
 def engineer_features(df: pd.DataFrame, target_col: str, date_col: str, frequency: str, config: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
-    """Build frequency-specific calendar, lag, rolling mean, and rolling std features."""
-    working = _add_calendar_features(df.copy().sort_values(date_col).reset_index(drop=True), date_col, frequency, config)
+    """Build calendar, lag, rolling features, dropping non-numeric and ID-type columns, and ensuring required engineered features are present."""
+    import re
+    # 1. Drop non-numeric and ID-type columns
+    id_pattern = re.compile(r'id|no|number|code|key|batch|seq|row|index', re.IGNORECASE)
+    cols_to_drop = []
+    for col in df.columns:
+        if col == date_col or col == target_col:
+            continue
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            cols_to_drop.append(col)
+        elif id_pattern.search(col):
+            cols_to_drop.append(col)
+            
+    working = df.drop(columns=cols_to_drop, errors='ignore').copy().sort_values(date_col).reset_index(drop=True)
+    
+    # 2. Keep track of dataset baseline features
+    dataset_features = [col for col in working.columns if col not in (date_col, target_col)]
+    
+    # 3. Add calendar features
+    working = _add_calendar_features(working, date_col, frequency, config)
     target = pd.to_numeric(working[target_col], errors='coerce').astype(float)
-    for lag in config['lags']:
+    
+    # Add lags from config
+    for lag in config.get('lags', []):
         column = f'lag_{lag}'
-        working[column] = target.shift(lag)
-        if frequency == 'monthly' and lag == 12 and len(working) <= 12:
-            fallback = target.shift(1).expanding(min_periods=1).mean()
-            working[column] = working[column].fillna(fallback).fillna(target.expanding(min_periods=1).mean())
-            logger.warning('lag_12 backfilled for insufficient history')
-    for window in config['rolling_windows']:
-        working[f'rolling_mean_{window}'] = target.shift(1).rolling(window=window, min_periods=window).mean()
-    for window in config['rolling_std_windows']:
-        working[f'rolling_std_{window}'] = target.shift(1).rolling(window=window, min_periods=window).std().fillna(0.0)
+        if column not in working.columns:
+            working[column] = target.shift(lag)
+            if frequency == 'monthly' and lag == 12 and len(working) <= 12:
+                fallback = target.shift(1).expanding(min_periods=1).mean()
+                working[column] = working[column].fillna(fallback).fillna(target.expanding(min_periods=1).mean())
+                
+    # Add rolling windows from config
+    for window in config.get('rolling_windows', []):
+        column = f'rolling_mean_{window}'
+        if column not in working.columns:
+            working[column] = target.shift(1).rolling(window=window, min_periods=window).mean()
+            
+    for window in config.get('rolling_std_windows', []):
+        column = f'rolling_std_{window}'
+        if column not in working.columns:
+            working[column] = target.shift(1).rolling(window=window, min_periods=window).std().fillna(0.0)
 
-    feature_list = list(config['calendar'])
-    feature_list.extend([f'lag_{lag}' for lag in config['lags']])
-    feature_list.extend([f'rolling_mean_{window}' for window in config['rolling_windows']])
-    feature_list.extend([f'rolling_std_{window}' for window in config['rolling_std_windows']])
+    # 4. Auto-generate mandatory engineered features if missing
+    dates = pd.to_datetime(working[date_col])
+    
+    if 'trend_index' not in working.columns:
+        working['trend_index'] = np.arange(1, len(working) + 1, dtype=float)
+    if 'month_number' not in working.columns:
+        working['month_number'] = dates.dt.month.astype(float)
+    if 'quarter_number' not in working.columns:
+        working['quarter_number'] = dates.dt.quarter.astype(float)
+    if 'weekday_number' not in working.columns:
+        working['weekday_number'] = dates.dt.dayofweek.astype(float)
+    if 'is_month_end' not in working.columns:
+        working['is_month_end'] = dates.dt.is_month_end.astype(int).astype(float)
+    if 'lag_1' not in working.columns:
+        working['lag_1'] = target.shift(1)
+    if 'lag_2' not in working.columns:
+        working['lag_2'] = target.shift(2)
+    if 'lag_3' not in working.columns:
+        working['lag_3'] = target.shift(3)
+    if 'rolling_mean_3' not in working.columns:
+        working['rolling_mean_3'] = target.shift(1).rolling(window=3, min_periods=1).mean()
+    if 'rolling_mean_6' not in working.columns:
+        working['rolling_mean_6'] = target.shift(1).rolling(window=6, min_periods=1).mean()
+    if 'rolling_std_3' not in working.columns:
+        working['rolling_std_3'] = target.shift(1).rolling(window=3, min_periods=1).std().fillna(0.0)
+
+    # 5. Build final feature list
+    mandatory_features = [
+        'trend_index', 'month_number', 'quarter_number', 'weekday_number', 'is_month_end',
+        'lag_1', 'lag_2', 'lag_3', 'rolling_mean_3', 'rolling_mean_6', 'rolling_std_3'
+    ]
+    
+    feature_set = set(dataset_features)
+    feature_set.update(config.get('calendar', []))
+    feature_set.update([f'lag_{lag}' for lag in config.get('lags', [])])
+    feature_set.update([f'rolling_mean_{window}' for window in config.get('rolling_windows', [])])
+    feature_set.update([f'rolling_std_{window}' for window in config.get('rolling_std_windows', [])])
+    feature_set.update(mandatory_features)
+    
+    feature_list = [col for col in working.columns if col in feature_set and col not in (date_col, target_col)]
+    
     feature_df = working.dropna(subset=[target_col]).copy()
     for column in feature_list:
         if feature_df[column].isna().any():
             fill_value = float(target.expanding(min_periods=1).mean().iloc[-1]) if len(target) else 0.0
+            if pd.isna(fill_value):
+                fill_value = 0.0
             feature_df[column] = feature_df[column].fillna(fill_value)
+            
     feature_df = feature_df.replace([np.inf, -np.inf], np.nan).dropna(subset=feature_list).reset_index(drop=True)
     if feature_df.empty:
         raise ValueError('Insufficient data after feature engineering: 0 rows')
+        
     for column in feature_list:
         zero_share = float((feature_df[column] == 0).mean())
         if zero_share > 0.10:
             logger.warning('Feature column %s has %.1f%% zeros', column, zero_share * 100)
+            
     return feature_df, feature_list
 
 
@@ -624,10 +701,11 @@ def run_full_pipeline(
     horizon: int = 3,
     frequency: str = 'auto',
     frame: pd.DataFrame | None = None,
+    model_type: str = 'auto',
 ) -> dict[str, Any]:
-    """Run the complete Aroha IDA ML sales forecast pipeline and write all outputs."""
+    """Run the complete Aroha IDA ML sales forecast pipeline with an 80/20 train-test split on the selected model."""
     if frame is None:
-        df, detected_date_col, detected_target_col = load_and_detect(path)
+        df, detected_date_col, detected_target_col = load_and_detect(path, date_col, target_col)
     else:
         df, detected_date_col, detected_target_col = load_and_detect_frame(frame, date_col, target_col)
     date_col = date_col if date_col in df.columns else detected_date_col
@@ -645,10 +723,66 @@ def run_full_pipeline(
     lgbm_model, lgbm_status = safe_import_lightgbm(config['lgbm_min_leaf'])
     models = build_models_dict(lgbm_model, lgbm_status)
     results = walk_forward_validate(feature_df, feature_list, target_col, models, config['cv_splits'], frequency, date_col)
-    best_model_name, best_metrics = auto_select_model(results)
-    best_model = retrain_on_full(models[best_model_name], feature_df, feature_list, target_col, date_col, frequency)
+    
+    # Select best or requested model key
+    selected_model_name = 'Gradient Boosting'
+    if model_type != 'auto' and model_type:
+        normalized_requested = model_type.lower().replace(' ', '_').replace('-', '_')
+        for key in models.keys():
+            if key.lower().replace(' ', '_').replace('-', '_') == normalized_requested:
+                selected_model_name = key
+                break
+        else:
+            best_model_name, _ = auto_select_model(results)
+            selected_model_name = best_model_name
+    else:
+        best_model_name, _ = auto_select_model(results)
+        selected_model_name = best_model_name
+
+    # Train-test split (80/20 chronological)
+    split_idx = int(len(feature_df) * 0.8)
+    if split_idx < 1:
+        split_idx = 1
+    if split_idx >= len(feature_df):
+        split_idx = len(feature_df) - 1
+
+    train_df = feature_df.iloc[:split_idx]
+    test_df = feature_df.iloc[split_idx:]
+
+    chosen_model = models[selected_model_name]
+    
+    # Train and evaluate on split
+    if isinstance(chosen_model, dict) and chosen_model.get('type') == 'prophet':
+        try:
+            from prophet import Prophet
+        except Exception as error:
+            raise RuntimeError(f'Prophet unavailable: {error}') from error
+        
+        prophet_model = Prophet(seasonality_mode=config['prophet_mode'], yearly_seasonality=config['yearly_seasonality'], weekly_seasonality=False, daily_seasonality=False)
+        prophet_model.fit(train_df.rename(columns={date_col: 'ds', target_col: 'y'})[['ds', 'y']])
+        
+        test_preds = prophet_model.predict(pd.DataFrame({'ds': pd.to_datetime(test_df[date_col])}))['yhat'].tolist()
+        test_preds = [max(0.0, float(v)) for v in test_preds]
+        
+        # Retrain on full
+        full_model = Prophet(seasonality_mode=config['prophet_mode'], yearly_seasonality=config['yearly_seasonality'], weekly_seasonality=False, daily_seasonality=False)
+        full_model.fit(feature_df.rename(columns={date_col: 'ds', target_col: 'y'})[['ds', 'y']])
+        best_model = full_model
+    else:
+        estimator = clone(chosen_model)
+        estimator.fit(train_df[feature_list], train_df[target_col])
+        test_preds = [max(0.0, float(v)) for v in estimator.predict(test_df[feature_list])]
+        
+        # Retrain on full
+        full_model = clone(chosen_model)
+        full_model.fit(feature_df[feature_list], feature_df[target_col])
+        best_model = full_model
+
+    # Compute metrics on test split
+    best_metrics = compute_all_metrics(test_df[target_col].tolist(), test_preds)
+    
     forecast = forecast_future(best_model, feature_df, feature_list, target_col, date_col, horizon, frequency)
     shap = compute_shap_importance(best_model, feature_df[feature_list], feature_list)
-    outputs = write_all_outputs(path, trim_report, results, best_model_name, best_metrics, feature_df, forecast, shap, clean_df, target_col, date_col, frequency, horizon, best_model, feature_list)
-    print_summary(trim_report, results, best_model_name, best_metrics, forecast)
+    outputs = write_all_outputs(path, trim_report, results, selected_model_name, best_metrics, feature_df, forecast, shap, clean_df, target_col, date_col, frequency, horizon, best_model, feature_list)
+    print_summary(trim_report, results, selected_model_name, best_metrics, forecast)
     return outputs
