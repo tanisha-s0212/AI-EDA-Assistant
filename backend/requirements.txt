@@ -9,11 +9,11 @@ joblib
 python-multipart
 python-dateutil
 reportlab
-pyarrow
+pyarrow>=14.0.0
 matplotlib
 plotly
 kaleido
-openpyxl
+openpyxl>=3.1.0
 xlrd
 psycopg[binary]
 httpx
