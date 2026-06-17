@@ -926,7 +926,16 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
         upper_bounds = upper.tolist()
     fmt = '%Y-%m-%d' if frequency in {'daily', 'weekly'} else '%Y-%m'
     label_t = '{}' if frequency == 'daily' else ('Week of {}' if frequency == 'weekly' else 'Month of {}')
-    return [{'period': label_t.format(d.strftime(fmt)), 'forecast': round(max(0.0, f), 2), 'lower': round(max(0.0, l), 2), 'upper': round(max(0.0, u), 2)} for d, f, l, u in zip(future_dates, forecast_vals, lower_bounds, upper_bounds)]
+    return [
+        {
+            'period': label_t.format(d.strftime(fmt)),
+            'forecast': round(max(0.0, f), 2),
+            'predicted': round(max(0.0, f), 2),
+            'lower': round(max(0.0, l), 2),
+            'upper': round(max(0.0, u), 2),
+        }
+        for d, f, l, u in zip(future_dates, forecast_vals, lower_bounds, upper_bounds)
+    ]
 
 
 # ── Programmatic insight ──────────────────────────────────────
@@ -5368,6 +5377,7 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             return JSONResponse(status_code=400, content={'error': 'dataset_id is required.', 'status': 'failed'})
         df, date_col, target_col = load_ts_dataset(dataset_id)
         frequency, freq_period = detect_ts_frequency(df, date_col)
+        period_label = 'day' if frequency == 'daily' else 'week' if frequency == 'weekly' else 'month'
         store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
         stationarity = check_stationarity(df[target_col], frequency)
         results, y_train, y_test, train, test, clean_df, first_nonzero_date = train_all_ts_models(df, target_col, date_col, frequency, freq_period, split, horizon)
@@ -5391,12 +5401,17 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             'rmse': best_metrics.get('rmse'),
             'mape': best_metrics.get('mape'),
             'reason': reason,
+            'period_label': period_label,
             'stationarity': stationarity,
             'future_forecast': future_forecast,
             'insight': insight,
             'model_metrics': {k: {'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape')} for k, v in results.items()},
             'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()]
         }
+        session_state = ensure_session_state(dataset_id)
+        session_state['forecast_steps']['ts'] = True
+        session_state['time_series_result'] = safe_serialize(response_data)
+        session_state['updated_at'] = utc_now_iso()
         return JSONResponse(content=safe_serialize(response_data))
     except Exception as error:
         logger.exception('TS multi-model training failed dataset_id=%s', request.dataset_id)
