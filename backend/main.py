@@ -763,8 +763,13 @@ def _fit_predict_ts_candidate(model_name: str, train_frame: pd.DataFrame, next_d
     pred = float(model.forecast(1)[0])
     try:
         sim = model.simulate(1, repetitions=100, error='add', random_errors='bootstrap')
-        lower = float(sim.quantile(0.025, axis=1).iloc[0])
-        upper = float(sim.quantile(0.975, axis=1).iloc[0])
+        if isinstance(sim, pd.DataFrame):
+            lower = float(sim.quantile(0.025, axis=1).iloc[0])
+            upper = float(sim.quantile(0.975, axis=1).iloc[0])
+        else:
+            sim_arr = np.asarray(sim, dtype=float).reshape(1, -1)
+            lower = float(np.quantile(sim_arr, 0.025, axis=1)[0])
+            upper = float(np.quantile(sim_arr, 0.975, axis=1)[0])
     except Exception:
         lower = None
         upper = None
@@ -915,8 +920,15 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
         model = ExponentialSmoothing(y_model, trend='add', seasonal=s_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
         preds = np.array(model.forecast(horizon), dtype=float)
         sim = model.simulate(horizon, repetitions=100, error='add', random_errors='bootstrap')
-        lower = np.array(sim.quantile(0.025, axis=1).tolist(), dtype=float)
-        upper = np.array(sim.quantile(0.975, axis=1).tolist(), dtype=float)
+        if isinstance(sim, pd.DataFrame):
+            lower = np.array(sim.quantile(0.025, axis=1).tolist(), dtype=float)
+            upper = np.array(sim.quantile(0.975, axis=1).tolist(), dtype=float)
+        else:
+            sim_arr = np.asarray(sim, dtype=float)
+            if sim_arr.ndim == 1:
+                sim_arr = sim_arr.reshape(horizon, -1)
+            lower = np.quantile(sim_arr, 0.025, axis=1).astype(float)
+            upper = np.quantile(sim_arr, 0.975, axis=1).astype(float)
         if differencing_required:
             preds = baseline + np.cumsum(preds)
             lower = baseline + np.cumsum(lower)
@@ -8920,6 +8932,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     tag_style = ParagraphStyle('PDF_Tag', parent=styles['BodyText'], fontName='Helvetica-Bold', fontSize=8, leading=10, textColor=colors.HexColor('#64748b'), alignment=2)
     body_style = ParagraphStyle('PDF_Body', parent=styles['BodyText'], fontName='Helvetica', fontSize=8.5, leading=11.7, textColor=colors.HexColor('#1e293b'))
     muted_style = ParagraphStyle('PDF_Muted', parent=body_style, fontSize=8, leading=10.8, textColor=colors.HexColor('#64748b'))
+    small_style = ParagraphStyle('PDF_Small', parent=body_style, fontSize=8.1, leading=11, textColor=colors.HexColor('#64748b'))
     label_style = ParagraphStyle('PDF_Label', parent=body_style, fontName='Helvetica-Bold', fontSize=7.6, leading=9, textColor=colors.HexColor('#0369a1'))
     value_style = ParagraphStyle('PDF_Value', parent=body_style, fontName='Helvetica-Bold', fontSize=12, leading=14, textColor=colors.HexColor('#0f172a'))
     table_header_style = ParagraphStyle('PDF_TH', parent=body_style, fontName='Helvetica-Bold', fontSize=7.8, leading=9.5, textColor=colors.white)
@@ -8929,6 +8942,9 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     def para(value: Any, style: ParagraphStyle = body_style) -> Paragraph:
         return Paragraph(escape(str(value)).replace('\n', '<br/>'), style)
+
+    def add_para(text: Any, style: ParagraphStyle = body_style) -> None:
+        elements.append(para(text, style))
 
     def fmt(value: Any, digits: int = 3) -> str:
         if value is None:

@@ -9,6 +9,7 @@ joblib
 python-multipart
 python-dateutil
 reportlab
+python-docx
 pyarrow>=14.0.0
 matplotlib
 plotly

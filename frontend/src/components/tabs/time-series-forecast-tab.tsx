@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type ColumnInfo, type DataRow, type TimeSeriesForecastResult, type TsForecastModelComparison, type TsFutureForecast, type TsInsight, type TsStationarity } from '@/lib/store';
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
+import axios from 'axios';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
@@ -181,7 +182,14 @@ export default function TimeSeriesForecastTab() {
         .then((res) => setStationarity(res.data as TsStationarity))
         .catch((err) => {
           console.error('Stationarity fetch failed:', err);
-          toast({ title: 'Stationarity check failed', description: getApiErrorMessage(err, 'Could not load stationarity.'), variant: 'destructive' });
+          const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+          const baseMessage = getApiErrorMessage(err, 'Could not load stationarity.');
+          const description = status === 404
+            ? `${status} on /api/ts-forecast/stationarity — endpoint missing on the running backend. Rebuild/redeploy the backend container so it matches current source, then re-upload the dataset.`
+            : status
+              ? `${status}: ${baseMessage}`
+              : baseMessage;
+          toast({ title: 'Stationarity check failed', description, variant: 'destructive' });
         })
         .finally(() => setStationarityLoading(false));
     }
