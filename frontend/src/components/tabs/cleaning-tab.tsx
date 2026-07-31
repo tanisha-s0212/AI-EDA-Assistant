@@ -537,6 +537,9 @@ export default function CleaningTab() {
           handle_missing: ops.handleMissing,
           convert_dates: ops.convertDates,
           standardize_names: ops.standardizeNames,
+          sales_preset: true,
+          protect_forecast_target: true,
+          drop_non_positive_revenue: false,
         });
 
         const result = response.data as {

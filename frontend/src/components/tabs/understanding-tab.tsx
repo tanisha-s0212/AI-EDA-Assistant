@@ -1,7 +1,8 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { AlertCircle, Database, Eye, FileText, Info, Sparkles, Table as TableIcon } from 'lucide-react';
+import { AlertCircle, Database, Eye, FileText, Info, Sparkles, Table as TableIcon, TrendingUp } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   HoverCard,
@@ -16,7 +17,21 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { apiClient } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
+
+type SalesReadiness = {
+  status: string;
+  date_column?: string;
+  target_column?: string;
+  period_count?: number;
+  minimum_periods_for_ts?: number;
+  date_span_days?: number;
+  revenue_column_confidence?: number;
+  zero_sales_share?: number;
+  notes?: Array<string | null>;
+};
 
 export default function UnderstandingTab() {
   const rawData = useAppStore((s) => s.rawData);
@@ -28,6 +43,8 @@ export default function UnderstandingTab() {
   const fileName = useAppStore((s) => s.fileName);
   const selectedSheets = useAppStore((s) => s.selectedSheets);
   const sheetMergeMode = useAppStore((s) => s.sheetMergeMode);
+  const datasetId = useAppStore((s) => s.datasetId);
+  const [salesReadiness, setSalesReadiness] = useState<SalesReadiness | null>(null);
 
   const data = cleanedData ?? rawData ?? [];
   const hasData = !!rawData && columns.length > 0;
@@ -38,6 +55,22 @@ export default function UnderstandingTab() {
   const datetimeColumns = columns.filter((col) => col.role === 'datetime');
   const identifierColumns = columns.filter((col) => col.role === 'identifier');
   const highlyUniqueColumns = columns.filter((col) => totalRows > 0 && col.uniqueCount / totalRows >= 0.9);
+
+  useEffect(() => {
+    if (!datasetId) {
+      setSalesReadiness(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient.post('/sales/readiness', { dataset_id: datasetId })
+      .then((response) => {
+        if (!cancelled) setSalesReadiness(response.data as SalesReadiness);
+      })
+      .catch(() => {
+        if (!cancelled) setSalesReadiness(null);
+      });
+    return () => { cancelled = true; };
+  }, [datasetId]);
   const sparseColumns = [...missingColumns].sort((a, b) => b.nullCount - a.nullCount).slice(0, 3);
   const completeness = totalRows && columns.length
     ? Math.round((columns.reduce((sum, col) => sum + col.nonNull, 0) / (totalRows * columns.length)) * 1000) / 10
@@ -177,6 +210,35 @@ export default function UnderstandingTab() {
                 <p className="transition-colors duration-300 group-hover:text-foreground/85">{signal}</p>
               </div>
             ))}
+          </CardContent>
+        </Card>
+
+        <Card className="group relative overflow-hidden border-border/70 bg-card/80 transition-all duration-500 hover:-translate-y-1.5 hover:border-primary/35 hover:bg-card hover:shadow-[0_24px_60px_-28px_rgba(37,99,235,0.35)]">
+          <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100">
+            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary via-sky-400 to-emerald-400" />
+            <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-emerald-400/10 blur-2xl" />
+          </div>
+          <CardHeader className="transition-colors duration-300 group-hover:text-foreground">
+            <CardTitle className="flex items-center gap-2"><TrendingUp className="h-4 w-4 text-primary transition-transform duration-300 group-hover:scale-110" /> Sales Forecast Readiness</CardTitle>
+            <CardDescription>Date span, period count, and revenue-column confidence for sales forecasting.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            {salesReadiness ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={salesReadiness.status === 'ready' ? 'default' : 'secondary'}>{salesReadiness.status}</Badge>
+                  <span>Date: {salesReadiness.date_column ?? 'N/A'}</span>
+                  <span>Target: {salesReadiness.target_column ?? 'N/A'}</span>
+                </div>
+                <p>Periods: {salesReadiness.period_count ?? 0} (min {salesReadiness.minimum_periods_for_ts ?? 24} for multi-model TS)</p>
+                <p>Date span: {salesReadiness.date_span_days ?? 0} days · Revenue confidence: {salesReadiness.revenue_column_confidence ?? 0} · Zero-sales share: {Math.round((salesReadiness.zero_sales_share ?? 0) * 100)}%</p>
+                {(salesReadiness.notes ?? []).filter(Boolean).map((note) => (
+                  <p key={String(note)} className="rounded-xl bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{note}</p>
+                ))}
+              </>
+            ) : (
+              <p>Upload and cache a dataset to evaluate sales forecast readiness.</p>
+            )}
           </CardContent>
         </Card>
 

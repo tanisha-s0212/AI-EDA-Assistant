@@ -16,6 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { AlertCircle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, Loader2, ShieldCheck, TrendingUp, Waves, Zap, RadioTower, Info, AlertTriangle } from 'lucide-react';
 import { Area, ComposedChart, CartesianGrid, Legend, Line, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 
+import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn } from '@/lib/sales-domain';
+
 const STEP_ITEMS = [
   { step: 1, label: 'Data Config', icon: CalendarDays },
   { step: 2, label: 'TS Models', icon: RadioTower },
@@ -32,7 +34,6 @@ const TS_CHART_COLORS = {
 } as const;
 
 const transition = { duration: 0.25, ease: 'easeOut' } as const;
-const TARGET_EXCLUSION_PATTERN = /id|no|number|count|index|code|key|batch|seq|row/i;
 const HORIZON_OPTIONS = [3, 6, 12, 24] as const;
 
 const MODEL_DESCRIPTIONS: Record<string, string> = {
@@ -89,24 +90,11 @@ function ForecastTooltip({ active, payload, label }: { active?: boolean; payload
 }
 
 function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
-  const scored = columns
-    .filter((column) => column.role === 'numeric' && !TARGET_EXCLUSION_PATTERN.test(column.name))
-    .map((column) => {
-      const values = data.map((row) => Number(row[column.name])).filter(Number.isFinite);
-      const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-      const variance = values.length ? values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length : 0;
-      return { name: column.name, variance };
-    })
-    .filter((item) => item.variance > 0)
-    .sort((left, right) => right.variance - left.variance);
-  return scored[0]?.name ?? '';
+  return pickSmartSalesTargetColumn(columns, data as Array<Record<string, unknown>>);
 }
 
 function getPreferredDateColumn(columns: ColumnInfo[]) {
-  return columns.find((column) => column.role === 'datetime' && /doc_date|invoice_date|order_date|date/i.test(column.name))?.name
-    ?? columns.find((column) => column.role === 'datetime')?.name
-    ?? columns.find((column) => /date|month|time|period/i.test(column.name))?.name
-    ?? '';
+  return pickPreferredSalesDateColumn(columns);
 }
 
 function inferSeriesProfile(data: DataRow[], dateColumn: string, targetColumn: string) {
@@ -178,7 +166,11 @@ export default function TimeSeriesForecastTab() {
   useEffect(() => {
     if (currentStep === 2 && datasetId && !stationarity && !stationarityLoading) {
       setStationarityLoading(true);
-      apiClient.post('/ts-forecast/stationarity', { dataset_id: datasetId })
+      apiClient.post('/ts-forecast/stationarity', {
+        dataset_id: datasetId,
+        date_column: dateColumn || undefined,
+        target_column: targetColumn || undefined,
+      })
         .then((res) => setStationarity(res.data as TsStationarity))
         .catch((err) => {
           console.error('Stationarity fetch failed:', err);
@@ -193,7 +185,7 @@ export default function TimeSeriesForecastTab() {
         })
         .finally(() => setStationarityLoading(false));
     }
-  }, [currentStep, datasetId, stationarity, stationarityLoading, toast]);
+  }, [currentStep, datasetId, dateColumn, targetColumn, stationarity, stationarityLoading, toast]);
 
   const profile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
 
@@ -283,6 +275,8 @@ export default function TimeSeriesForecastTab() {
         dataset_id: datasetId ?? null,
         horizon: forecastPeriods,
         training_split: trainSplitPercent / 100,
+        date_column: dateColumn,
+        target_column: targetColumn,
       });
       const data = res.data as {
         status: string; best_model: string; smape: number; mae: number; rmse: number; mape: number | null;

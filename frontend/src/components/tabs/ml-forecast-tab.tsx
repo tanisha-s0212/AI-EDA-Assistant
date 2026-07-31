@@ -16,10 +16,11 @@ import { AlertCircle, ArrowRight, CheckCircle2, ChevronLeft, Cpu, Loader2, Setti
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
+import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn } from '@/lib/sales-domain';
+
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
 
 const DEFAULT_FEATURE_GROUPS: FeatureGroupId[] = ['trend', 'calendar', 'lags', 'rolling'];
-const TARGET_EXCLUSION_PATTERN = /id|no|number|count|index|code|key|batch|seq|row/i;
 const HORIZON_OPTIONS = [3, 6, 12, 24] as const;
 
 const FEATURE_GROUPS: { id: FeatureGroupId; label: string; description: string }[] = [
@@ -50,24 +51,11 @@ function modelStatusClass(status: string) {
 }
 
 function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
-  const scored = columns
-    .filter((column) => column.role === 'numeric' && !TARGET_EXCLUSION_PATTERN.test(column.name))
-    .map((column) => {
-      const values = data.map((row) => Number(row[column.name])).filter(Number.isFinite);
-      const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-      const variance = values.length ? values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length : 0;
-      return { name: column.name, variance };
-    })
-    .filter((item) => item.variance > 0)
-    .sort((left, right) => right.variance - left.variance);
-  return scored[0]?.name ?? '';
+  return pickSmartSalesTargetColumn(columns, data as Array<Record<string, unknown>>);
 }
 
 function getPreferredDateColumn(columns: ColumnInfo[]) {
-  return columns.find((column) => column.role === 'datetime' && /doc_date|invoice_date|order_date|date/i.test(column.name))?.name
-    ?? columns.find((column) => column.role === 'datetime')?.name
-    ?? columns.find((column) => /date|month|time|period/i.test(column.name))?.name
-    ?? '';
+  return pickPreferredSalesDateColumn(columns);
 }
 
 function inferSeriesProfile(data: DataRow[], dateColumn: string, targetColumn: string) {

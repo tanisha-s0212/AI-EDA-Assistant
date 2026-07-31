@@ -1,0 +1,12 @@
+{
+  "model_path": "sales_monthly_demo.joblib",
+  "feature_columns": [
+    "month_number",
+    "trend_index",
+    "region",
+    "category"
+  ],
+  "target_column": "total_total_value_sale_free",
+  "problem_type": "regression",
+  "rows_trained": 48
+}

@@ -5,7 +5,9 @@ frontend/next-env.d.ts
 frontend/run-frontend*.log
 frontend/dev-server*.log
 backend/__pycache__/
-backend/models/
+backend/models/*
+!backend/models/demo/
+!backend/models/demo/**
 backend/logs/
 backend/datasets/*.csv
 backend/datasets/*.tsv

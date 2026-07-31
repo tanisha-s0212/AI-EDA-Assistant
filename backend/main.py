@@ -103,6 +103,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dtype_inference import LARGE_COL_CUTOFF, RANDOM_STATE, SAMPLE_SIZE, dtype_review_flags, dtype_summary_report, infer_universal_dtypes
 from ml_forecast_pipeline import run_full_pipeline
+from sales_domain import (
+    DATE_PATTERN as SALES_DATE_PATTERN,
+    REVENUE_PATTERN as SALES_REVENUE_PATTERN,
+    resolve_sales_columns,
+    sales_mapping_payload,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
@@ -197,6 +203,59 @@ router = APIRouter(prefix='/api')
 MODEL_CACHE: dict[str, dict[str, Any]] = {}
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
 SESSION_STATE: dict[str, dict[str, Any]] = {}
+DATASET_CACHE_INDEX_PATH = DATASET_DIR / 'dataset_cache_index.json'
+
+
+def _json_safe_cache_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in entry.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+        elif isinstance(value, Path):
+            safe[key] = str(value)
+        elif isinstance(value, (list, dict)):
+            try:
+                json.dumps(value)
+                safe[key] = value
+            except TypeError:
+                continue
+    return safe
+
+
+def persist_dataset_cache_index() -> None:
+    try:
+        DATASET_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {dataset_id: _json_safe_cache_entry(entry) for dataset_id, entry in DATASET_CACHE.items()}
+        DATASET_CACHE_INDEX_PATH.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    except Exception:
+        logger.exception('Failed to persist dataset cache index')
+
+
+def load_dataset_cache_index() -> None:
+    if not DATASET_CACHE_INDEX_PATH.exists():
+        return
+    try:
+        payload = json.loads(DATASET_CACHE_INDEX_PATH.read_text(encoding='utf-8'))
+        if not isinstance(payload, dict):
+            return
+        restored = 0
+        for dataset_id, entry in payload.items():
+            if not isinstance(entry, dict):
+                continue
+            # Only restore entries whose backing files still exist.
+            path_keys = ('frame_path', 'parquet_path', 'csv_path', 'excel_path')
+            if not any(entry.get(key) and Path(str(entry[key])).exists() for key in path_keys):
+                continue
+            DATASET_CACHE[str(dataset_id)] = entry
+            restored += 1
+        logger.info('Restored %s dataset cache entries from disk index.', restored)
+    except Exception:
+        logger.exception('Failed to load dataset cache index')
+
+
+def set_dataset_cache_entry(dataset_id: str, entry: dict[str, Any]) -> None:
+    DATASET_CACHE[dataset_id] = entry
+    persist_dataset_cache_index()
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -232,6 +291,7 @@ def startup_event() -> None:
         logger.exception(
             'Activity database is unavailable. Continuing without persisted activity logging because ACTIVITY_DB_REQUIRED is false.'
         )
+    load_dataset_cache_index()
 
 ProblemType = Literal['regression', 'classification']
 TrainingMode = Literal['fast', 'balanced']
@@ -562,33 +622,47 @@ def get_ts_output_dir(dataset_id: str) -> str:
     return output_dir
 
 
-def load_ts_dataset(dataset_id: str) -> tuple[pd.DataFrame, str, str]:
-    """Load active dataset, auto-detect date and target columns."""
+def load_ts_dataset(
+    dataset_id: str,
+    date_column: str | None = None,
+    target_column: str | None = None,
+) -> tuple[pd.DataFrame, str, str]:
+    """Load active dataset and resolve date/target using sales-domain heuristics or explicit overrides."""
     dataset_entry = DATASET_CACHE.get(dataset_id)
     if dataset_entry is None:
         raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
     available_columns = list(dataset_entry['columns'])
-    date_candidates = [c for c in available_columns if any(k in c.lower() for k in ['date', 'week', 'month', 'period', 'start', 'time'])]
-    target_candidates = [c for c in available_columns if any(k in c.lower() for k in ['sale_free', 'sale_value', 'total_value', 'revenue'])]
-    numeric_cols = [c for c in available_columns if any(
-        col['name'] == c and col.get('role') == 'numeric' for col in dataset_entry.get('column_info', []) if isinstance(col, dict)
-    )]
-    if not date_candidates:
-        date_candidates = [c for c in available_columns if any(
-            col['name'] == c and col.get('role') in ('datetime', 'date') for col in dataset_entry.get('column_info', []) if isinstance(col, dict)
-        )]
-    if not date_candidates:
-        raise ValueError(f'No date column found. Available columns: {available_columns}')
-    if not target_candidates:
-        target_candidates = numeric_cols if numeric_cols else [c for c in available_columns if c not in date_candidates]
-    if not target_candidates:
-        raise ValueError(f'No target column found. Available columns: {available_columns}')
-    date_col = date_candidates[0]
-    target_col = target_candidates[0]
+    column_info = dataset_entry.get('column_info') if isinstance(dataset_entry.get('column_info'), list) else []
+
+    # Prefer previously confirmed sales mapping when caller did not override.
+    if not date_column or not target_column:
+        mapping = get_workspace_context(dataset_id, 'sales_mapping') or {}
+        date_column = date_column or mapping.get('date_column')
+        target_column = target_column or mapping.get('target_column')
+
+    probe_frame: pd.DataFrame | None = None
+    try:
+        probe_frame = read_cached_frame(dataset_entry) if dataset_entry.get('frame_path') or dataset_entry.get('parquet_path') else None
+    except Exception:
+        probe_frame = None
+
+    try:
+        date_col, target_col = resolve_sales_columns(
+            available_columns,
+            date_column=date_column,
+            target_column=target_column,
+            frame=probe_frame,
+            column_info=column_info,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
     series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, date_col, target_col)
     series_frame.rename(columns={'period': date_col, 'sales': target_col}, inplace=True)
     frequency, freq_period = normalize_ts_frequency(freq, period_label)
     store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
+    source = 'explicit' if date_column and target_column else 'auto'
+    save_workspace_context(dataset_id, 'sales_mapping', sales_mapping_payload(date_col, target_col, source=source))
     return series_frame, date_col, target_col
 
 
@@ -2392,12 +2466,16 @@ class TimeSeriesForecastRequest(BaseModel):
 
 class TsStationarityRequest(BaseModel):
     dataset_id: str
+    date_column: str | None = None
+    target_column: str | None = None
 
 
 class TsForecastRunRequest(BaseModel):
     dataset_id: str
     horizon: int = Field(default=3, ge=1, le=24)
     training_split: float = Field(default=0.8, ge=0.5, le=0.95)
+    date_column: str | None = None
+    target_column: str | None = None
 
 
 class MlForecastRequest(BaseModel):
@@ -2449,6 +2527,15 @@ class ParquetCleaningRequest(BaseModel):
     convert_dates: bool = True
     standardize_names: bool = True
     infer_dtypes: bool = True
+    sales_preset: bool = False
+    drop_non_positive_revenue: bool = False
+    protect_forecast_target: bool = True
+
+
+class SalesReadinessRequest(BaseModel):
+    dataset_id: str
+    date_column: str | None = None
+    target_column: str | None = None
 
 
 class DtypeInferenceRequest(BaseModel):
@@ -2747,14 +2834,14 @@ def normalize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
 def persist_inferred_dataset_frame(dataset_id: str, source_entry: dict[str, Any], frame: pd.DataFrame) -> Path:
     cached_path = write_cached_frame(dataset_id, frame)
     duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
-    DATASET_CACHE[dataset_id] = {
+    set_dataset_cache_entry(dataset_id, {
         'frame_path': str(cached_path),
         'filename': source_entry.get('filename') or 'dataset',
         'row_count': int(len(frame)),
         'column_count': int(len(frame.columns)),
         'columns': list(frame.columns),
         'duplicate_count': duplicate_rows,
-    }
+    })
     maybe_store_dataset_frequency(dataset_id, frame)
     return cached_path
 
@@ -3629,7 +3716,7 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
     full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
     series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
     series_frame['sales'] = series_frame['sales'].astype(float)
-    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales')
+    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
 
     minimum_periods = 2 * seasonal_period_for_label(period_label)
     if len(series_frame) < minimum_periods:
@@ -3728,7 +3815,7 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
     full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
     series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
     series_frame['sales'] = series_frame['sales'].astype(float)
-    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales')
+    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
 
     minimum_periods = 2 * seasonal_period_for_label(period_label)
     if len(series_frame) < minimum_periods:
@@ -5357,6 +5444,53 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
     return JSONResponse(content=safe_serialize(response))
 
 
+@router.post('/sales/readiness')
+def sales_readiness(request: SalesReadinessRequest) -> JSONResponse:
+    """Sales-domain readiness card for Understanding/EDA before forecasting."""
+    dataset_entry = DATASET_CACHE.get(request.dataset_id)
+    if dataset_entry is None:
+        raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
+    try:
+        df, date_col, target_col = load_ts_dataset(
+            request.dataset_id,
+            date_column=request.date_column,
+            target_column=request.target_column,
+        )
+        values = pd.to_numeric(df[target_col], errors='coerce')
+        periods = int(len(df))
+        min_required = 24
+        zero_share = float((values.fillna(0) <= 0).mean()) if periods else 0.0
+        missing_share = float(values.isna().mean()) if periods else 0.0
+        date_span_days = 0
+        if periods >= 2:
+            ordered = pd.to_datetime(df[date_col], errors='coerce').dropna().sort_values()
+            if len(ordered) >= 2:
+                date_span_days = int((ordered.iloc[-1] - ordered.iloc[0]).days)
+        from sales_domain import score_revenue_column
+        confidence = score_revenue_column(target_col)
+        ready = periods >= min_required and confidence >= 40
+        return JSONResponse(content=safe_serialize({
+            'status': 'ready' if ready else 'needs_attention',
+            'date_column': date_col,
+            'target_column': target_col,
+            'period_count': periods,
+            'minimum_periods_for_ts': min_required,
+            'date_span_days': date_span_days,
+            'revenue_column_confidence': confidence,
+            'zero_sales_share': round(zero_share, 4),
+            'missing_share': round(missing_share, 4),
+            'notes': [] if ready else [
+                f'Need at least {min_required} aggregated periods for multi-model time-series (have {periods}).' if periods < min_required else None,
+                'Revenue column confidence is low; confirm the sales target mapping.' if confidence < 40 else None,
+            ],
+        }))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Sales readiness failed dataset_id=%s', request.dataset_id)
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 # ── TS Forecast: Stationarity endpoint ─────────────────────────
 
 @router.post('/ts-forecast/stationarity')
@@ -5366,10 +5500,19 @@ def get_ts_stationarity(request: TsStationarityRequest) -> JSONResponse:
         dataset_id = request.dataset_id
         if not dataset_id:
             return JSONResponse(status_code=400, content={'error': 'dataset_id is required.', 'status': 'failed'})
-        df, date_col, target_col = load_ts_dataset(dataset_id)
+        df, date_col, target_col = load_ts_dataset(
+            dataset_id,
+            date_column=request.date_column,
+            target_column=request.target_column,
+        )
         frequency, freq_period = detect_ts_frequency(df, date_col)
         store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
         result = check_stationarity(df[target_col], frequency)
+        result = {
+            **result,
+            'date_column': date_col,
+            'target_column': target_col,
+        }
         return JSONResponse(content=safe_serialize(result))
     except Exception as error:
         logger.exception('TS stationarity check failed dataset_id=%s', request.dataset_id)
@@ -5387,7 +5530,11 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
         split = request.training_split
         if not dataset_id:
             return JSONResponse(status_code=400, content={'error': 'dataset_id is required.', 'status': 'failed'})
-        df, date_col, target_col = load_ts_dataset(dataset_id)
+        df, date_col, target_col = load_ts_dataset(
+            dataset_id,
+            date_column=request.date_column,
+            target_column=request.target_column,
+        )
         frequency, freq_period = detect_ts_frequency(df, date_col)
         period_label = 'day' if frequency == 'daily' else 'week' if frequency == 'weekly' else 'month'
         store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
@@ -5403,7 +5550,21 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
         except Exception:
             logger.exception('write_ts_output_files failed dataset_id=%s', dataset_id)
         write_ts_to_postgres(dataset_id, best_name, best_metrics, results, stationarity, future_forecast, insight)
-        save_workspace_context(dataset_id, 'ts_forecast_context', {'frequency': frequency, 'freq_period': freq_period, 'date_col': date_col, 'target_col': target_col, 'clean_start_date': first_nonzero_date, 'training_split': split, 'pipeline_status': 'completed', 'next_tab': 'ml_forecast', 'retrain_available': True, 'best_model': best_name})
+        save_workspace_context(dataset_id, 'ts_forecast_context', {
+            'frequency': frequency,
+            'freq_period': freq_period,
+            'date_col': date_col,
+            'target_col': target_col,
+            'date_column': date_col,
+            'target_column': target_col,
+            'clean_start_date': first_nonzero_date,
+            'training_split': split,
+            'pipeline_status': 'completed',
+            'next_tab': 'ml_forecast',
+            'retrain_available': True,
+            'best_model': best_name,
+        })
+        save_workspace_context(dataset_id, 'sales_mapping', sales_mapping_payload(date_col, target_col, source='ts_run'))
         response_data = {
             'status': 'completed',
             'best_model': best_name,
@@ -5507,6 +5668,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             horizon=request.forecast_periods,
             frequency='auto',
             frame=pipeline_frame,
+            model_type=request.model_type or 'auto',
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -5538,8 +5700,8 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'status': selected_model['data_quality_status'],
         'minimum_required_periods': 20 if metadata['frequency'] == 'weekly' else 12,
         'usable_periods': metadata['usable_periods'],
-        'missing_share': 0,
-        'zero_or_negative_share': 0,
+        'missing_share': metadata.get('missing_share', 0),
+        'zero_or_negative_share': metadata.get('zero_value_share', 0),
         'volatility': metadata['volatility'],
         'issues': [] if selected_model['data_quality_status'] == 'pass' else ['Data quality score below production pass threshold.'],
     }
@@ -5570,7 +5732,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             'detected_frequency': frequency_label,
             'usable_periods': metadata['usable_periods'],
             'volatility': metadata['volatility'],
-            'zero_value_share': 0,
+            'zero_value_share': metadata.get('zero_value_share', 0),
         },
         'data_quality': data_quality,
         'generated_features': generated_features,
@@ -5620,6 +5782,12 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
     session_state = ensure_session_state(session_id)
     session_state['forecast_steps']['ml'] = True
     session_state['ml_forecast_result'] = safe_serialize(response)
+    if request.dataset_id:
+        save_workspace_context(
+            request.dataset_id,
+            'sales_mapping',
+            sales_mapping_payload(str(metadata['date_col']), str(metadata['target_col']), source='ml_run'),
+        )
     append_forecast_version(session_id, 'ml_forecast', response)
     session_state['updated_at'] = utc_now_iso()
     record_activity(
@@ -5660,8 +5828,8 @@ LOSS_COLUMN_PATTERNS = {
     'margin_pct': re.compile(r'gross_margin_pct|gross_margin_percent|margin_pct|margin_percent|margin_rate', re.IGNORECASE),
     'category': re.compile(r'category|product|segment|sku|item', re.IGNORECASE),
     'region': re.compile(r'region|market|territory|location|state|city', re.IGNORECASE),
-    'revenue': re.compile(r'^(?!.*(?:loss|lost|missed)).*(revenue|sales|amount|total|net_sales)', re.IGNORECASE),
-    'date': re.compile(r'date|month|period|time', re.IGNORECASE),
+    'revenue': SALES_REVENUE_PATTERN,
+    'date': SALES_DATE_PATTERN,
     'price': re.compile(r'price|unit_price|rate', re.IGNORECASE),
 }
 
@@ -5725,13 +5893,17 @@ def repair_zero_period_values_with_seasonal_interpolation(
     frame: pd.DataFrame,
     value_column: str,
     period_column: str = 'period',
+    *,
+    repair_zeros: bool = False,
 ) -> pd.DataFrame:
     repaired_frame = frame.copy()
     if repaired_frame.empty or value_column not in repaired_frame.columns or period_column not in repaired_frame.columns:
         return repaired_frame
 
     values = pd.to_numeric(repaired_frame[value_column], errors='coerce').astype(float)
-    missing_like = values.isna() | (values <= 0)
+    missing_like = values.isna()
+    if repair_zeros:
+        missing_like = missing_like | (values <= 0)
     if not missing_like.any():
         repaired_frame[value_column] = values.fillna(0.0)
         return repaired_frame
@@ -5818,7 +5990,7 @@ def distribute_repaired_period_totals(
         .rename(columns={'_repair_period': 'period', '_repair_value': value_column})
         .sort_values('period')
     )
-    repaired_grouped = repair_zero_period_values_with_seasonal_interpolation(grouped, value_column)
+    repaired_grouped = repair_zero_period_values_with_seasonal_interpolation(grouped, value_column, repair_zeros=True)
     repaired_totals = repaired_grouped.set_index('period')[value_column].to_dict()
     original_totals = grouped.set_index('period')[value_column].to_dict()
     period_counts = work.loc[valid_periods].groupby('_repair_period').size().to_dict()
@@ -5873,7 +6045,7 @@ def repair_forecast_revenue_from_history(
         return forecast_frame
 
     history_totals = history.groupby('_period', as_index=False)['_revenue'].sum().rename(columns={'_period': 'period', '_revenue': 'revenue'})
-    history_totals = repair_zero_period_values_with_seasonal_interpolation(history_totals.sort_values('period'), 'revenue')
+    history_totals = repair_zero_period_values_with_seasonal_interpolation(history_totals.sort_values('period'), 'revenue', repair_zeros=True)
     positive_history = history_totals[history_totals['revenue'] > 0].copy()
     if positive_history.empty:
         return forecast_frame
@@ -6012,11 +6184,24 @@ def forecast_periods_to_frame(points: list[dict[str, Any]], value_name: str) -> 
         period = point.get('period')
         if period is None:
             continue
+        # TS multi-model uses "forecast"; ML forecast uses "predicted".
+        value = point.get('predicted')
+        if value is None:
+            value = point.get('forecast')
+        if value is None:
+            value = point.get('actual')
+        value = float(value or 0)
+        lower = point.get('lower')
+        if lower is None:
+            lower = value
+        upper = point.get('upper')
+        if upper is None:
+            upper = value
         rows.append({
             'period': normalize_period_value(period),
-            value_name: float(point.get('predicted') or point.get('actual') or 0),
-            f'{value_name}_lower': float(point.get('lower') or point.get('predicted') or 0),
-            f'{value_name}_upper': float(point.get('upper') or point.get('predicted') or 0),
+            value_name: value,
+            f'{value_name}_lower': float(lower or 0),
+            f'{value_name}_upper': float(upper or 0),
         })
     return pd.DataFrame(rows)
 
@@ -6546,7 +6731,19 @@ def run_loss_forecast(request: ForecastRunRequest, http_request: Request) -> JSO
         append_forecast_version(session_id, 'loss_forecast', {'status': 'success', 'metrics': state['loss_summary'], 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='loss_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail=f'Generated {len(rows)} loss forecast rows.')
-        return JSONResponse(content=safe_serialize({'status': 'success', 'loss_forecast': rows, 'segments': segments, 'summary': state['loss_summary'], 'assumptions_audit': audit_trail}))
+        illustrative = any(
+            'standard' in str(note).lower() or 'falls back' in str(note).lower() or 'fallback assumption' in str(note).lower()
+            for note in (audit_trail or [])
+        )
+        return JSONResponse(content=safe_serialize({
+            'status': 'success',
+            'loss_forecast': rows,
+            'segments': segments,
+            'summary': state['loss_summary'],
+            'assumptions_audit': audit_trail,
+            'illustrative_assumptions': illustrative,
+            'assumption_mode': 'illustrative' if illustrative else 'mapped',
+        }))
     except HTTPException:
         raise
     except Exception as error:
@@ -6600,7 +6797,18 @@ def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> J
         append_forecast_version(session_id, 'profit_forecast', {'status': 'success', 'metrics': breakeven, 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='profit_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail='Generated profit forecast scenarios.')
-        return JSONResponse(content=safe_serialize({'status': 'success', 'scenarios': serialized, 'breakeven': breakeven, 'assumptions_audit': audit_trail}))
+        illustrative = any(
+            'standard' in str(note).lower() or 'falls back' in str(note).lower() or 'fallback assumption' in str(note).lower() or '60%' in str(note) or '12%' in str(note)
+            for note in (audit_trail or [])
+        )
+        return JSONResponse(content=safe_serialize({
+            'status': 'success',
+            'scenarios': serialized,
+            'breakeven': breakeven,
+            'assumptions_audit': audit_trail,
+            'illustrative_assumptions': illustrative,
+            'assumption_mode': 'illustrative' if illustrative else 'mapped',
+        }))
     except HTTPException:
         raise
     except Exception as error:
@@ -6893,9 +7101,22 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
 
         if request.handle_missing:
             filled_columns: list[str] = []
+            protected_targets: set[str] = set()
+            if request.sales_preset and request.protect_forecast_target:
+                mapping = get_workspace_context(request.dataset_id, 'sales_mapping') or {}
+                protected = mapping.get('target_column')
+                if protected:
+                    protected_targets.add(str(protected))
+                from sales_domain import pick_best_revenue_column
+                guessed = pick_best_revenue_column(frame.columns, frame=frame)
+                if guessed:
+                    protected_targets.add(guessed)
             for column in frame.columns:
                 series = frame[column]
                 if not series.isna().any():
+                    continue
+                if str(column) in protected_targets:
+                    # Sales preset: do not invent demand by median-imputing the forecast target.
                     continue
                 if pd.api.types.is_numeric_dtype(series):
                     median = series.median()
@@ -6912,6 +7133,28 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                     'detail': f'Filled missing values in {len(filled_columns)} column(s).',
                     'timestamp': datetime.utcnow().isoformat(),
                 })
+            if protected_targets and request.sales_preset:
+                logs.append({
+                    'action': 'Protected Sales Target',
+                    'detail': f'Skipped median imputation for sales target column(s): {", ".join(sorted(protected_targets))}.',
+                    'timestamp': datetime.utcnow().isoformat(),
+                })
+
+        if request.sales_preset and request.drop_non_positive_revenue:
+            mapping = get_workspace_context(request.dataset_id, 'sales_mapping') or {}
+            from sales_domain import pick_best_revenue_column
+            revenue_col = mapping.get('target_column') or pick_best_revenue_column(frame.columns, frame=frame)
+            if revenue_col and revenue_col in frame.columns:
+                before = len(frame)
+                numeric_revenue = pd.to_numeric(frame[revenue_col], errors='coerce')
+                frame = frame.loc[numeric_revenue > 0].reset_index(drop=True)
+                removed = before - len(frame)
+                if removed > 0:
+                    logs.append({
+                        'action': 'Dropped Non-Positive Revenue',
+                        'detail': f'Removed {removed} row(s) with non-positive {revenue_col}.',
+                        'timestamp': datetime.utcnow().isoformat(),
+                    })
 
         if request.convert_dates:
             converted_columns: list[str] = []
@@ -7082,14 +7325,14 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
     frame.write_parquet(parquet_buffer)
     updated_dataset_path = write_dataset_file(request.dataset_id, parquet_buffer.getvalue())
     duplicate_rows = int(max(0, frame.height - frame.unique().height))
-    DATASET_CACHE[request.dataset_id] = {
+    set_dataset_cache_entry(request.dataset_id, {
         'parquet_path': str(updated_dataset_path),
         'filename': dataset_entry['filename'],
         'row_count': int(frame.height),
         'column_count': int(len(frame.columns)),
         'columns': list(frame.columns),
         'duplicate_count': duplicate_rows,
-    }
+    })
     memory_size = updated_dataset_path.stat().st_size
 
     preview_frame = frame.head(DATASET_PREVIEW_ROW_LIMIT)
@@ -9558,13 +9801,13 @@ def cache_dataset(request: DatasetCacheRequest, http_request: Request) -> JSONRe
 
     dataset_id = str(uuid.uuid4())[:8]
     cached_path = write_cached_frame(dataset_id, data_frame)
-    DATASET_CACHE[dataset_id] = {
+    set_dataset_cache_entry(dataset_id, {
         'frame_path': str(cached_path),
         'filename': request.file_name,
         'row_count': int(len(data_frame)),
         'column_count': int(len(data_frame.columns)),
         'columns': list(data_frame.columns),
-    }
+    })
     maybe_store_dataset_frequency(dataset_id, data_frame)
 
     response = {
@@ -9780,7 +10023,7 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'columns': [str(column) for column in frame.columns],
             'duplicate_count': int(preview_duplicate_rows),
         })
-        DATASET_CACHE[dataset_id] = dataset_entry
+        set_dataset_cache_entry(dataset_id, dataset_entry)
         pandas_frame = frame.to_pandas(use_pyarrow_extension_array=False) if hasattr(frame, 'to_pandas') else pd.DataFrame(frame)
         maybe_store_dataset_frequency(dataset_id, pandas_frame)
 
@@ -9885,7 +10128,7 @@ def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_re
         'column_count': int(len(frame.columns)),
         'duplicate_count': duplicate_rows,
     })
-    DATASET_CACHE[request.dataset_id] = dataset_entry
+    set_dataset_cache_entry(request.dataset_id, dataset_entry)
     maybe_store_dataset_frequency(request.dataset_id, frame)
 
     response = {

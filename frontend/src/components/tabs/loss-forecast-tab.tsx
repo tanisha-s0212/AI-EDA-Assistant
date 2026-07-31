@@ -134,6 +134,7 @@ export default function LossForecastTab() {
   const lossSummary = useAppStore((state) => state.lossSummary);
   const lossLoading = useAppStore((state) => state.lossLoading);
   const lossError = useAppStore((state) => state.lossError);
+  const lossIllustrativeAssumptions = useAppStore((state) => state.lossIllustrativeAssumptions);
   const runLossForecast = useAppStore((state) => state.runLossForecast);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const [periods, setPeriods] = useState(30);
@@ -258,6 +259,16 @@ export default function LossForecastTab() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {lossIllustrativeAssumptions && lossForecast.length > 0 ? (
+        <Alert>
+          <ShieldAlert className="h-4 w-4" />
+          <AlertTitle>Illustrative assumptions</AlertTitle>
+          <AlertDescription>
+            One or more COGS/OpEx/loss drivers used standard fallbacks (for example 60% COGS or 12% OpEx). Treat these results as illustrative unless mapped ERP cost columns are confirmed.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {lossError && (
         <Alert variant="destructive">

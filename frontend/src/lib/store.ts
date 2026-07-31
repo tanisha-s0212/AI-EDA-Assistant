@@ -245,6 +245,8 @@ export interface DatasetWorkspaceState {
   timeSeriesForecastResult: TimeSeriesForecastResult | null;
   mlForecastResult: MlForecastResult | null;
   lossForecast: LossForecastResult[] | null;
+  lossIllustrativeAssumptions: boolean;
+  profitIllustrativeAssumptions: boolean;
   profitForecast: ProfitForecastResult[] | null;
   lossSegments: SegmentBreakdown[] | null;
   lossSummary: LossForecastSummary | null;
@@ -382,6 +384,8 @@ function createEmptyDatasetState(): DatasetWorkspaceState {
     timeSeriesForecastResult: null,
     mlForecastResult: null,
     lossForecast: null,
+    lossIllustrativeAssumptions: false,
+    profitIllustrativeAssumptions: false,
     profitForecast: null,
     lossSegments: null,
     lossSummary: null,
@@ -606,6 +610,7 @@ const store = create<AppState>()(
             lossForecast: response.data.loss_forecast ?? [],
             lossSegments: response.data.segments ?? [],
             lossSummary: response.data.summary ?? null,
+            lossIllustrativeAssumptions: Boolean(response.data.illustrative_assumptions),
             lossLoading: false,
             lossError: null,
           });
@@ -640,6 +645,7 @@ const store = create<AppState>()(
             profitForecast: scenarios?.baseline ?? [],
             breakevenPeriod: response.data.breakeven?.breakeven_period ?? null,
             periodsToBreakeven: response.data.breakeven?.periods_to_breakeven ?? null,
+            profitIllustrativeAssumptions: Boolean(response.data.illustrative_assumptions),
             profitLoading: false,
             profitError: null,
           });
@@ -667,6 +673,8 @@ const store = create<AppState>()(
         scenarios: null,
         breakevenPeriod: null,
         periodsToBreakeven: null,
+        lossIllustrativeAssumptions: false,
+        profitIllustrativeAssumptions: false,
         lossLoading: false,
         profitLoading: false,
         lossError: null,

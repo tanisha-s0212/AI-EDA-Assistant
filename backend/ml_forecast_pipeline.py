@@ -16,8 +16,10 @@ from sklearn.model_selection import TimeSeriesSplit
 logger = logging.getLogger(__name__)
 
 
-DATE_PATTERNS = ['date', 'week', 'month', 'period', 'start', 'time']
-TARGET_PATTERNS = ['sale_free', 'sale_value', 'total_value', 'revenue']
+from sales_domain import pick_best_date_column, pick_best_revenue_column, score_date_column, score_revenue_column
+
+DATE_PATTERNS = ['invoice_date', 'order_date', 'bill_date', 'year_month', 'date', 'week', 'month', 'period', 'start', 'time']
+TARGET_PATTERNS = ['sale_free', 'sale_value', 'net_sales', 'total_value_sale', 'gmv', 'turnover', 'revenue', 'sales', 'total_value']
 MODEL_PRIORITY = {'XGBoost': 0, 'Gradient Boosting': 1, 'Prophet': 2, 'LightGBM': 3}
 
 
@@ -67,26 +69,13 @@ def _parse_object_dates(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _detect_date_column(frame: pd.DataFrame) -> str | None:
-    """Detect the first datetime-like or date-named column."""
-    for column in frame.columns:
-        if pd.api.types.is_datetime64_any_dtype(frame[column]):
-            return str(column)
-    for column in frame.columns:
-        if any(pattern in str(column).lower() for pattern in DATE_PATTERNS):
-            parsed = pd.to_datetime(frame[column], errors='coerce')
-            if parsed.notna().any():
-                return str(column)
-    return None
+    """Detect the best sales-domain date column."""
+    return pick_best_date_column(frame.columns)
 
 
 def _detect_target_column(frame: pd.DataFrame) -> str | None:
-    """Detect the first target-like numeric column."""
-    for column in frame.columns:
-        if any(pattern in str(column).lower() for pattern in TARGET_PATTERNS):
-            numeric = pd.to_numeric(frame[column], errors='coerce')
-            if numeric.notna().any():
-                return str(column)
-    return None
+    """Detect the best sales/revenue target column using name score then variance."""
+    return pick_best_revenue_column(frame.columns, frame=frame)
 
 
 def load_and_detect(path: str | Path, date_col: str | None = None, target_col: str | None = None) -> tuple[pd.DataFrame, str, str]:
@@ -582,6 +571,8 @@ def write_all_outputs(
     config = get_config(frequency)
     values = pd.to_numeric(clean_df[target_col], errors='coerce').astype(float)
     volatility = float(values.std() / values.mean()) if float(values.mean() or 0.0) != 0.0 else 0.0
+    zero_value_share = float((values.fillna(0) <= 0).mean()) if len(values) else 0.0
+    missing_share = float(values.isna().mean()) if len(values) else 0.0
     quality_score, quality_status = _data_quality(clean_df, target_col, frequency)
     naive_mae = _naive_baseline_mae(values.tolist())
     top_driver = shap[0]['feature'] if shap else ''
@@ -599,6 +590,8 @@ def write_all_outputs(
         'date_col': date_col,
         'usable_periods': int(len(clean_df)),
         'volatility': round(volatility, 4),
+        'zero_value_share': round(zero_value_share, 4),
+        'missing_share': round(missing_share, 4),
         'training_split_pct': 80,
         'horizon_periods': int(horizon),
         'generated_feature_count': int(len(feature_list)),

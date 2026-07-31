@@ -126,6 +126,7 @@ export default function ProfitForecastTab() {
   const scenarios = useAppStore((state) => state.scenarios);
   const profitLoading = useAppStore((state) => state.profitLoading);
   const profitError = useAppStore((state) => state.profitError);
+  const profitIllustrativeAssumptions = useAppStore((state) => state.profitIllustrativeAssumptions);
   const breakevenPeriod = useAppStore((state) => state.breakevenPeriod);
   const periodsToBreakeven = useAppStore((state) => state.periodsToBreakeven);
   const runProfitForecast = useAppStore((state) => state.runProfitForecast);
@@ -307,6 +308,16 @@ export default function ProfitForecastTab() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {profitIllustrativeAssumptions && activeRows.length > 0 ? (
+        <Alert>
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Illustrative assumptions</AlertTitle>
+          <AlertDescription>
+            Profit scenarios may include fallback cost assumptions from upstream loss/revenue mapping. Label as illustrative when ERP cost fields were not fully mapped.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {profitError && (
         <Alert variant="destructive">
