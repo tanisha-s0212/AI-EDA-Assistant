@@ -14,6 +14,10 @@ backend/datasets/*.tsv
 backend/datasets/*.xlsx
 backend/datasets/*.xls
 backend/datasets/*.parquet
+backend/datasets/*.joblib
+backend/datasets/dataset_cache_index.json
+backend/datasets/ml_forecast_output/
+backend/datasets/ts_forecast_output/
 backend/*.log
 *.pyc
 *.tsbuildinfo
