@@ -94,6 +94,29 @@ def test_sales_domain_prefers_revenue_over_cogs():
     assert target_col == 'total_total_value_sale_free'
 
 
+def test_resolve_sales_columns_ignores_date_part_override():
+    columns = ['created', 'month', 'day', 'dollars']
+    frame = pd.DataFrame({
+        'created': pd.date_range('2020-01-01', periods=40, freq='D'),
+        'month': [((i % 12) + 1) for i in range(40)],
+        'day': [((i % 28) + 1) for i in range(40)],
+        'dollars': [10.0 + i for i in range(40)],
+    })
+    date_col, target_col = resolve_sales_columns(
+        columns,
+        date_column='month',
+        target_column='dollars',
+        frame=frame,
+        column_info=[
+            {'name': 'created', 'role': 'datetime', 'uniqueCount': 40},
+            {'name': 'month', 'role': 'numeric', 'uniqueCount': 12},
+            {'name': 'dollars', 'role': 'numeric', 'uniqueCount': 40},
+        ],
+    )
+    assert date_col == 'created'
+    assert target_col == 'dollars'
+
+
 def test_resolve_sales_columns_respects_explicit_overrides():
     date_col, target_col = resolve_sales_columns(
         ['invoice_date', 'net_sales', 'cogs'],

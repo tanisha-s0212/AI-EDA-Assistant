@@ -202,6 +202,9 @@ def resolve_sales_columns(
     column_info: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     available = [str(c) for c in columns]
+    # Ignore stale/explicit date-part columns (e.g. mapping saved `month`) and re-pick.
+    if date_column and (date_column not in available or is_date_part_column(date_column)):
+        date_column = None
     date_col = date_column if date_column and date_column in available else pick_best_date_column(
         available, column_info=column_info, frame=frame,
     )

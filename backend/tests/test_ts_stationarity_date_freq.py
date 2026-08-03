@@ -119,6 +119,11 @@ def test_load_ts_auto_picks_created_not_month(tmp_path: Path):
         _df, date_col, target_col = load_ts_dataset(dataset_id)
         assert date_col == 'created'
         assert target_col == 'dollars'
+
+        # Explicit/stale date-part override must be ignored by resolve_sales_columns.
+        _df2, date_col2, target_col2 = load_ts_dataset(dataset_id, date_column='month', target_column='dollars')
+        assert date_col2 == 'created'
+        assert target_col2 == 'dollars'
     finally:
         DATASET_CACHE.pop(dataset_id, None)
 

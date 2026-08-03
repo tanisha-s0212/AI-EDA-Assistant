@@ -106,6 +106,8 @@ from ml_forecast_pipeline import run_full_pipeline
 from sales_domain import (
     DATE_PATTERN as SALES_DATE_PATTERN,
     REVENUE_PATTERN as SALES_REVENUE_PATTERN,
+    is_date_part_column,
+    pick_best_date_column,
     resolve_sales_columns,
     sales_mapping_payload,
 )
@@ -704,12 +706,20 @@ def detect_ts_frequency(df: pd.DataFrame, date_col: str) -> tuple[str, int]:
 
 
 def detect_time_frequency_metadata(frame: pd.DataFrame) -> dict[str, Any] | None:
-    date_columns = [
-        column for column in frame.columns
-        if pd.api.types.is_datetime64_any_dtype(frame[column])
-        or any(token in str(column).lower() for token in ['date', 'week', 'month', 'period', 'start', 'time'])
-    ]
-    for column in date_columns:
+    preferred = pick_best_date_column(frame.columns, frame=frame)
+    ordered_columns: list[str] = []
+    if preferred:
+        ordered_columns.append(preferred)
+    for column in frame.columns:
+        name = str(column)
+        if name in ordered_columns or is_date_part_column(name):
+            continue
+        if pd.api.types.is_datetime64_any_dtype(frame[column]) or any(
+            token in name.lower() for token in ['date', 'period', 'start', 'time', 'created', 'ended', 'timestamp']
+        ):
+            ordered_columns.append(name)
+
+    for column in ordered_columns:
         parsed = pd.to_datetime(frame[column], errors='coerce')
         if parsed.notna().sum() < 2:
             continue

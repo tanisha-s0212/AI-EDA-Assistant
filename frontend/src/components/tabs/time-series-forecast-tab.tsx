@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { AlertCircle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, Loader2, ShieldCheck, TrendingUp, Waves, Zap, RadioTower, Info, AlertTriangle } from 'lucide-react';
 import { Area, ComposedChart, CartesianGrid, Legend, Line, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 
-import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn } from '@/lib/sales-domain';
+import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
 
 const STEP_ITEMS = [
   { step: 1, label: 'Data Config', icon: CalendarDays },
@@ -129,7 +129,8 @@ export default function TimeSeriesForecastTab() {
   const data = cleanedData ?? rawData ?? [];
 
   const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
-  const dateColumns = useMemo(() => columns.filter((column) => column.role === 'datetime' || /date|month|time|period|created|ended|timestamp/i.test(column.name)), [columns]);
+  const dateColumns = useMemo(() => columns.filter(isForecastDateColumnCandidate), [columns]);
+  const preferredDateColumn = useMemo(() => getPreferredDateColumn(columns), [columns]);
   const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
   const [currentStep, setCurrentStep] = useState(1);
@@ -153,9 +154,11 @@ export default function TimeSeriesForecastTab() {
   const stationarityInFlightRef = useRef(false);
 
   useEffect(() => {
-    if (!dateColumn) setDateColumn(getPreferredDateColumn(columns));
+    if ((!dateColumn || isDatePartColumn(dateColumn)) && preferredDateColumn) {
+      setDateColumn(preferredDateColumn);
+    }
     if (!targetColumn && smartTargetColumn) setTargetColumn(smartTargetColumn);
-  }, [columns, dateColumn, targetColumn, smartTargetColumn]);
+  }, [columns, dateColumn, targetColumn, preferredDateColumn, smartTargetColumn]);
 
   useEffect(() => {
     if (storedResult) {
@@ -458,6 +461,7 @@ export default function TimeSeriesForecastTab() {
                         <SelectTrigger><SelectValue placeholder="Select date column" /></SelectTrigger>
                         <SelectContent>{dateColumns.map((column) => <SelectItem key={column.name} value={column.name}>{column.name}</SelectItem>)}</SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">{preferredDateColumn ? `Smart default: ${preferredDateColumn}` : 'No suitable default found. Select the date column manually.'}</p>
                     </div>
                     <div className="space-y-2">
                       <Label>Sales Target</Label>

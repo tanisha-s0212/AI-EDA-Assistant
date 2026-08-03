@@ -56,6 +56,13 @@ export function isDatePartColumn(name: string) {
   return DATE_PART_EXCLUDE.test(name.trim());
 }
 
+/** Columns eligible for forecast Date Column dropdowns (excludes bare date-parts). */
+export function isForecastDateColumnCandidate(column: { name: string; role?: string }) {
+  if (isDatePartColumn(column.name)) return false;
+  if (column.role === 'datetime' || column.role === 'date') return true;
+  return /date|time|period|created|ended|timestamp|year_month/i.test(column.name);
+}
+
 export function scoreSalesDateColumn(name: string, role?: string) {
   if (isDatePartColumn(name)) return 0;
   const score = tokenScore(name, DATE_TOKEN_SCORES);

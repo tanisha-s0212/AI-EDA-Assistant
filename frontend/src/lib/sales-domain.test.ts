@@ -5,6 +5,7 @@ import {
   pickPreferredSalesDateColumn,
   scoreSalesDateColumn,
   isDatePartColumn,
+  isForecastDateColumnCandidate,
 } from './sales-domain';
 
 describe('shouldEnableSalesPreset', () => {
@@ -32,18 +33,19 @@ describe('shouldEnableSalesPreset', () => {
 });
 
 describe('pickPreferredSalesDateColumn', () => {
+  const stationColumns = [
+    { name: 'created', role: 'datetime' as const, uniqueCount: 3000 },
+    { name: 'year', role: 'numeric' as const, uniqueCount: 3 },
+    { name: 'month', role: 'numeric' as const, uniqueCount: 12 },
+    { name: 'dayofweek', role: 'numeric' as const, uniqueCount: 7 },
+    { name: 'date', role: 'date' as const, uniqueCount: 400 },
+  ];
+
   test('prefers created over month/dayofweek/date parts', () => {
-    const columns = [
-      { name: 'created', role: 'datetime', uniqueCount: 3000 },
-      { name: 'year', role: 'numeric', uniqueCount: 3 },
-      { name: 'month', role: 'numeric', uniqueCount: 12 },
-      { name: 'dayofweek', role: 'numeric', uniqueCount: 7 },
-      { name: 'date', role: 'date', uniqueCount: 400 },
-    ];
     expect(isDatePartColumn('month')).toBe(true);
     expect(scoreSalesDateColumn('month')).toBe(0);
     expect(scoreSalesDateColumn('dayofweek')).toBe(0);
-    expect(pickPreferredSalesDateColumn(columns)).toBe('created');
+    expect(pickPreferredSalesDateColumn(stationColumns)).toBe('created');
   });
 
   test('still prefers year_month for sales panels', () => {
@@ -53,5 +55,21 @@ describe('pickPreferredSalesDateColumn', () => {
         { name: 'region' },
       ]),
     ).toBe('year_month');
+  });
+
+  test('forecast date candidates include created and exclude month', () => {
+    expect(isForecastDateColumnCandidate({ name: 'created', role: 'datetime' })).toBe(true);
+    expect(isForecastDateColumnCandidate({ name: 'ended', role: 'string' })).toBe(true);
+    expect(isForecastDateColumnCandidate({ name: 'month', role: 'numeric' })).toBe(false);
+    expect(isForecastDateColumnCandidate({ name: 'dayofweek', role: 'numeric' })).toBe(false);
+  });
+
+  test('TS and ML tabs share the same preferred date for station-like schemas', () => {
+    // Both tabs call pickPreferredSalesDateColumn — one source of truth.
+    const preferred = pickPreferredSalesDateColumn(stationColumns);
+    expect(preferred).toBe('created');
+    expect(isDatePartColumn(preferred)).toBe(false);
+    // Stale date-part selections should be treated as auto-correct candidates.
+    expect(isDatePartColumn('month')).toBe(true);
   });
 });

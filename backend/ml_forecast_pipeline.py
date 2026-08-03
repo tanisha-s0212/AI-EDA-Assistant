@@ -16,9 +16,9 @@ from sklearn.model_selection import TimeSeriesSplit
 logger = logging.getLogger(__name__)
 
 
-from sales_domain import pick_best_date_column, pick_best_revenue_column, score_date_column, score_revenue_column
+from sales_domain import is_date_part_column, pick_best_date_column, pick_best_revenue_column, score_date_column, score_revenue_column
 
-DATE_PATTERNS = ['invoice_date', 'order_date', 'bill_date', 'year_month', 'date', 'week', 'month', 'period', 'start', 'time']
+DATE_PATTERNS = ['invoice_date', 'order_date', 'bill_date', 'year_month', 'date', 'period', 'start', 'time', 'created', 'ended', 'timestamp']
 TARGET_PATTERNS = ['sale_free', 'sale_value', 'net_sales', 'total_value_sale', 'gmv', 'turnover', 'revenue', 'sales', 'total_value']
 MODEL_PRIORITY = {'XGBoost': 0, 'Gradient Boosting': 1, 'Prophet': 2, 'LightGBM': 3}
 
@@ -98,7 +98,11 @@ def load_and_detect(path: str | Path, date_col: str | None = None, target_col: s
             frame = pd.read_csv(source)
 
     frame = _parse_object_dates(frame)
-    resolved_date = date_col if date_col in frame.columns else _detect_date_column(frame)
+    resolved_date = (
+        date_col
+        if date_col and date_col in frame.columns and not is_date_part_column(date_col)
+        else _detect_date_column(frame)
+    )
     resolved_target = target_col if target_col in frame.columns else _detect_target_column(frame)
     if not resolved_date or not resolved_target:
         columns = ', '.join(map(str, frame.columns.tolist()))
@@ -124,7 +128,11 @@ def load_and_detect(path: str | Path, date_col: str | None = None, target_col: s
 def load_and_detect_frame(frame: pd.DataFrame, date_col: str | None = None, target_col: str | None = None) -> tuple[pd.DataFrame, str, str]:
     """Detect and aggregate a supplied dataframe with optional column overrides."""
     working = _parse_object_dates(frame)
-    resolved_date = date_col if date_col in working.columns else _detect_date_column(working)
+    resolved_date = (
+        date_col
+        if date_col and date_col in working.columns and not is_date_part_column(date_col)
+        else _detect_date_column(working)
+    )
     resolved_target = target_col if target_col in working.columns else _detect_target_column(working)
     if not resolved_date or not resolved_target:
         raise ValueError(f'Missing date or target column. Available columns: {", ".join(map(str, working.columns.tolist()))}')

@@ -33,6 +33,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { getApiErrorMessage } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import type { AgenticStepStatus, Recommendation, TabId } from '@/lib/store';
+import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn } from '@/lib/sales-domain';
 import { cn } from '@/lib/utils';
 
 function renderStructuredOrMarkdown(text: string): string {
@@ -384,17 +385,13 @@ function formatNumber(value: number | null | undefined, digits = 2) {
 
 function getPreferredDateColumn() {
   const { columns } = useAppStore.getState();
-  return columns.find((column) => column.role === 'datetime')?.name
-    ?? columns.find((column) => /date|month|time|period/i.test(column.name))?.name
-    ?? '';
+  return pickPreferredSalesDateColumn(columns);
 }
 
 function getPreferredTargetColumn() {
-  const { columns } = useAppStore.getState();
-  return columns.find((column) => /sales|revenue|amount|profit|loss|target|value|price|cost/i.test(column.name) && column.role === 'numeric')?.name
-    ?? columns.find((column) => column.role === 'numeric')?.name
-    ?? columns.find((column) => !/id$/i.test(column.name) && column.role !== 'identifier')?.name
-    ?? '';
+  const { columns, cleanedData, rawData } = useAppStore.getState();
+  const data = (cleanedData ?? rawData ?? []) as Array<Record<string, unknown>>;
+  return pickSmartSalesTargetColumn(columns, data);
 }
 
 function buildMemoryFacts(fileName: string | null) {

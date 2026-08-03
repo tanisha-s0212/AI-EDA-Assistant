@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from psycopg.types.json import Json
 
-from sales_domain import should_enable_sales_preset
+from sales_domain import should_enable_sales_preset, pick_best_date_column, pick_best_revenue_column
 
 agentic_router = APIRouter(prefix='/api/agentic')
 
@@ -971,25 +971,34 @@ def read_dataset_file_or_cache(dataset_path: str) -> pd.DataFrame:
 
 
 def preferred_date_column(frame: pd.DataFrame) -> str:
-    for column in frame.columns:
-        if pd.api.types.is_datetime64_any_dtype(frame[column]):
-            return str(column)
-        parsed = pd.to_datetime(frame[column], errors='coerce')
-        if len(parsed) and parsed.notna().mean() >= 0.8:
-            return str(column)
-    for column in frame.columns:
-        if re.search(r'date|month|period|time', str(column), re.IGNORECASE):
-            return str(column)
-    raise HTTPException(status_code=422, detail='A date-like column is required for automated forecasting.')
+    """Use shared sales-domain date scoring (same as TS/ML forecast tabs)."""
+    column_info = [
+        {
+            'name': str(column),
+            'role': 'datetime' if pd.api.types.is_datetime64_any_dtype(frame[column]) else 'numeric' if pd.api.types.is_numeric_dtype(frame[column]) else 'categorical',
+            'uniqueCount': int(frame[column].nunique(dropna=True)),
+        }
+        for column in frame.columns
+    ]
+    picked = pick_best_date_column(frame.columns, column_info=column_info, frame=frame)
+    if not picked:
+        raise HTTPException(status_code=422, detail='A date-like column is required for automated forecasting.')
+    return picked
 
 
 def preferred_target_column(frame: pd.DataFrame) -> str:
-    numeric_columns = [str(column) for column in frame.select_dtypes(include='number').columns]
-    for pattern in (r'total_taxable_amt|revenue|sales|amount|profit|value|price|cost', r'.+'):
-        for column in numeric_columns:
-            if re.search(pattern, column, re.IGNORECASE):
-                return column
-    raise HTTPException(status_code=422, detail='A numeric target column is required for automated forecasting and training.')
+    """Use shared sales-domain revenue scoring (same as forecast tabs)."""
+    column_info = [
+        {
+            'name': str(column),
+            'role': 'numeric' if pd.api.types.is_numeric_dtype(frame[column]) else 'categorical',
+        }
+        for column in frame.columns
+    ]
+    picked = pick_best_revenue_column(frame.columns, frame=frame, column_info=column_info)
+    if not picked:
+        raise HTTPException(status_code=422, detail='A numeric target column is required for automated forecasting and training.')
+    return picked
 
 
 def auto_feature_columns(frame: pd.DataFrame, target_column: str) -> list[str]:

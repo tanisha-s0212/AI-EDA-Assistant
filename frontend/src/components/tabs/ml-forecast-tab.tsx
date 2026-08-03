@@ -16,7 +16,7 @@ import { AlertCircle, ArrowRight, CheckCircle2, ChevronLeft, Cpu, Loader2, Setti
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
-import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn } from '@/lib/sales-domain';
+import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
 
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
 
@@ -139,7 +139,8 @@ export default function MlForecastTab() {
   const data = cleanedData ?? rawData ?? [];
 
   const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
-  const dateColumns = useMemo(() => columns.filter((column) => column.role === 'datetime' || /date|month|time|period/i.test(column.name)), [columns]);
+  const dateColumns = useMemo(() => columns.filter(isForecastDateColumnCandidate), [columns]);
+  const preferredDateColumn = useMemo(() => getPreferredDateColumn(columns), [columns]);
   const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
   const [currentStep, setCurrentStep] = useState(1);
@@ -154,9 +155,11 @@ export default function MlForecastTab() {
   const [isTraining, setIsTraining] = useState(false);
 
   useEffect(() => {
-    if (!dateColumn) setDateColumn(getPreferredDateColumn(columns));
+    if ((!dateColumn || isDatePartColumn(dateColumn)) && preferredDateColumn) {
+      setDateColumn(preferredDateColumn);
+    }
     if (!targetColumn && smartTargetColumn) setTargetColumn(smartTargetColumn);
-  }, [columns, dateColumn, targetColumn, smartTargetColumn]);
+  }, [columns, dateColumn, targetColumn, preferredDateColumn, smartTargetColumn]);
 
   useEffect(() => {
     if (featureGroups.length === 0 && currentStep > 1) {
@@ -211,7 +214,9 @@ export default function MlForecastTab() {
   };
 
   const handleRun = async () => {
-    const resolvedDateColumn = dateColumn || getPreferredDateColumn(columns);
+    const resolvedDateColumn = (
+      dateColumn && !isDatePartColumn(dateColumn) ? dateColumn : preferredDateColumn
+    ) || getPreferredDateColumn(columns);
     const resolvedTargetColumn = targetColumn || smartTargetColumn;
     const resolvedFeatureGroups = featureGroups.length ? featureGroups : DEFAULT_FEATURE_GROUPS;
 
@@ -221,7 +226,7 @@ export default function MlForecastTab() {
       return;
     }
 
-    if (!dateColumn) setDateColumn(resolvedDateColumn);
+    if (!dateColumn || isDatePartColumn(dateColumn)) setDateColumn(resolvedDateColumn);
     if (!targetColumn) setTargetColumn(resolvedTargetColumn);
     if (!featureGroups.length) setFeatureGroups(resolvedFeatureGroups);
 
@@ -347,6 +352,7 @@ export default function MlForecastTab() {
                         <SelectTrigger><SelectValue placeholder="Select date column" /></SelectTrigger>
                         <SelectContent>{dateColumns.map((column) => <SelectItem key={column.name} value={column.name}>{column.name}</SelectItem>)}</SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">{preferredDateColumn ? `Smart default: ${preferredDateColumn}` : 'No suitable default found. Select the date column manually.'}</p>
                     </div>
                     <div className="space-y-2">
                       <Label>Sales Target</Label>
