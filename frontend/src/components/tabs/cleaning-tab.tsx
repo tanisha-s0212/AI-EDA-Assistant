@@ -19,6 +19,7 @@ import {
   Clock,
   Trash2,
   ArrowRight,
+  Info,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -805,6 +806,24 @@ export default function CleaningTab() {
             </div>
           </CardContent>
         </Card>
+      </motion.div>
+
+      {/* Scope disclaimer — what this step covers */}
+      <motion.div
+        variants={itemVariants}
+        className="flex flex-col gap-3 rounded-xl border border-border/50 bg-muted/30 p-4 sm:flex-row sm:items-start"
+      >
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+          <Info className="h-4 w-4 text-primary" />
+        </div>
+        <div>
+          <p className="text-sm font-medium">What this step covers</p>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+            This step handles duplicates, missing values, date formatting, and column names for
+            standard tabular data. For unusual formats, corrupted source data, or column-specific
+            fixes, clean the file before upload.
+          </p>
+        </div>
       </motion.div>
 
       {/* ───── 1. Cleaning Operations Panel ───── */}
