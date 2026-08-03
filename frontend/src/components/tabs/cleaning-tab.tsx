@@ -652,20 +652,26 @@ export default function CleaningTab() {
 
     const exportingPreviewOnly = previewLoaded && loadedRowCount < (cleanedRowCount ?? cleanedData.length);
 
+    const formatCsvCell = (val: unknown): string => {
+      if (val === null || val === undefined) return '';
+      let strVal = String(val);
+      // Excel often reopens ISO "T" datetimes as midnight — export space-separated wall clock times.
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(strVal)) {
+        strVal = strVal
+          .replace('T', ' ')
+          .replace(/\.\d+(Z|[+-]\d{2}:?\d{2})?$/, '')
+          .replace(/Z$/, '');
+      }
+      if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n')) {
+        return `"${strVal.replace(/"/g, '""')}"`;
+      }
+      return strVal;
+    };
+
     const colKeys = Object.keys(cleanedData[0]);
     const csvHeader = colKeys.join(',');
     const csvRows = cleanedData.map((row) =>
-      colKeys
-        .map((key) => {
-          const val = row[key];
-          const strVal = val === null || val === undefined ? '' : String(val);
-          // Escape values that contain commas or quotes
-          if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n')) {
-            return `"${strVal.replace(/"/g, '""')}"`;
-          }
-          return strVal;
-        })
-        .join(',')
+      colKeys.map((key) => formatCsvCell(row[key])).join(',')
     );
     const csvContent = [csvHeader, ...csvRows].join('\n');
 

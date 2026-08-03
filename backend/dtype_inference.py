@@ -243,8 +243,11 @@ def _float_dtype(values):
 def _datetime_patterns(norm):
     text = norm.astype(str).str.strip()
     iso = text.str.match(r"^\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$", na=False)
-    slash_mdy_dmy = text.str.match(r"^\d{1,2}/\d{1,2}/\d{2,4}$", na=False)
-    dash_dmy = text.str.match(r"^\d{1,2}-\d{1,2}-\d{2,4}$", na=False)
+    # Reject forms where every component is 1–2 digits (e.g. "14-11-18").
+    # dayfirst re-parse of those strings scrambles truncated ISO years into 2001–2031.
+    short_ambiguous = text.str.match(r"^\d{1,2}[-/]\d{1,2}[-/]\d{1,2}$", na=False)
+    slash_mdy_dmy = text.str.match(r"^\d{1,2}/\d{1,2}/\d{2,4}$", na=False) & ~short_ambiguous
+    dash_dmy = text.str.match(r"^\d{1,2}-\d{1,2}-\d{2,4}$", na=False) & ~short_ambiguous
     month_name = text.str.match(r"^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}$|^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}$", na=False)
     first_num = pd.to_numeric(text.str.extract(r"^(\d{1,2})", expand=False), errors="coerce")
     second_num = pd.to_numeric(text.str.extract(r"^\d{1,2}[/-](\d{1,2})", expand=False), errors="coerce")
@@ -253,12 +256,43 @@ def _datetime_patterns(norm):
 
 
 def _cast_datetime(norm, iso, slash_mdy_dmy, dash_dmy, month_name):
-    parsed_iso = pd.to_datetime(norm.where(iso), errors="coerce", format="%Y-%m-%d")
-    parsed_iso_time = pd.to_datetime(norm.where(iso & parsed_iso.isna()), errors="coerce")
+    text = norm.astype(str).str.strip()
+    # Prefer time-preserving ISO parses before date-only so partial matches cannot zero the clock.
+    iso_with_time = iso & text.str.match(r"^\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{2}", na=False)
+    iso_date_only = iso & ~iso_with_time
+
+    parsed_space = pd.to_datetime(norm.where(iso_with_time), errors="coerce", format="%Y-%m-%d %H:%M:%S")
+    remaining_time = iso_with_time & parsed_space.isna()
+    parsed_space_frac = pd.to_datetime(norm.where(remaining_time), errors="coerce", format="%Y-%m-%d %H:%M:%S.%f")
+    remaining_time = remaining_time & parsed_space_frac.isna()
+    parsed_t = pd.to_datetime(norm.where(remaining_time), errors="coerce", format="%Y-%m-%dT%H:%M:%S")
+    remaining_time = remaining_time & parsed_t.isna()
+    parsed_t_frac = pd.to_datetime(norm.where(remaining_time), errors="coerce", format="%Y-%m-%dT%H:%M:%S.%f")
+    remaining_time = remaining_time & parsed_t_frac.isna()
+    # Fallback for minute-only times (HH:MM) and mixed separators.
+    parsed_iso_time_fallback = pd.to_datetime(norm.where(remaining_time), errors="coerce")
+
+    try:
+        parsed_iso_date = pd.to_datetime(
+            norm.where(iso_date_only), errors="coerce", format="%Y-%m-%d", exact=True
+        )
+    except TypeError:
+        # Older pandas builds may not accept exact=; date-only mask already excludes timed values.
+        parsed_iso_date = pd.to_datetime(norm.where(iso_date_only), errors="coerce", format="%Y-%m-%d")
+
     parsed_slash = pd.to_datetime(norm.where(slash_mdy_dmy), errors="coerce", dayfirst=False)
     parsed_dash = pd.to_datetime(norm.where(dash_dmy), errors="coerce", dayfirst=True)
     parsed_month = pd.to_datetime(norm.where(month_name), errors="coerce")
-    return parsed_iso.combine_first(parsed_iso_time).combine_first(parsed_slash).combine_first(parsed_dash).combine_first(parsed_month)
+    return (
+        parsed_space.combine_first(parsed_space_frac)
+        .combine_first(parsed_t)
+        .combine_first(parsed_t_frac)
+        .combine_first(parsed_iso_time_fallback)
+        .combine_first(parsed_iso_date)
+        .combine_first(parsed_slash)
+        .combine_first(parsed_dash)
+        .combine_first(parsed_month)
+    )
 
 
 def infer_universal_dtypes(df):
@@ -381,7 +415,24 @@ def infer_universal_dtypes(df):
                 parsed_coverage = float(parsed_dt.notna().sum() / non_null_count)
                 if parsed_coverage >= DATETIME_ACCEPT_THRESHOLD:
                     df_out[column] = parsed_dt
-                    fmt = "%Y-%m-%d" if bool(iso.sum() >= slash_mdy_dmy.sum() and iso.sum() >= dash_dmy.sum() and iso.sum() >= month_name.sum()) else None
+                    iso_dominant = bool(
+                        iso.sum() >= slash_mdy_dmy.sum()
+                        and iso.sum() >= dash_dmy.sum()
+                        and iso.sum() >= month_name.sum()
+                    )
+                    non_null_dt = parsed_dt.dropna()
+                    has_clock = bool(
+                        len(non_null_dt) > 0
+                        and (
+                            (non_null_dt.dt.hour != 0)
+                            | (non_null_dt.dt.minute != 0)
+                            | (non_null_dt.dt.second != 0)
+                        ).any()
+                    )
+                    if iso_dominant:
+                        fmt = "%Y-%m-%d %H:%M:%S" if has_clock else "%Y-%m-%d"
+                    else:
+                        fmt = None
                     log["cast_type"] = "datetime"
                     log["accepted"] = True
                     log["low_confidence"] = bool(parsed_coverage < DATETIME_ACCEPT_THRESHOLD + LOW_CONFIDENCE_MARGIN)

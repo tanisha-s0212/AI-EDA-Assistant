@@ -3639,25 +3639,32 @@ def build_polars_datetime_expr(column_name: str, dtype: pl.DataType) -> pl.Expr:
         return column.cast(pl.Datetime, strict=False)
 
     text_column = column.cast(pl.String, strict=False).str.strip_chars()
+    # Same 00xx → 20xx domain heuristic as repair_zero_padded_century_timestamp (see comment there).
+    # slice(2) turns "0014-11-18…" into "14-11-18…"; prefixing "20" yields "2014-11-18…".
+    repaired_column = (
+        pl.when(text_column.str.contains(r'^00\d{2}-\d{1,2}-\d{1,2}'))
+        .then(pl.concat_str([pl.lit('20'), text_column.str.slice(2)]))
+        .otherwise(text_column)
+    )
     return pl.coalesce([
-        text_column.str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S%.f', strict=False),
-        text_column.str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S', strict=False),
-        text_column.str.strptime(pl.Datetime, '%Y-%m-%dT%H:%M:%S%.f', strict=False),
-        text_column.str.strptime(pl.Datetime, '%Y-%m-%dT%H:%M:%S', strict=False),
-        text_column.str.strptime(pl.Datetime, '%Y-%m-%d', strict=False),
-        text_column.str.strptime(pl.Datetime, '%d-%m-%Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%m-%d-%Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%d/%m/%Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%m/%d/%Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%Y/%m/%d', strict=False),
-        text_column.str.strptime(pl.Datetime, '%b %d, %Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%B %d, %Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%b-%Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%B-%Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%b %Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%B %Y', strict=False),
-        text_column.str.strptime(pl.Datetime, '%Y-%m', strict=False),
-        text_column.str.strptime(pl.Datetime, '%m-%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S%.f', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y-%m-%dT%H:%M:%S%.f', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y-%m-%dT%H:%M:%S', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y-%m-%d', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%d-%m-%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%m-%d-%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%d/%m/%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%m/%d/%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y/%m/%d', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%b %d, %Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%B %d, %Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%b-%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%B-%Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%b %Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%B %Y', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%Y-%m', strict=False),
+        repaired_column.str.strptime(pl.Datetime, '%m-%Y', strict=False),
     ])
 
 
@@ -7045,6 +7052,81 @@ def build_column_info_from_polars_frame(frame: pl.DataFrame) -> list[dict[str, A
 
 
 
+# Zero-padded truncated years like "0014-11-18 15:40:26" (Dataverse-style).
+# ASSUMPTION (domain heuristic, not a historical calendar guarantee): map 00xx → 20xx
+# for modern session timestamps whose century was truncated/zero-padded upstream.
+# Datasets that need 19xx require a different pivot — do not treat this as universal.
+# Apply ONLY inside date-parsing paths after a date-likeness success gate.
+# Never rewrite bare integers (14 / 0014) or non-date columns.
+_ZERO_PADDED_CENTURY_DATE_RE = re.compile(
+    r'^00(\d{2})-(\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?)$'
+)
+# Require month/day structure so bare tokens like "0014" / "99" are never treated as dates.
+_DATE_SHAPE_RE = re.compile(
+    r'^('
+    r'00\d{2}-\d{1,2}-\d{1,2}'
+    r'|\d{4}-\d{1,2}-\d{1,2}'
+    r'|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}'
+    r'|\d{4}/\d{1,2}/\d{1,2}'
+    r'|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}'
+    r'|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}'
+    r'|[A-Za-z]{3,9}[- ]\d{2,4}'
+    r'|\d{4}-\d{2}'
+    r')'
+    r'([ T]\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?)?$'
+)
+_MISSING_VALUE_SENTINELS = {'', 'na', 'n/a', 'null', 'none', 'nan'}
+_NUMERIC_OBJECT_MEDIAN_COVERAGE = 0.92
+
+
+def repair_zero_padded_century_timestamp(value: str) -> str:
+    """Rewrite 00xx-… date strings to 20xx-… using the domain heuristic above."""
+    text = str(value).strip()
+    match = _ZERO_PADDED_CENTURY_DATE_RE.match(text)
+    if not match:
+        return text
+    return f'20{match.group(1)}-{match.group(2)}'
+
+
+def looks_like_date_string(value: object) -> bool:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return False
+    return bool(_DATE_SHAPE_RE.match(str(value).strip()))
+
+
+def repair_zero_padded_century_series(series: pd.Series) -> pd.Series:
+    """Apply century repair to non-null string values; leave nulls untouched."""
+    repaired = series.copy()
+    mask = series.notna()
+    if not mask.any():
+        return repaired
+    repaired.loc[mask] = series.loc[mask].astype(str).map(repair_zero_padded_century_timestamp)
+    return repaired
+
+
+def format_cleaned_datetime_series(parsed_series: pd.Series) -> pd.Series:
+    """Persist datetimes with 4-digit years; keep time-of-day when present."""
+    non_null = parsed_series.dropna()
+    if non_null.empty:
+        return parsed_series.where(parsed_series.notna(), None)
+
+    has_time = bool(
+        ((non_null.dt.hour != 0) | (non_null.dt.minute != 0) | (non_null.dt.second != 0)).any()
+    )
+    fmt = '%Y-%m-%d %H:%M:%S' if has_time else '%Y-%m-%d'
+    return parsed_series.dt.strftime(fmt).where(parsed_series.notna(), None)
+
+
+def format_frame_datetimes_for_cleaning_preview(frame: pd.DataFrame) -> pd.DataFrame:
+    """Excel-safe preview strings: space-separated datetimes, never ISO 'T' (which Excel often reopens as midnight)."""
+    preview = frame.copy()
+    for column in preview.columns:
+        series = preview[column]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            preview[column] = format_cleaned_datetime_series(series)
+    return preview
+
+
 def try_parse_datetime_series(series: pd.Series) -> pd.Series | None:
     if pd.api.types.is_datetime64_any_dtype(series):
         return pd.to_datetime(series, errors='coerce')
@@ -7055,11 +7137,20 @@ def try_parse_datetime_series(series: pd.Series) -> pd.Series | None:
     if sample.empty:
         return None
 
-    parsed = pd.to_datetime(sample, errors='coerce')
-    success_ratio = float(parsed.notna().mean()) if len(sample) else 0.0
+    # Shape gate first: reject bare years / numeric codes that pd.to_datetime would still accept.
+    shape_ratio = float(sample.map(looks_like_date_string).mean())
+    if shape_ratio < 0.6:
+        return None
+
+    # Gate on repaired sample so 0014-11-18… counts as parseable, but only then rewrite the full column.
+    sample_repaired = sample.map(repair_zero_padded_century_timestamp)
+    parsed_sample = pd.to_datetime(sample_repaired, errors='coerce')
+    success_ratio = float(parsed_sample.notna().mean()) if len(sample) else 0.0
     if success_ratio < 0.6:
         return None
-    return pd.to_datetime(series, errors='coerce')
+
+    repaired = repair_zero_padded_century_series(series)
+    return pd.to_datetime(repaired, errors='coerce')
 
 
 def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
@@ -7101,6 +7192,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
 
         if request.handle_missing:
             filled_columns: list[str] = []
+            fill_summaries: list[str] = []
             protected_targets: set[str] = set()
             if request.sales_preset and request.protect_forecast_target:
                 mapping = get_workspace_context(request.dataset_id, 'sales_mapping') or {}
@@ -7113,24 +7205,63 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                     protected_targets.add(guessed)
             for column in frame.columns:
                 series = frame[column]
+                if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+                    normalized = series.astype(object).where(series.notna(), np.nan)
+                    sentinel_mask = normalized.astype(str).str.strip().str.lower().isin(_MISSING_VALUE_SENTINELS)
+                    normalized = normalized.mask(sentinel_mask, np.nan)
+                    series = normalized
+                    frame[column] = series
                 if not series.isna().any():
                     continue
                 if str(column) in protected_targets:
                     # Sales preset: do not invent demand by median-imputing the forecast target.
                     continue
+
+                strategy = 'mode'
+                fill_value: Any
+                working = series
                 if pd.api.types.is_numeric_dtype(series):
+                    strategy = 'median'
                     median = series.median()
                     fill_value = 0 if pd.isna(median) else median
-                    frame[column] = series.fillna(fill_value)
+                elif pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+                    numeric = pd.to_numeric(series, errors='coerce')
+                    non_null_count = int(series.notna().sum())
+                    numeric_coverage = float(numeric.notna().sum() / non_null_count) if non_null_count else 0.0
+                    if numeric_coverage >= _NUMERIC_OBJECT_MEDIAN_COVERAGE:
+                        strategy = 'median'
+                        working = numeric
+                        frame[column] = numeric
+                        median = numeric.median()
+                        fill_value = 0 if pd.isna(median) else median
+                    else:
+                        mode = series.mode(dropna=True)
+                        fill_value = mode.iloc[0] if not mode.empty else 'Unknown'
                 else:
                     mode = series.mode(dropna=True)
                     fill_value = mode.iloc[0] if not mode.empty else 'Unknown'
-                    frame[column] = series.fillna(fill_value)
+
+                missing_mask = working.isna()
+                filled_count = int(missing_mask.sum())
+                pre_existing_equal_count = 0
+                if filled_count > 0 and pd.api.types.is_numeric_dtype(working):
+                    pre_existing_equal_count = int(((working == fill_value) & working.notna()).sum())
+                elif filled_count > 0:
+                    pre_existing_equal_count = int(((working == fill_value) & working.notna()).sum())
+
+                frame[column] = working.fillna(fill_value)
                 filled_columns.append(str(column))
+                fill_summaries.append(
+                    f'{column}: strategy={strategy}, filled={filled_count}, '
+                    f'pre_existing_equal={pre_existing_equal_count}'
+                )
             if filled_columns:
                 logs.append({
                     'action': 'Handled Missing Values',
-                    'detail': f'Filled missing values in {len(filled_columns)} column(s).',
+                    'detail': (
+                        f'Filled missing values in {len(filled_columns)} column(s). '
+                        + '; '.join(fill_summaries)
+                    ),
                     'timestamp': datetime.utcnow().isoformat(),
                 })
             if protected_targets and request.sales_preset:
@@ -7166,7 +7297,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                     continue
                 if parsed_series is None or parsed_series.notna().sum() == 0:
                     continue
-                frame[column] = parsed_series.dt.strftime('%Y-%m-%d').where(parsed_series.notna(), None)
+                frame[column] = format_cleaned_datetime_series(parsed_series)
                 converted_columns.append(str(column))
             if converted_columns:
                 logs.append({
@@ -7188,7 +7319,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         updated_dataset_path = persist_inferred_dataset_frame(request.dataset_id, dataset_entry, frame)
         duplicate_rows = int(DATASET_CACHE[request.dataset_id].get('duplicate_count') or 0)
         memory_size = updated_dataset_path.stat().st_size
-        preview_frame = frame.head(DATASET_PREVIEW_ROW_LIMIT)
+        preview_frame = format_frame_datetimes_for_cleaning_preview(frame.head(DATASET_PREVIEW_ROW_LIMIT))
         return {
             'datasetId': request.dataset_id,
             'data': safe_serialize(preview_frame.to_dict(orient='records')),
@@ -7269,6 +7400,19 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         date_expressions: list[pl.Expr] = []
         for column, dtype in frame.schema.items():
             try:
+                if dtype not in pl.TEMPORAL_DTYPES:
+                    raw_sample = (
+                        frame.select(pl.col(column).cast(pl.String, strict=False).str.strip_chars().alias('__raw'))
+                        .drop_nulls()
+                        .head(50)
+                        .to_series()
+                        .to_list()
+                    )
+                    if not raw_sample:
+                        continue
+                    shape_ratio = float(sum(1 for value in raw_sample if looks_like_date_string(value)) / len(raw_sample))
+                    if shape_ratio < 0.6:
+                        continue
                 parsed_expr = build_polars_datetime_expr(column, dtype)
                 sample = frame.select(parsed_expr.alias('__parsed_date')).drop_nulls().head(50).to_series()
                 if sample.len() == 0:
@@ -7276,13 +7420,19 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 success_ratio = float(sample.len() / min(50, max(1, frame.select(pl.col(column).drop_nulls().len()).item()))) if frame.height > 0 else 0.0
                 if dtype not in pl.TEMPORAL_DTYPES and success_ratio < 0.6:
                     continue
+                has_time = bool(
+                    sample.dt.hour().gt(0).any()
+                    or sample.dt.minute().gt(0).any()
+                    or sample.dt.second().gt(0).any()
+                )
+                time_fmt = '%Y-%m-%d %H:%M:%S' if has_time else '%Y-%m-%d'
             except Exception:
                 logger.warning('Skipping date conversion for column %s during cleaning.', column, exc_info=True)
                 continue
             date_expressions.append(
                 pl.when(pl.col(column).is_null())
                 .then(None)
-                .otherwise(parsed_expr.dt.strftime('%Y-%m-%d'))
+                .otherwise(parsed_expr.dt.strftime(time_fmt))
                 .alias(column)
             )
             converted_columns.append(str(column))
@@ -7306,7 +7456,9 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             'detail': f'Applied universal dtype inference across {len(inferred_frame.columns)} column(s); {accepted_count} column decision(s) accepted.',
             'timestamp': datetime.utcnow().isoformat(),
         })
-        preview_frame = inferred_frame.head(DATASET_PREVIEW_ROW_LIMIT)
+        preview_frame = format_frame_datetimes_for_cleaning_preview(
+            inferred_frame.head(DATASET_PREVIEW_ROW_LIMIT)
+        )
         return {
             'datasetId': request.dataset_id,
             'data': safe_serialize(preview_frame.to_dict(orient='records')),
@@ -7335,15 +7487,18 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
     })
     memory_size = updated_dataset_path.stat().st_size
 
-    preview_frame = frame.head(DATASET_PREVIEW_ROW_LIMIT)
+    # Polars preview may still hold temporal dtypes; normalize via pandas for Excel-safe strings.
+    preview_pandas = format_frame_datetimes_for_cleaning_preview(
+        frame.head(DATASET_PREVIEW_ROW_LIMIT).to_pandas(use_pyarrow_extension_array=False)
+    )
     return {
         'datasetId': request.dataset_id,
-        'data': safe_serialize(preview_frame.to_dicts()),
+        'data': safe_serialize(preview_pandas.to_dict(orient='records')),
         'columns': build_column_info_from_polars_frame(frame),
         'rowCount': int(frame.height),
         'originalRowCount': original_row_count,
-        'loadedRowCount': int(preview_frame.height),
-        'previewLoaded': frame.height > preview_frame.height,
+        'loadedRowCount': int(len(preview_pandas)),
+        'previewLoaded': frame.height > len(preview_pandas),
         'duplicates': duplicate_rows,
         'memoryUsage': f'{memory_size / (1024 * 1024):.2f} MB',
         'logs': logs,
