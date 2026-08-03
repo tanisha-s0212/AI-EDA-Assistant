@@ -168,3 +168,12 @@ def sales_mapping_payload(date_column: str, target_column: str, source: str = 'a
         'target_column': target_column,
         'source': source,
     }
+
+
+# Keep in sync with frontend sales-domain.ts SALES_PRESET_REVENUE_SCORE_THRESHOLD
+SALES_PRESET_REVENUE_SCORE_THRESHOLD = 70
+
+
+def should_enable_sales_preset(columns: Iterable[str]) -> bool:
+    """Enable sales cleaning preset when a strong sales/revenue column name is present."""
+    return any(score_revenue_column(str(name)) >= SALES_PRESET_REVENUE_SCORE_THRESHOLD for name in columns)

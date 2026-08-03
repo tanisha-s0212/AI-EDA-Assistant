@@ -81,3 +81,15 @@ export function pickSmartSalesTargetColumn<T extends { name: string; role?: stri
     .sort((a, b) => b.nameScore - a.nameScore || b.variance - a.variance || a.name.localeCompare(b.name));
   return scored[0]?.name ?? '';
 }
+
+/** Keep in sync with backend sales_domain.SALES_PRESET_REVENUE_SCORE_THRESHOLD */
+export const SALES_PRESET_REVENUE_SCORE_THRESHOLD = 70;
+
+/** True when a column name strongly indicates sales/revenue (score >= 70). */
+export function shouldEnableSalesPreset(
+  columns: Array<{ name: string; role?: string }>,
+): boolean {
+  return columns.some(
+    (column) => scoreSalesRevenueColumn(column.name) >= SALES_PRESET_REVENUE_SCORE_THRESHOLD,
+  );
+}

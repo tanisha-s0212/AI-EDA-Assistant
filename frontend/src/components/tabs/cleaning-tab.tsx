@@ -43,6 +43,7 @@ import { cn } from '@/lib/utils';
 import { useAppStore, type DataRow, type ColumnInfo, type CleaningLog } from '@/lib/store';
 import { toast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
+import { shouldEnableSalesPreset } from '@/lib/sales-domain';
 
 // ─────────────────────────────────────────────
 // Animation variants
@@ -351,6 +352,11 @@ export default function CleaningTab() {
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [cleanError, setCleanError] = useState<string | null>(null);
+  const [lastCleanOriginalRowCount, setLastCleanOriginalRowCount] = useState<number | null>(null);
+
+  // Sales preset: null = follow auto-detect; boolean = manual override
+  const [salesPresetOverride, setSalesPresetOverride] = useState<boolean | null>(null);
 
   // AI justification state
   const [aiJustification, setAiJustification] = useState<string | null>(null);
@@ -358,6 +364,8 @@ export default function CleaningTab() {
   const [justificationKey, setJustificationKey] = useState(0);
 
   const hasData = rawData !== null && columns.length > 0;
+  const detectedSalesPreset = useMemo(() => shouldEnableSalesPreset(columns), [columns]);
+  const salesPreset = salesPresetOverride ?? detectedSalesPreset;
 
   // ── Compute operation effect texts
   const columnsWithMissing = useMemo(
@@ -455,10 +463,13 @@ export default function CleaningTab() {
     if (!rawData || isProcessing) return;
 
     setIsProcessing(true);
+    setCleanError(null);
+    setAiJustification(null);
 
-    const runPreviewCleaning = async (fallbackReason?: string) => {
+    const runPreviewCleaning = async () => {
       const logs: CleaningLog[] = [];
       let currentData = [...rawData];
+      const originalRowCount = currentData.length;
 
       await new Promise((r) => setTimeout(r, 300));
 
@@ -520,12 +531,12 @@ export default function CleaningTab() {
         aiInsights: null,
       });
 
+      setLastCleanOriginalRowCount(originalRowCount);
+      setCleanError(null);
       setLogsOpen(true);
       toast({
-        title: fallbackReason ? 'Cleaning completed in preview mode' : 'Cleaning Complete',
-        description: fallbackReason
-          ? `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied to the loaded preview. ${fallbackReason}`
-          : `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied successfully. ${currentData.length.toLocaleString()} rows remaining.`,
+        title: 'Cleaning Complete',
+        description: `${logs.length} operation${logs.length !== 1 ? 's' : ''} applied successfully. ${currentData.length.toLocaleString()} rows remaining.`,
       });
     };
 
@@ -537,8 +548,8 @@ export default function CleaningTab() {
           handle_missing: ops.handleMissing,
           convert_dates: ops.convertDates,
           standardize_names: ops.standardizeNames,
-          sales_preset: true,
-          protect_forecast_target: true,
+          sales_preset: salesPreset,
+          protect_forecast_target: salesPreset,
           drop_non_positive_revenue: false,
         });
 
@@ -547,10 +558,13 @@ export default function CleaningTab() {
           columns: ColumnInfo[];
           logs: CleaningLog[];
           rowCount: number;
+          originalRowCount?: number;
           loadedRowCount: number;
           previewLoaded: boolean;
           duplicates: number;
         };
+
+        const originalRowCount = result.originalRowCount ?? totalRows;
 
         useAppStore.setState({
           rawData: result.data,
@@ -583,6 +597,8 @@ export default function CleaningTab() {
           aiInsights: null,
         });
 
+        setLastCleanOriginalRowCount(originalRowCount);
+        setCleanError(null);
         setLogsOpen(true);
         toast({
           title: 'Cleaning Complete',
@@ -591,21 +607,24 @@ export default function CleaningTab() {
         return;
       }
 
+      // Browser-only path when there is no backend dataset cache.
       await runPreviewCleaning();
     } catch (error) {
-      if (datasetId && rawData.length > 0) {
-        await runPreviewCleaning(getApiErrorMessage(error, 'Full dataset cleaning could not be completed.'));
-        return;
-      }
+      // Hard-fail when a backend dataset exists — never silent preview "success".
+      const message = getApiErrorMessage(
+        error,
+        'Clean failed — data not applied, please retry.',
+      );
+      setCleanError(message);
       toast({
-        title: 'Cleaning failed',
-        description: getApiErrorMessage(error, 'The cleaning workflow could not be completed for this dataset.'),
+        title: 'Clean failed — data not applied, please retry.',
+        description: message,
         variant: 'destructive',
       });
     } finally {
       setIsProcessing(false);
     }
-  }, [rawData, columns, ops, isProcessing, datasetId, duplicates]);
+  }, [rawData, columns, ops, isProcessing, datasetId, duplicates, salesPreset, totalRows]);
 
   // ── AI Justification
   const handleGenerateJustification = useCallback(async () => {
@@ -720,8 +739,14 @@ export default function CleaningTab() {
   const previewRows = cleanedData ? cleanedData.slice(0, 5) : [];
   const previewColumns = cleanedData && cleanedData.length > 0 ? Object.keys(cleanedData[0]) : columns.map((c) => c.name);
   const processedRowCount = cleanedRowCount ?? cleanedData?.length ?? rawData?.length ?? 0;
-  const removedRowCount = Math.max(0, totalRows - processedRowCount);
+  const removedRowCount = cleaningDone
+    ? Math.max(0, (lastCleanOriginalRowCount ?? totalRows) - processedRowCount)
+    : 0;
   const showingPreviewOnly = previewLoaded && loadedRowCount < processedRowCount;
+  const salesPresetModeLabel =
+    salesPresetOverride === null
+      ? `Auto ${detectedSalesPreset ? 'on' : 'off'}`
+      : `Manual ${salesPreset ? 'on' : 'off'}`;
 
   return (
     <motion.div
@@ -869,6 +894,44 @@ export default function CleaningTab() {
         })}
       </motion.div>
 
+      {/* Sales cleaning preset (auto-detect + override) */}
+      <motion.div variants={itemVariants}>
+        <div className="flex flex-col gap-3 rounded-xl border bg-background/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium">Sales cleaning preset</p>
+              <Badge variant="secondary" className="text-[10px] font-medium uppercase tracking-wide">
+                {salesPresetModeLabel}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {detectedSalesPreset
+                ? 'Detected sales/revenue columns — protects forecast targets during cleaning.'
+                : 'No strong sales/revenue columns detected — preset stays off for non-sales data.'}
+              {salesPresetOverride !== null ? ' Manual override is active.' : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {salesPresetOverride !== null && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => setSalesPresetOverride(null)}
+              >
+                Use auto
+              </Button>
+            )}
+            <Switch
+              checked={salesPreset}
+              onCheckedChange={(checked) => setSalesPresetOverride(checked)}
+              aria-label="Sales cleaning preset"
+            />
+          </div>
+        </div>
+      </motion.div>
+
       {/* ───── 2. Clean Data Button ───── */}
       <motion.div variants={itemVariants} className="flex justify-center">
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
@@ -923,6 +986,23 @@ export default function CleaningTab() {
           </Button>
         </motion.div>
       </motion.div>
+
+      {/* Clean failure (hard-fail — no silent preview success) */}
+      <AnimatePresence>
+        {cleanError && !isProcessing && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          >
+            Clean failed — data not applied, please retry.
+            {cleanError !== 'Clean failed — data not applied, please retry.' && (
+              <span className="mt-1 block text-xs text-destructive/80">{cleanError}</span>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Success Banner */}
       <AnimatePresence>

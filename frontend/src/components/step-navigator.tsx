@@ -20,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
+import { isStepTabEnabled } from '@/lib/step-gates';
 
 const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementType }[] = [
   { id: 'upload', label: 'Data Upload', shortLabel: 'Upload', icon: Upload },
@@ -57,18 +58,15 @@ export default function StepNavigator({
   showSwipeHint = true,
   className,
 }: StepNavigatorProps) {
-  const { activeTab, setActiveTab, rawData, modelTrained, mlWorkflowStep, setMlWorkflowStep } = useAppStore();
+  const { activeTab, setActiveTab, rawData, cleaningDone, modelTrained, mlWorkflowStep, setMlWorkflowStep } = useAppStore();
   const touchStartX = useRef<number | null>(null);
   const touchEndX = useRef<number | null>(null);
   const currentIndex = tabs.findIndex((tab) => tab.id === activeTab);
   const isMlTab = activeTab === 'ml';
 
   const isTabEnabled = useCallback((tabId: TabId): boolean => {
-    if (tabId === 'upload') return true;
-    if (!rawData) return false;
-    if (tabId === 'prediction' && !modelTrained) return false;
-    return true;
-  }, [modelTrained, rawData]);
+    return isStepTabEnabled(tabId, { rawData, cleaningDone, modelTrained });
+  }, [modelTrained, rawData, cleaningDone]);
 
   const goToTab = useCallback((tabId: TabId) => {
     if (isTabEnabled(tabId)) {

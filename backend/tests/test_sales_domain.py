@@ -13,7 +13,12 @@ REPO_ROOT = BACKEND_DIR.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from main import DATASET_CACHE, app, set_dataset_cache_entry  # noqa: E402
-from sales_domain import pick_best_date_column, pick_best_revenue_column, resolve_sales_columns  # noqa: E402
+from sales_domain import (  # noqa: E402
+    pick_best_date_column,
+    pick_best_revenue_column,
+    resolve_sales_columns,
+    should_enable_sales_preset,
+)
 
 
 SAMPLES = REPO_ROOT / 'samples' / 'sales'
@@ -63,6 +68,13 @@ def test_sales_domain_prefers_revenue_over_cogs():
     target_col = pick_best_revenue_column(columns, frame=frame)
     assert date_col == 'year_month'
     assert target_col == 'total_total_value_sale_free'
+
+
+def test_should_enable_sales_preset_detection():
+    assert should_enable_sales_preset(['sessionId', 'kwhTotal', 'dollars', 'created']) is False
+    assert should_enable_sales_preset(['amount', 'total']) is False
+    assert should_enable_sales_preset(['year_month', 'total_total_value_sale_free', 'region']) is True
+    assert should_enable_sales_preset(['revenue', 'invoice_date']) is True
 
 
 def test_resolve_sales_columns_respects_explicit_overrides():

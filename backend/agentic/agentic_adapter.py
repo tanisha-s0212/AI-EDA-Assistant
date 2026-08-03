@@ -20,6 +20,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from psycopg.types.json import Json
 
+from sales_domain import should_enable_sales_preset
+
 agentic_router = APIRouter(prefix='/api/agentic')
 
 
@@ -1067,6 +1069,14 @@ def execute_data_cleaning(session_id: str, request: Request) -> Any:
                 },
             )
 
+        cached_columns = dataset_cache[dataset_id].get('columns') or []
+        column_names = [
+            str(column.get('name', '')) if isinstance(column, dict) else str(column)
+            for column in cached_columns
+        ]
+        # Keep threshold aligned with frontend shouldEnableSalesPreset (score >= 70).
+        sales_preset = should_enable_sales_preset(column_names)
+
         payload = backend.ParquetCleaningRequest(
             dataset_id=dataset_id,
             remove_duplicates=True,
@@ -1074,6 +1084,8 @@ def execute_data_cleaning(session_id: str, request: Request) -> Any:
             convert_dates=True,
             standardize_names=True,
             infer_dtypes=True,
+            sales_preset=sales_preset,
+            protect_forecast_target=sales_preset,
         )
         # Route through the same handler used by the main Data Cleaning tab.
         return backend.clean_dataset(payload, request)
