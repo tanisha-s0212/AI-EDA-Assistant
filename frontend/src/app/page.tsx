@@ -121,7 +121,7 @@ type DatasetPreviewResponse = {
 
 const INDIA_TIMEZONE = 'Asia/Kolkata';
 const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
-const AROHA_LOGO_URL = 'https://aroha.co.in/wp-content/uploads/2024/08/aroha_logo.png';
+const AROHA_LOGO_URL = '/app-logo.svg';
 
 function formatActivityTimestamp(value: string | null) {
   const parsed = value ? new Date(value) : new Date();
