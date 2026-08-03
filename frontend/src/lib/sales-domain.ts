@@ -3,17 +3,27 @@
 const TARGET_EXCLUSION = /(^id$|_id$|uuid|index|code|^sku$)/i;
 const REVENUE_EXCLUDE = /loss|lost|missed|return|refund|cost|cogs|expense|tax|qty|quantity|unit_price|^price$/i;
 
-const DATE_TOKEN_SCORES: Array<[RegExp | string, number]> = [
+/** Engineered date-part columns — never pick as the series index. Keep in sync with backend. */
+const DATE_PART_EXCLUDE = /^(year|month|day|hour|minute|second|dayofweek|weekday|week|quarter|weekofyear|doy)$/i;
+
+/**
+ * Prefer business date names and full timestamps over weak generic tokens.
+ * Bare `month`/`week` omitted so `dayofweek` / part columns cannot win.
+ * Keep in sync with backend sales_domain.DATE_TOKEN_SCORES.
+ */
+const DATE_TOKEN_SCORES: Array<[string, number]> = [
   ['invoice_date', 100],
   ['order_date', 95],
   ['bill_date', 90],
   ['doc_date', 88],
   ['transaction_date', 85],
   ['sale_date', 85],
+  ['timestamp', 82],
+  ['datetime', 80],
   ['year_month', 80],
+  ['created', 78],
+  ['ended', 76],
   ['period', 70],
-  ['month', 60],
-  ['week', 55],
   ['date', 50],
   ['time', 20],
   ['start', 15],
@@ -42,8 +52,13 @@ function tokenScore(name: string, scores: Array<[string, number]>) {
   return best;
 }
 
+export function isDatePartColumn(name: string) {
+  return DATE_PART_EXCLUDE.test(name.trim());
+}
+
 export function scoreSalesDateColumn(name: string, role?: string) {
-  const score = tokenScore(name, DATE_TOKEN_SCORES as Array<[string, number]>);
+  if (isDatePartColumn(name)) return 0;
+  const score = tokenScore(name, DATE_TOKEN_SCORES);
   if (score > 0) return score;
   if (role === 'datetime' || role === 'date') return 45;
   return 0;
@@ -56,11 +71,23 @@ export function scoreSalesRevenueColumn(name: string) {
   return tokenScore(name, REVENUE_TOKEN_SCORES);
 }
 
-export function pickPreferredSalesDateColumn<T extends { name: string; role?: string }>(columns: T[]) {
+export function pickPreferredSalesDateColumn<T extends { name: string; role?: string; uniqueCount?: number }>(
+  columns: T[],
+) {
   const scored = columns
-    .map((column) => ({ name: column.name, score: scoreSalesDateColumn(column.name, column.role) }))
+    .filter((column) => !isDatePartColumn(column.name))
+    .map((column) => ({
+      name: column.name,
+      score: scoreSalesDateColumn(column.name, column.role),
+      uniqueCount: column.uniqueCount ?? 0,
+    }))
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.uniqueCount - a.uniqueCount ||
+        a.name.localeCompare(b.name),
+    );
   return scored[0]?.name ?? '';
 }
 

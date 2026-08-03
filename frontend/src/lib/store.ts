@@ -146,6 +146,11 @@ export interface TsStationarity {
   note: string;
   recommended_model: string;
   differencing_required: boolean;
+  date_column?: string;
+  target_column?: string;
+  period_label?: string;
+  inferred_period_label?: string;
+  frequency_auto_adjusted?: boolean;
 }
 
 export interface TimeSeriesForecastResult {

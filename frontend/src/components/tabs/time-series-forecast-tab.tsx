@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type ColumnInfo, type DataRow, type TimeSeriesForecastResult, type TsForecastModelComparison, type TsFutureForecast, type TsInsight, type TsStationarity } from '@/lib/store';
-import { useToast } from '@/hooks/use-toast';
+import { toast as showToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import axios from 'axios';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -119,7 +119,6 @@ function inferSeriesProfile(data: DataRow[], dateColumn: string, targetColumn: s
 }
 
 export default function TimeSeriesForecastTab() {
-  const { toast } = useToast();
   const rawData = useAppStore((state) => state.rawData);
   const cleanedData = useAppStore((state) => state.cleanedData);
   const columns = useAppStore((state) => state.columns);
@@ -130,7 +129,7 @@ export default function TimeSeriesForecastTab() {
   const data = cleanedData ?? rawData ?? [];
 
   const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
-  const dateColumns = useMemo(() => columns.filter((column) => column.role === 'datetime' || /date|month|time|period/i.test(column.name)), [columns]);
+  const dateColumns = useMemo(() => columns.filter((column) => column.role === 'datetime' || /date|month|time|period|created|ended|timestamp/i.test(column.name)), [columns]);
   const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
   const [currentStep, setCurrentStep] = useState(1);
@@ -143,12 +142,15 @@ export default function TimeSeriesForecastTab() {
 
   // New multi-model state
   const [stationarity, setStationarity] = useState<TsStationarity | null>(null);
+  const [stationarityError, setStationarityError] = useState<string | null>(null);
   const [modelComparison, setModelComparison] = useState<TsForecastModelComparison[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [forecastResults, setForecastResults] = useState<TsFutureForecast[]>([]);
   const [selectionReason, setSelectionReason] = useState('');
   const [insight, setInsight] = useState<TsInsight | null>(null);
   const [stationarityLoading, setStationarityLoading] = useState(false);
+  const stationarityAttemptKeyRef = useRef<string | null>(null);
+  const stationarityInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!dateColumn) setDateColumn(getPreferredDateColumn(columns));
@@ -162,32 +164,75 @@ export default function TimeSeriesForecastTab() {
     }
   }, [storedResult]);
 
-  // Auto-load stationarity when step 2 opens
+  // Auto-load stationarity when step 2 opens (one attempt per dataset/column key; no retry loop).
   useEffect(() => {
-    if (currentStep === 2 && datasetId && !stationarity && !stationarityLoading) {
-      setStationarityLoading(true);
-      apiClient.post('/ts-forecast/stationarity', {
-        dataset_id: datasetId,
-        date_column: dateColumn || undefined,
-        target_column: targetColumn || undefined,
+    if (currentStep !== 2 || !datasetId || !dateColumn || !targetColumn) return;
+
+    const attemptKey = `${datasetId}|${dateColumn}|${targetColumn}`;
+    if (stationarityAttemptKeyRef.current === attemptKey) return;
+    if (stationarityInFlightRef.current) return;
+
+    let cancelled = false;
+    let settled = false;
+    stationarityAttemptKeyRef.current = attemptKey;
+    stationarityInFlightRef.current = true;
+    setStationarity(null);
+    setStationarityLoading(true);
+    setStationarityError(null);
+
+    apiClient.post('/ts-forecast/stationarity', {
+      dataset_id: datasetId,
+      date_column: dateColumn || undefined,
+      target_column: targetColumn || undefined,
+    })
+      .then((res) => {
+        settled = true;
+        if (cancelled || stationarityAttemptKeyRef.current !== attemptKey) return;
+        setStationarity(res.data as TsStationarity);
+        setStationarityError(null);
       })
-        .then((res) => setStationarity(res.data as TsStationarity))
-        .catch((err) => {
-          console.error('Stationarity fetch failed:', err);
-          const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-          const baseMessage = getApiErrorMessage(err, 'Could not load stationarity.');
-          const description = status === 404
-            ? `${status} on /api/ts-forecast/stationarity — endpoint missing on the running backend. Rebuild/redeploy the backend container so it matches current source, then re-upload the dataset.`
-            : status
-              ? `${status}: ${baseMessage}`
-              : baseMessage;
-          toast({ title: 'Stationarity check failed', description, variant: 'destructive' });
-        })
-        .finally(() => setStationarityLoading(false));
-    }
-  }, [currentStep, datasetId, dateColumn, targetColumn, stationarity, stationarityLoading, toast]);
+      .catch((err) => {
+        settled = true;
+        if (cancelled || stationarityAttemptKeyRef.current !== attemptKey) return;
+        console.error('Stationarity fetch failed:', err);
+        const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+        const baseMessage = getApiErrorMessage(err, 'Could not load stationarity.');
+        const description = status === 404
+          ? `${status} on /api/ts-forecast/stationarity — endpoint missing on the running backend. Rebuild/redeploy the backend container so it matches current source, then re-upload the dataset.`
+          : status
+            ? `${status}: ${baseMessage}`
+            : baseMessage;
+        setStationarityError(description);
+        showToast({ title: 'Stationarity check failed', description, variant: 'destructive' });
+      })
+      .finally(() => {
+        if (cancelled) return;
+        stationarityInFlightRef.current = false;
+        setStationarityLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      stationarityInFlightRef.current = false;
+      // Allow React Strict Mode remounts to retry an in-flight (unsettled) attempt.
+      if (!settled && stationarityAttemptKeyRef.current === attemptKey) {
+        stationarityAttemptKeyRef.current = null;
+      }
+    };
+  }, [currentStep, datasetId, dateColumn, targetColumn]);
 
   const profile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
+  const periodGrainLabel = (label?: string | null) => {
+    if (!label) return 'period';
+    return ({ day: 'daily', week: 'weekly', month: 'monthly', quarter: 'quarterly', year: 'yearly' } as Record<string, string>)[label] ?? label;
+  };
+  const frequencyNote = stationarity?.frequency_auto_adjusted && stationarity.period_label
+    ? `Using ${periodGrainLabel(stationarity.period_label)} aggregation${
+        stationarity.inferred_period_label && stationarity.inferred_period_label !== stationarity.period_label
+          ? ` (${periodGrainLabel(stationarity.inferred_period_label)} span was too short)`
+          : ''
+      }.`
+    : null;
 
   const chartData = useMemo(() => {
     if (!result) return [];
@@ -240,7 +285,7 @@ export default function TimeSeriesForecastTab() {
 
   const handleRun = async () => {
     if (!dateColumn || !targetColumn) {
-      toast({ title: 'Configuration incomplete', description: smartTargetColumn ? 'Choose both a date column and a sales target.' : 'No suitable numeric target was auto-detected. Please manually select the target column before running the forecast.', variant: 'destructive' });
+      showToast({ title: 'Configuration incomplete', description: smartTargetColumn ? 'Choose both a date column and a sales target.' : 'No suitable numeric target was auto-detected. Please manually select the target column before running the forecast.', variant: 'destructive' });
       return;
     }
     setIsTraining(true);
@@ -256,9 +301,9 @@ export default function TimeSeriesForecastTab() {
       const nextResult = response.data as TimeSeriesForecastResult;
       setResult(nextResult);
       useAppStore.setState({ timeSeriesForecastResult: nextResult });
-      toast({ title: 'Time-series forecast ready', description: `Projected ${forecastPeriods} future ${nextResult.period_label ?? 'period'}${forecastPeriods === 1 ? '' : 's'}.` });
+      showToast({ title: 'Time-series forecast ready', description: `Projected ${forecastPeriods} future ${nextResult.period_label ?? 'period'}${forecastPeriods === 1 ? '' : 's'}.` });
     } catch (error) {
-      toast({ title: 'Forecast failed', description: getApiErrorMessage(error, 'Time-series forecast failed.'), variant: 'destructive' });
+      showToast({ title: 'Forecast failed', description: getApiErrorMessage(error, 'Time-series forecast failed.'), variant: 'destructive' });
     } finally {
       setIsTraining(false);
     }
@@ -266,7 +311,7 @@ export default function TimeSeriesForecastTab() {
 
   const handleMultiModelRun = async () => {
     if (!dateColumn || !targetColumn) {
-      toast({ title: 'Configuration incomplete', description: 'Choose both a date column and a sales target.', variant: 'destructive' });
+      showToast({ title: 'Configuration incomplete', description: 'Choose both a date column and a sales target.', variant: 'destructive' });
       return;
     }
     setIsTraining(true);
@@ -309,9 +354,9 @@ export default function TimeSeriesForecastTab() {
       };
       setResult(mappedResult);
       useAppStore.setState({ timeSeriesForecastResult: mappedResult });
-      toast({ title: 'Multi-model training complete', description: `${data.best_model} auto-selected with SMAPE ${data.smape}%.` });
+      showToast({ title: 'Multi-model training complete', description: `${data.best_model} auto-selected with SMAPE ${data.smape}%.` });
     } catch (error) {
-      toast({ title: 'Multi-model training failed', description: getApiErrorMessage(error, 'All 3 models failed.'), variant: 'destructive' });
+      showToast({ title: 'Multi-model training failed', description: getApiErrorMessage(error, 'All 3 models failed.'), variant: 'destructive' });
     } finally {
       setIsTraining(false);
     }
@@ -458,13 +503,19 @@ export default function TimeSeriesForecastTab() {
                           <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
                             <Loader2 className="h-3 w-3 animate-spin" /> Checking stationarity...
                           </div>
+                        ) : stationarityError ? (
+                          <p className="mt-1 text-sm leading-5 text-destructive">{stationarityError}</p>
                         ) : stationarity ? (
                           <>
                             <p className="mt-1 text-sm leading-5 text-muted-foreground">{stationarity.note}</p>
+                            {frequencyNote && (
+                              <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">{frequencyNote}</p>
+                            )}
                             <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
                               <span>ADF: {stationarity.adf_pvalue}</span>
                               <span>KPSS: {stationarity.kpss_pvalue}</span>
                               <span>Status: <span className={`font-medium ${stationarity.status === 'stationary' ? 'text-emerald-600' : stationarity.status === 'non_stationary' ? 'text-red-600' : 'text-amber-600'}`}>{stationarity.status}</span></span>
+                              {stationarity.period_label && <span>Frequency: {periodGrainLabel(stationarity.period_label)}</span>}
                             </div>
                           </>
                         ) : (

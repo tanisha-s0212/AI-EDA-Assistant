@@ -56,6 +56,30 @@ def monthly_dataset_id(tmp_path: Path):
     DATASET_CACHE.pop(dataset_id, None)
 
 
+def test_pick_best_date_prefers_created_over_date_parts():
+    columns = ['created', 'year', 'month', 'day', 'hour', 'dayofweek', 'date', 'dollars']
+    column_info = [
+        {'name': 'created', 'role': 'datetime', 'uniqueCount': 3000},
+        {'name': 'month', 'role': 'numeric', 'uniqueCount': 12},
+        {'name': 'dayofweek', 'role': 'numeric', 'uniqueCount': 7},
+        {'name': 'date', 'role': 'date', 'uniqueCount': 400},
+        {'name': 'dollars', 'role': 'numeric', 'uniqueCount': 100},
+    ]
+    assert pick_best_date_column(columns, column_info=column_info) == 'created'
+
+
+def test_pick_best_date_still_prefers_year_month_for_sales():
+    columns = ['year_month', 'cogs', 'total_total_value_sale_free', 'region']
+    assert pick_best_date_column(columns) == 'year_month'
+
+
+def test_should_enable_sales_preset_detection():
+    assert should_enable_sales_preset(['sessionId', 'kwhTotal', 'dollars', 'created']) is False
+    assert should_enable_sales_preset(['amount', 'total']) is False
+    assert should_enable_sales_preset(['year_month', 'total_total_value_sale_free', 'region']) is True
+    assert should_enable_sales_preset(['revenue', 'invoice_date']) is True
+
+
 def test_sales_domain_prefers_revenue_over_cogs():
     columns = ['year_month', 'cogs', 'total_total_value_sale_free', 'region']
     frame = pd.DataFrame({
@@ -70,13 +94,6 @@ def test_sales_domain_prefers_revenue_over_cogs():
     assert target_col == 'total_total_value_sale_free'
 
 
-def test_should_enable_sales_preset_detection():
-    assert should_enable_sales_preset(['sessionId', 'kwhTotal', 'dollars', 'created']) is False
-    assert should_enable_sales_preset(['amount', 'total']) is False
-    assert should_enable_sales_preset(['year_month', 'total_total_value_sale_free', 'region']) is True
-    assert should_enable_sales_preset(['revenue', 'invoice_date']) is True
-
-
 def test_resolve_sales_columns_respects_explicit_overrides():
     date_col, target_col = resolve_sales_columns(
         ['invoice_date', 'net_sales', 'cogs'],
@@ -88,11 +105,21 @@ def test_resolve_sales_columns_respects_explicit_overrides():
 
 
 def test_stationarity_accepts_explicit_columns(client: TestClient, monthly_dataset_id: str):
-    response = client.post('/api/ts-forecast/stationarity', json={
-        'dataset_id': monthly_dataset_id,
-        'date_column': 'year_month',
-        'target_column': 'total_total_value_sale_free',
-    })
+    from unittest.mock import patch
+
+    with patch('main.check_stationarity', return_value={
+        'status': 'stationary',
+        'adf_pvalue': 0.01,
+        'kpss_pvalue': 0.1,
+        'note': 'ok',
+        'recommended_model': 'SARIMA',
+        'differencing_required': False,
+    }):
+        response = client.post('/api/ts-forecast/stationarity', json={
+            'dataset_id': monthly_dataset_id,
+            'date_column': 'year_month',
+            'target_column': 'total_total_value_sale_free',
+        })
     assert response.status_code == 200, response.text
     body = response.json()
     assert body.get('date_column') == 'year_month'

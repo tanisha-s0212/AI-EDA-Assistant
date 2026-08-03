@@ -658,11 +658,19 @@ def load_ts_dataset(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, date_col, target_col)
+    frequency_meta = {
+        'period_label': series_frame.attrs.get('period_label', period_label),
+        'inferred_period_label': series_frame.attrs.get('inferred_period_label', period_label),
+        'frequency_auto_adjusted': bool(series_frame.attrs.get('frequency_auto_adjusted', False)),
+    }
     series_frame.rename(columns={'period': date_col, 'sales': target_col}, inplace=True)
+    for key, value in frequency_meta.items():
+        series_frame.attrs[key] = value
     frequency, freq_period = normalize_ts_frequency(freq, period_label)
     store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
     source = 'explicit' if date_column and target_column else 'auto'
     save_workspace_context(dataset_id, 'sales_mapping', sales_mapping_payload(date_col, target_col, source=source))
+    save_workspace_context(dataset_id, 'ts_prepare_meta', frequency_meta)
     return series_frame, date_col, target_col
 
 
@@ -3673,6 +3681,8 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
     if not parquet_path:
         raise HTTPException(status_code=400, detail='Cached parquet dataset path is missing. Please upload the file again.')
 
+    period_freq_map = {'MS': '1mo', 'QS': '1q', 'YS': '1y', 'D': '1d', 'W-MON': '1w'}
+
     try:
         lazy_frame = pl.scan_parquet(parquet_path).select([
             pl.col(date_column).alias(date_column),
@@ -3686,51 +3696,72 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
         if parsed_sample.empty:
             raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
 
-        freq, period_label = infer_sales_time_frequency(parsed_sample)
-        period_freq = {'MS': '1mo', 'QS': '1q', 'YS': '1y', 'D': '1d', 'W-MON': '1w'}.get(freq, '1mo')
+        inferred_freq, inferred_period_label = infer_sales_time_frequency(parsed_sample)
+        start_idx = PERIOD_COARSEN_ORDER.index(inferred_period_label) if inferred_period_label in PERIOD_COARSEN_ORDER else PERIOD_COARSEN_ORDER.index('month')
+        last_error_detail: str | None = None
 
-        aggregated = (
-            lazy_frame
-            .with_columns([
-                parsed_date_expr.alias('__parsed_date'),
-                pl.col(target_column).cast(pl.Float64, strict=False).alias('__parsed_sales'),
-            ])
-            .drop_nulls(['__parsed_date'])
-            .group_by_dynamic('__parsed_date', every=period_freq, label='left')
-            .agg([
-                pl.col('__parsed_sales').sum().alias('sales'),
-                pl.col('__parsed_sales').is_not_null().sum().alias('__valid_sales_count'),
-            ])
-            .with_columns(
-                pl.when(pl.col('__valid_sales_count') > 0)
-                .then(pl.col('sales'))
-                .otherwise(None)
-                .alias('sales')
+        for period_label in PERIOD_COARSEN_ORDER[start_idx:]:
+            freq = FREQ_FOR_PERIOD_LABEL[period_label]
+            period_freq = period_freq_map.get(freq, '1mo')
+            aggregated = (
+                lazy_frame
+                .with_columns([
+                    parsed_date_expr.alias('__parsed_date'),
+                    pl.col(target_column).cast(pl.Float64, strict=False).alias('__parsed_sales'),
+                ])
+                .drop_nulls(['__parsed_date'])
+                .group_by_dynamic('__parsed_date', every=period_freq, label='left')
+                .agg([
+                    pl.col('__parsed_sales').sum().alias('sales'),
+                    pl.col('__parsed_sales').is_not_null().sum().alias('__valid_sales_count'),
+                ])
+                .with_columns(
+                    pl.when(pl.col('__valid_sales_count') > 0)
+                    .then(pl.col('sales'))
+                    .otherwise(None)
+                    .alias('sales')
+                )
+                .drop('__valid_sales_count')
+                .sort('__parsed_date')
+                .collect(streaming=True)
             )
-            .drop('__valid_sales_count')
-            .sort('__parsed_date')
-            .collect(streaming=True)
-        )
+
+            if aggregated.height == 0:
+                last_error_detail = 'No valid rows remained after parsing the date and sales columns.'
+                continue
+
+            series_frame = aggregated.rename({'__parsed_date': 'period'}).to_pandas(use_pyarrow_extension_array=False)
+            full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
+            series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
+            series_frame['sales'] = series_frame['sales'].astype(float)
+            series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
+
+            minimum_periods = 2 * seasonal_period_for_label(period_label)
+            if len(series_frame) >= minimum_periods:
+                attach_sales_series_frequency_attrs(
+                    series_frame,
+                    period_label=period_label,
+                    inferred_period_label=inferred_period_label,
+                    frequency_auto_adjusted=period_label != inferred_period_label,
+                )
+                return series_frame, freq, period_label
+
+            needed = minimum_periods - len(series_frame)
+            last_error_detail = (
+                f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. '
+                f'Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.'
+            )
     except HTTPException:
         raise
     except Exception as error:
         raise HTTPException(status_code=400, detail=f'Failed to prepare parquet sales series: {error}') from error
 
-    if aggregated.height == 0:
-        raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
-
-    series_frame = aggregated.rename({'__parsed_date': 'period'}).to_pandas(use_pyarrow_extension_array=False)
-    full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
-    series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
-    series_frame['sales'] = series_frame['sales'].astype(float)
-    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
-
-    minimum_periods = 2 * seasonal_period_for_label(period_label)
-    if len(series_frame) < minimum_periods:
-        needed = minimum_periods - len(series_frame)
-        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.')
-
-    return series_frame, freq, period_label
+    if last_error_detail and last_error_detail.startswith('No valid'):
+        raise HTTPException(status_code=400, detail=last_error_detail)
+    raise HTTPException(
+        status_code=422,
+        detail=last_error_detail or 'Forecasting needs more historical periods after aggregation.',
+    )
 
 
 def prepare_sales_series_from_cached_dataset(dataset_entry: dict[str, Any], date_column: str, target_column: str) -> tuple[pd.DataFrame, str, str]:
@@ -3776,6 +3807,52 @@ def infer_sales_time_frequency(dates: pd.Series) -> tuple[str, str]:
     return 'YS', 'year'
 
 
+PERIOD_COARSEN_ORDER = ('day', 'week', 'month', 'quarter', 'year')
+FREQ_FOR_PERIOD_LABEL = {
+    'day': 'D',
+    'week': 'W-MON',
+    'month': 'MS',
+    'quarter': 'QS',
+    'year': 'YS',
+}
+
+
+def attach_sales_series_frequency_attrs(
+    series_frame: pd.DataFrame,
+    *,
+    period_label: str,
+    inferred_period_label: str,
+    frequency_auto_adjusted: bool,
+) -> None:
+    series_frame.attrs['period_label'] = period_label
+    series_frame.attrs['inferred_period_label'] = inferred_period_label
+    series_frame.attrs['frequency_auto_adjusted'] = bool(frequency_auto_adjusted)
+
+
+def aggregate_sales_series_at_frequency(
+    working: pd.DataFrame,
+    date_column: str,
+    target_column: str,
+    freq: str,
+) -> pd.DataFrame:
+    if freq == 'W-MON':
+        period_index = working[date_column].dt.to_period('W').dt.start_time
+    elif freq == 'D':
+        period_index = working[date_column].dt.floor('D')
+    else:
+        period_freq = {'MS': 'M', 'QS': 'Q', 'YS': 'Y'}.get(freq, freq)
+        period_index = working[date_column].dt.to_period(period_freq).dt.to_timestamp()
+
+    assigned = working.assign(period=period_index)
+    series_frame = assigned.groupby('period', as_index=False)[target_column].sum(min_count=1).sort_values('period')
+    series_frame = series_frame.rename(columns={target_column: 'sales'})
+
+    full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
+    series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
+    series_frame['sales'] = series_frame['sales'].astype(float)
+    return repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
+
+
 def seasonal_period_for_label(period_label: str) -> int:
     return {'day': 365, 'week': 52, 'month': 12, 'quarter': 4, 'year': 1}.get(period_label, 12)
 
@@ -3807,29 +3884,33 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
     if working.empty:
         raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
 
-    freq, period_label = infer_sales_time_frequency(working[date_column])
-    if freq == 'W-MON':
-        period_index = working[date_column].dt.to_period('W').dt.start_time
-    elif freq == 'D':
-        period_index = working[date_column].dt.floor('D')
-    else:
-        period_freq = {'MS': 'M', 'QS': 'Q', 'YS': 'Y'}.get(freq, freq)
-        period_index = working[date_column].dt.to_period(period_freq).dt.to_timestamp()
-    working = working.assign(period=period_index)
-    series_frame = working.groupby('period', as_index=False)[target_column].sum(min_count=1).sort_values('period')
-    series_frame = series_frame.rename(columns={target_column: 'sales'})
+    inferred_freq, inferred_period_label = infer_sales_time_frequency(working[date_column])
+    start_idx = PERIOD_COARSEN_ORDER.index(inferred_period_label) if inferred_period_label in PERIOD_COARSEN_ORDER else PERIOD_COARSEN_ORDER.index('month')
+    last_error_detail: str | None = None
 
-    full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
-    series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
-    series_frame['sales'] = series_frame['sales'].astype(float)
-    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
+    for period_label in PERIOD_COARSEN_ORDER[start_idx:]:
+        freq = FREQ_FOR_PERIOD_LABEL[period_label]
+        series_frame = aggregate_sales_series_at_frequency(working, date_column, target_column, freq)
+        minimum_periods = 2 * seasonal_period_for_label(period_label)
+        if len(series_frame) >= minimum_periods:
+            attach_sales_series_frequency_attrs(
+                series_frame,
+                period_label=period_label,
+                inferred_period_label=inferred_period_label,
+                frequency_auto_adjusted=period_label != inferred_period_label,
+            )
+            return series_frame, freq, period_label
 
-    minimum_periods = 2 * seasonal_period_for_label(period_label)
-    if len(series_frame) < minimum_periods:
         needed = minimum_periods - len(series_frame)
-        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.')
+        last_error_detail = (
+            f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. '
+            f'Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.'
+        )
 
-    return series_frame, freq, period_label
+    raise HTTPException(
+        status_code=422,
+        detail=last_error_detail or 'Forecasting needs more historical periods after aggregation.',
+    )
 
 
 def build_forecast_feature_row(history: list[float], current_period: pd.Timestamp, lag_periods: int) -> dict[str, float]:
@@ -5515,12 +5596,23 @@ def get_ts_stationarity(request: TsStationarityRequest) -> JSONResponse:
         frequency, freq_period = detect_ts_frequency(df, date_col)
         store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
         result = check_stationarity(df[target_col], frequency)
+        prepare_meta = get_workspace_context(dataset_id, 'ts_prepare_meta') or {}
+        period_label = df.attrs.get('period_label') or prepare_meta.get('period_label')
+        inferred_period_label = df.attrs.get('inferred_period_label') or prepare_meta.get('inferred_period_label') or period_label
+        frequency_auto_adjusted = bool(
+            df.attrs.get('frequency_auto_adjusted', prepare_meta.get('frequency_auto_adjusted', False))
+        )
         result = {
             **result,
             'date_column': date_col,
             'target_column': target_col,
+            'period_label': period_label,
+            'inferred_period_label': inferred_period_label,
+            'frequency_auto_adjusted': frequency_auto_adjusted,
         }
         return JSONResponse(content=safe_serialize(result))
+    except HTTPException:
+        raise
     except Exception as error:
         logger.exception('TS stationarity check failed dataset_id=%s', request.dataset_id)
         return JSONResponse(status_code=500, content={'error': str(error), 'status': 'failed'})
@@ -5593,6 +5685,8 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
         session_state['time_series_result'] = safe_serialize(response_data)
         session_state['updated_at'] = utc_now_iso()
         return JSONResponse(content=safe_serialize(response_data))
+    except HTTPException:
+        raise
     except Exception as error:
         logger.exception('TS multi-model training failed dataset_id=%s', request.dataset_id)
         return JSONResponse(status_code=500, content={'error': str(error), 'status': 'failed'})
@@ -5626,6 +5720,8 @@ def forecast_ts_best_model(request: TsForecastRunRequest) -> JSONResponse:
         clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
         future_forecast = generate_ts_future_forecast(str(best_model), clean_df, target_col, date_col, frequency, freq_period, request.horizon)
         return JSONResponse(content=safe_serialize({'status': 'completed', 'best_model': best_model, 'forecast': future_forecast, 'future_forecast': future_forecast}))
+    except HTTPException:
+        raise
     except Exception as error:
         logger.exception('TS forecast failed dataset_id=%s', request.dataset_id)
         return JSONResponse(status_code=500, content={'error': str(error), 'status': 'failed'})

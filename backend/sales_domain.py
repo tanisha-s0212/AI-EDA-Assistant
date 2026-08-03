@@ -11,6 +11,9 @@ from typing import Any, Iterable, Sequence
 import pandas as pd
 
 # Prefer explicit business date names over generic "start"/"time" tokens.
+# Keep in sync with frontend sales-domain.ts DATE_TOKEN_SCORES.
+# Do not include bare `month`/`week` — those match engineered date-part columns
+# (and `dayofweek` via substring) and collapse aggregation.
 DATE_TOKEN_SCORES: list[tuple[str, int]] = [
     ('invoice_date', 100),
     ('order_date', 95),
@@ -18,10 +21,12 @@ DATE_TOKEN_SCORES: list[tuple[str, int]] = [
     ('doc_date', 88),
     ('transaction_date', 85),
     ('sale_date', 85),
+    ('timestamp', 82),
+    ('datetime', 80),
     ('year_month', 80),
+    ('created', 78),
+    ('ended', 76),
     ('period', 70),
-    ('month', 60),
-    ('week', 55),
     ('date', 50),
     ('time', 20),
     ('start', 15),
@@ -45,8 +50,14 @@ REVENUE_TOKEN_SCORES: list[tuple[str, int]] = [
 REVENUE_EXCLUDE = re.compile(r'loss|lost|missed|return|refund|cost|cogs|expense|tax|qty|quantity|unit_price|price', re.IGNORECASE)
 TARGET_ID_EXCLUDE = re.compile(r'(^id$|_id$|uuid|index|code|sku$)', re.IGNORECASE)
 
+# Engineered date-part columns — never pick as the series index.
+DATE_PART_EXCLUDE = re.compile(
+    r'^(year|month|day|hour|minute|second|dayofweek|weekday|week|quarter|weekofyear|doy)$',
+    re.IGNORECASE,
+)
+
 DATE_PATTERN = re.compile(
-    r'invoice_date|order_date|bill_date|doc_date|transaction_date|sale_date|year_month|period|month|week|date|time|start',
+    r'invoice_date|order_date|bill_date|doc_date|transaction_date|sale_date|year_month|timestamp|datetime|created|ended|period|date|time|start',
     re.IGNORECASE,
 )
 REVENUE_PATTERN = re.compile(
@@ -64,7 +75,13 @@ def _token_score(name: str, token_scores: Sequence[tuple[str, int]]) -> int:
     return best
 
 
+def is_date_part_column(name: str) -> bool:
+    return bool(DATE_PART_EXCLUDE.match(str(name).strip()))
+
+
 def score_date_column(name: str) -> int:
+    if is_date_part_column(name):
+        return 0
     return _token_score(name, DATE_TOKEN_SCORES)
 
 
@@ -77,21 +94,53 @@ def score_revenue_column(name: str) -> int:
     return _token_score(name, REVENUE_TOKEN_SCORES)
 
 
-def pick_best_date_column(columns: Iterable[str], column_info: list[dict[str, Any]] | None = None) -> str | None:
+def _column_unique_count(
+    name: str,
+    *,
+    frame: pd.DataFrame | None = None,
+    column_info: list[dict[str, Any]] | None = None,
+) -> int:
+    if frame is not None and name in frame.columns:
+        try:
+            return int(pd.Series(frame[name]).nunique(dropna=True))
+        except Exception:
+            return 0
+    if column_info:
+        meta = next((item for item in column_info if isinstance(item, dict) and item.get('name') == name), None)
+        if meta:
+            for key in ('uniqueCount', 'unique_count', 'nunique'):
+                value = meta.get(key)
+                if value is not None:
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        pass
+    return 0
+
+
+def pick_best_date_column(
+    columns: Iterable[str],
+    column_info: list[dict[str, Any]] | None = None,
+    frame: pd.DataFrame | None = None,
+) -> str | None:
     available = [str(c) for c in columns]
-    scored: list[tuple[int, str]] = []
+    scored: list[tuple[int, int, str]] = []
     for name in available:
+        if is_date_part_column(name):
+            continue
         score = score_date_column(name)
         if score <= 0 and column_info:
             meta = next((item for item in column_info if isinstance(item, dict) and item.get('name') == name), None)
             if meta and meta.get('role') in ('datetime', 'date'):
                 score = 45
         if score > 0:
-            scored.append((score, name))
+            unique_count = _column_unique_count(name, frame=frame, column_info=column_info)
+            scored.append((score, unique_count, name))
     if not scored:
         return None
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return scored[0][1]
+    # Higher name score first; break ties by higher cardinality (real timestamps beat sparse labels).
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return scored[0][2]
 
 
 def pick_best_revenue_column(
@@ -104,6 +153,8 @@ def pick_best_revenue_column(
     available = [str(c) for c in columns if str(c) not in excluded]
     scored: list[tuple[int, float, str]] = []
     for name in available:
+        if is_date_part_column(name):
+            continue
         name_score = score_revenue_column(name)
         variance = 0.0
         if frame is not None and name in frame.columns:
@@ -128,7 +179,7 @@ def pick_best_revenue_column(
     if frame is not None:
         numeric_fallback: list[tuple[float, str]] = []
         for name in available:
-            if TARGET_ID_EXCLUDE.search(name) or score_date_column(name) > 0:
+            if is_date_part_column(name) or TARGET_ID_EXCLUDE.search(name) or score_date_column(name) > 0:
                 continue
             numeric = pd.to_numeric(frame[name], errors='coerce')
             if numeric.notna().sum() == 0:
@@ -151,7 +202,9 @@ def resolve_sales_columns(
     column_info: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     available = [str(c) for c in columns]
-    date_col = date_column if date_column and date_column in available else pick_best_date_column(available, column_info)
+    date_col = date_column if date_column and date_column in available else pick_best_date_column(
+        available, column_info=column_info, frame=frame,
+    )
     if not date_col:
         raise ValueError(f'No date column found. Available columns: {available}')
     target_col = target_column if target_column and target_column in available else pick_best_revenue_column(
