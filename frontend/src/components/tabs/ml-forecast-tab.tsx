@@ -13,10 +13,11 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { AlertCircle, ArrowRight, CheckCircle2, ChevronLeft, Cpu, Loader2, Settings2, Table2, TrendingUp, Zap } from 'lucide-react';
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
+import ForecastSeriesChart, { buildForecastSeriesChartData } from '@/components/forecast-series-chart';
 
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
 
@@ -36,13 +37,7 @@ const STEP_ITEMS = [
   { step: 3, label: 'Train & Explain', icon: TrendingUp },
 ];
 
-const ML_FORECAST_CHART_COLORS = {
-  actual: '#2563eb',
-  backtest: '#f59e0b',
-  forecast: '#8b5cf6',
-  shap: ['#2563eb', '#7c3aed', '#14b8a6', '#f59e0b', '#ef4444', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'],
-  grid: '#cbd5e1',
-} as const;
+const ML_SHAP_COLORS = ['#2563eb', '#7c3aed', '#14b8a6', '#f59e0b', '#ef4444', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'] as const;
 
 function modelStatusClass(status: string) {
   if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
@@ -174,7 +169,18 @@ export default function MlForecastTab() {
     }
   }, [storedResult]);
 
-  const profile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
+  const localProfile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
+  const profile = useMemo(() => {
+    if (result?.dataset_profile) {
+      return {
+        detected_frequency: result.dataset_profile.detected_frequency || result.period_label || localProfile.detected_frequency,
+        usable_periods: result.dataset_profile.usable_periods ?? result.history.length ?? localProfile.usable_periods,
+        volatility: result.dataset_profile.volatility ?? localProfile.volatility,
+        zero_value_share: result.dataset_profile.zero_value_share ?? localProfile.zero_value_share,
+      };
+    }
+    return localProfile;
+  }, [localProfile, result]);
   const generatedFeatures = useMemo(() => buildGeneratedFeaturePreview(featureGroups, lagPeriods), [featureGroups, lagPeriods]);
   const recommendations = useMemo(() => buildModelRecommendations(generatedFeatures.length), [generatedFeatures.length]);
 
@@ -186,13 +192,7 @@ export default function MlForecastTab() {
 
   const chartData = useMemo(() => {
     if (!result) return [];
-    return [
-      ...result.history.map((item) => {
-        const backtest = result.test_forecast.find((forecast) => forecast.period === item.period);
-        return { period: item.period, actual: item.actual, backtest: backtest?.predicted ?? null, forecast: null as number | null };
-      }),
-      ...result.future_forecast.map((item) => ({ period: item.period, actual: null, backtest: null, forecast: item.predicted })),
-    ];
+    return buildForecastSeriesChartData(result.history, result.test_forecast, result.future_forecast);
   }, [result]);
 
   const shapData = useMemo(() => (result?.shap_feature_importance ?? []).slice(0, 10).map((item) => ({ ...item, display: Number(item.importance.toFixed(3)) })), [result]);
@@ -583,26 +583,11 @@ export default function MlForecastTab() {
                             </div>
                           </div>
                           <div className="h-[500px] w-full rounded-2xl border bg-gradient-to-br from-muted/20 via-background to-primary/5 p-5 dark:border-slate-800 dark:from-slate-950 dark:via-slate-950 dark:to-primary/10">
-                            <ResponsiveContainer width="100%" height="100%">
-                              <LineChart data={chartData} margin={{ top: 10, right: 18, left: 0, bottom: 6 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke={ML_FORECAST_CHART_COLORS.grid} vertical={false} opacity={0.35} />
-                                <XAxis dataKey="period" tickLine={false} axisLine={false} tickMargin={10} tick={{ fill: '#64748b', fontSize: 12 }} />
-                                <YAxis tickLine={false} axisLine={false} width={72} tick={{ fill: '#64748b', fontSize: 12 }} tickFormatter={(value) => formatForecastValue(Number(value))} />
-                                <RechartsTooltip
-                                  formatter={(value: number | string) => typeof value === 'number' ? formatForecastValue(value) : value}
-                                  contentStyle={{
-                                    borderRadius: '14px',
-                                    border: '1px solid rgba(148, 163, 184, 0.25)',
-                                    backgroundColor: 'rgba(255,255,255,0.96)',
-                                    boxShadow: '0 18px 45px rgba(15, 23, 42, 0.12)',
-                                  }}
-                                />
-                                <Legend />
-                                <Line type="monotone" connectNulls dataKey="actual" name="Actual" stroke={ML_FORECAST_CHART_COLORS.actual} strokeWidth={3} dot={{ r: 4, strokeWidth: 2.5, fill: '#ffffff', stroke: ML_FORECAST_CHART_COLORS.actual }} activeDot={{ r: 6, fill: ML_FORECAST_CHART_COLORS.actual, stroke: '#ffffff', strokeWidth: 2 }} isAnimationActive={false} />
-                                <Line type="monotone" connectNulls dataKey="backtest" name="Backtest" stroke={ML_FORECAST_CHART_COLORS.backtest} strokeWidth={2.5} strokeDasharray="6 4" dot={{ r: 3.5, strokeWidth: 2, fill: '#ffffff', stroke: ML_FORECAST_CHART_COLORS.backtest }} activeDot={{ r: 5, fill: ML_FORECAST_CHART_COLORS.backtest, stroke: '#ffffff', strokeWidth: 2 }} isAnimationActive={false} />
-                                <Line type="monotone" connectNulls dataKey="forecast" name="Forecast" stroke={ML_FORECAST_CHART_COLORS.forecast} strokeWidth={3} dot={{ r: 4, strokeWidth: 2.5, fill: '#ffffff', stroke: ML_FORECAST_CHART_COLORS.forecast }} activeDot={{ r: 6, fill: ML_FORECAST_CHART_COLORS.forecast, stroke: '#ffffff', strokeWidth: 2 }} isAnimationActive={false} />
-                              </LineChart>
-                            </ResponsiveContainer>
+                            <ForecastSeriesChart
+                              data={chartData}
+                              heightClassName="h-full"
+                              yTickFormatter={(value) => formatForecastValue(value)}
+                            />
                           </div>
                         </CardContent>
                       </Card>
@@ -634,7 +619,7 @@ export default function MlForecastTab() {
                                 <div className="h-[380px] w-full rounded-2xl border bg-gradient-to-br from-muted/20 to-background p-3 dark:border-slate-800 dark:from-slate-950 dark:to-slate-900">
                                   <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={shapData} layout="vertical" margin={{ left: 28, right: 16, top: 10, bottom: 10 }}>
-                                      <CartesianGrid strokeDasharray="3 3" stroke={ML_FORECAST_CHART_COLORS.grid} horizontal={false} opacity={0.25} />
+                                      <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" horizontal={false} opacity={0.25} />
                                       <XAxis type="number" tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
                                       <YAxis type="category" dataKey="name" width={140} tickLine={false} axisLine={false} tick={{ fill: '#475569', fontSize: 12 }} />
                                       <RechartsTooltip
@@ -648,7 +633,7 @@ export default function MlForecastTab() {
                                       />
                                       <Bar dataKey="display" name="Importance" radius={[0, 6, 6, 0]} isAnimationActive={false}>
                                         {shapData.map((_, index) => (
-                                          <Cell key={`shap-bar-${index}`} fill={ML_FORECAST_CHART_COLORS.shap[index % ML_FORECAST_CHART_COLORS.shap.length]} />
+                                          <Cell key={`shap-bar-${index}`} fill={ML_SHAP_COLORS[index % ML_SHAP_COLORS.length]} />
                                         ))}
                                       </Bar>
                                     </BarChart>

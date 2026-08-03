@@ -16,6 +16,7 @@ from dtype_inference import infer_universal_dtypes  # noqa: E402
 from main import (  # noqa: E402
     DATASET_CACHE,
     app,
+    postprocess_ingested_frame,
     repair_zero_padded_century_timestamp,
     set_dataset_cache_entry,
     try_parse_datetime_series,
@@ -80,6 +81,116 @@ def test_try_parse_repairs_truncated_years():
     assert parsed is not None
     assert list(parsed.dt.year) == [2014, 2015]
     assert list(parsed.dt.hour) == [15, 12]
+
+
+def test_try_parse_repairs_already_datetime_truncated_years():
+    """Cleaning must repair year-14 datetimes left by a naive ingest cast."""
+    series = pd.to_datetime(pd.Series(['0014-11-18 15:40:26', '0015-10-04 12:44:59']))
+    assert list(series.dt.year) == [14, 15]
+    parsed = try_parse_datetime_series(series)
+    assert parsed is not None
+    assert list(parsed.dt.year) == [2014, 2015]
+    assert list(parsed.dt.hour) == [15, 12]
+
+
+def test_clean_dataset_repairs_preparsed_truncated_datetime_cache(client: TestClient, tmp_path: Path):
+    """Caches that already hold year-14 datetime64 (pre-fix ingest) must still repair on clean."""
+    broken = pd.DataFrame({
+        'created': pd.to_datetime([
+            '0014-11-18 15:40:26',
+            '0015-10-04 12:44:59',
+        ]),
+        'ended': pd.to_datetime([
+            '0014-11-18 18:40:26',
+            '0015-10-04 14:44:59',
+        ]),
+        'metric': [10.0, 20.0],
+    })
+    assert set(broken['created'].dt.year.tolist()) == {14, 15}
+    dataset_id = 'cleaning_dates_preparsed_truncated'
+    _cache_frame(tmp_path, dataset_id, broken)
+    try:
+        response = client.post('/api/clean-dataset', json={
+            'dataset_id': dataset_id,
+            'remove_duplicates': False,
+            'handle_missing': False,
+            'convert_dates': True,
+            'standardize_names': False,
+            'infer_dtypes': False,
+            'sales_preset': False,
+        })
+        assert response.status_code == 200, response.text
+        first = response.json()['data'][0]
+        assert first['created'] == '2014-11-18 15:40:26'
+        assert first['ended'] == '2014-11-18 18:40:26'
+        years = {str(row['created'])[:4] for row in response.json()['data']}
+        assert years == {'2014', '2015'}
+    finally:
+        DATASET_CACHE.pop(dataset_id, None)
+
+
+def test_upload_then_clean_repairs_century_and_preserves_time(client: TestClient, tmp_path: Path):
+    """Live path: postprocess_ingested_frame → cache → clean must fix years AND keep clocks.
+
+    Prior regression: ingest cast 0014-… to datetime64(year=14), cleaning skipped repair,
+    while format_cleaned_datetime_series still preserved HH:MM:SS — years wrong, times OK.
+    """
+    raw = pd.DataFrame({
+        'created': [
+            '0014-11-18 15:40:26',
+            '0015-10-04 12:44:59',
+            '0014-11-18 16:45:00',
+            '0015-10-04 08:00:00',
+        ],
+        'ended': [
+            '0014-11-18 18:40:26',
+            '0015-10-04 14:44:59',
+            '0014-11-18 19:45:00',
+            '0015-10-04 11:00:00',
+        ],
+        'metric': [10.0, 20.0, 15.0, 20.0],
+    })
+    ingested = postprocess_ingested_frame(raw)
+    assert pd.api.types.is_datetime64_any_dtype(ingested['created'])
+    assert set(ingested['created'].dt.year.tolist()) == {2014, 2015}
+    assert list(ingested['created'].dt.hour) == [15, 12, 16, 8]
+
+    dataset_id = 'cleaning_dates_upload_path'
+    _cache_frame(tmp_path, dataset_id, ingested)
+    try:
+        response = client.post('/api/clean-dataset', json={
+            'dataset_id': dataset_id,
+            'remove_duplicates': False,
+            'handle_missing': False,
+            'convert_dates': True,
+            'standardize_names': False,
+            'infer_dtypes': True,
+            'sales_preset': False,
+        })
+        assert response.status_code == 200, response.text
+        rows = response.json()['data']
+        created_years = {str(row['created'])[:4] for row in rows}
+        ended_years = {str(row['ended'])[:4] for row in rows}
+        assert created_years == {'2014', '2015'}
+        assert ended_years == {'2014', '2015'}
+        assert not any(year in created_years for year in ('0014', '0015', '2001', '2004', '2018', '2031'))
+
+        first = rows[0]
+        assert first['created'] == '2014-11-18 15:40:26'
+        assert first['ended'] == '2014-11-18 18:40:26'
+        for row in rows:
+            created_raw = str(row['created'])
+            ended_raw = str(row['ended'])
+            assert 'T' not in created_raw
+            assert '00:00:00' not in created_raw
+            created = pd.Timestamp(created_raw)
+            ended = pd.Timestamp(ended_raw)
+            assert created.year in {2014, 2015}
+            assert created.hour != 0 or created.minute != 0 or created.second != 0
+            delta_hours = (ended - created).total_seconds() / 3600.0
+            assert 1.0 <= delta_hours <= 5.0
+    finally:
+        DATASET_CACHE.pop(dataset_id, None)
 
 
 def test_clean_dataset_century_repair_and_time_preservation(client: TestClient, truncated_year_dataset: str):

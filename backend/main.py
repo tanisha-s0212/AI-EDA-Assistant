@@ -19,7 +19,7 @@ from math import erf, sqrt
 from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import joblib
 import matplotlib
@@ -1802,10 +1802,20 @@ def parse_dateutil_value(value: Any, *, dayfirst: bool) -> pd.Timestamp | pd.NaT
     if value is None or pd.isna(value):
         return pd.NaT
     if isinstance(value, (datetime, date, pd.Timestamp, np.datetime64)):
-        return pd.to_datetime(value, errors='coerce')
+        parsed = pd.to_datetime(value, errors='coerce')
+        if pd.isna(parsed):
+            return pd.NaT
+        # Ingest can already hold truncated years (e.g. year=14 from "0014-…").
+        # Repair via the shared 00xx→20xx string heuristic so clocks stay intact.
+        if 1 <= int(parsed.year) <= 99:
+            repaired_text = repair_zero_padded_century_timestamp(parsed.strftime('%Y-%m-%d %H:%M:%S'))
+            return pd.to_datetime(repaired_text, errors='coerce')
+        return parsed
     text = str(value).strip()
     if not looks_like_date_value(text):
         return pd.NaT
+    # Century repair before parse so "0014-11-18 15:40:26" never becomes year-14 datetime.
+    text = repair_zero_padded_century_timestamp(text)
     if date_parser is not None:
         try:
             return pd.Timestamp(date_parser.parse(text, dayfirst=dayfirst, fuzzy=True))
@@ -3653,9 +3663,8 @@ def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
 
 def build_polars_datetime_expr(column_name: str, dtype: pl.DataType) -> pl.Expr:
     column = pl.col(column_name)
-    if dtype in pl.TEMPORAL_DTYPES:
-        return column.cast(pl.Datetime, strict=False)
-
+    # Always go through string repair for 00xx → 20xx, including TEMPORAL columns that
+    # were ingested as year-14 datetimes (string cast yields "0014-…"). Blind cast skipped repair.
     text_column = column.cast(pl.String, strict=False).str.strip_chars()
     # Same 00xx → 20xx domain heuristic as repair_zero_padded_century_timestamp (see comment there).
     # slice(2) turns "0014-11-18…" into "14-11-18…"; prefixing "20" yields "2014-11-18…".
@@ -3664,7 +3673,7 @@ def build_polars_datetime_expr(column_name: str, dtype: pl.DataType) -> pl.Expr:
         .then(pl.concat_str([pl.lit('20'), text_column.str.slice(2)]))
         .otherwise(text_column)
     )
-    return pl.coalesce([
+    parsed_repaired = pl.coalesce([
         repaired_column.str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S%.f', strict=False),
         repaired_column.str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S', strict=False),
         repaired_column.str.strptime(pl.Datetime, '%Y-%m-%dT%H:%M:%S%.f', strict=False),
@@ -3684,6 +3693,9 @@ def build_polars_datetime_expr(column_name: str, dtype: pl.DataType) -> pl.Expr:
         repaired_column.str.strptime(pl.Datetime, '%Y-%m', strict=False),
         repaired_column.str.strptime(pl.Datetime, '%m-%Y', strict=False),
     ])
+    if dtype in pl.TEMPORAL_DTYPES:
+        return pl.coalesce([parsed_repaired, column.cast(pl.Datetime, strict=False)])
+    return parsed_repaired
 
 
 def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column: str, target_column: str) -> tuple[pd.DataFrame, str, str]:
@@ -3885,7 +3897,13 @@ def format_forecast_period(value: pd.Timestamp, period_label: str) -> str:
     return timestamp.strftime('%Y')
 
 
-def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: str) -> tuple[pd.DataFrame, str, str]:
+def prepare_sales_series(
+    frame: pd.DataFrame,
+    date_column: str,
+    target_column: str,
+    *,
+    minimum_periods_for_label: Callable[[str], int] | None = None,
+) -> tuple[pd.DataFrame, str, str]:
     working = frame[[date_column, target_column]].copy()
     working[date_column] = pd.to_datetime(working[date_column], errors='coerce')
     working[target_column] = pd.to_numeric(working[target_column], errors='coerce')
@@ -3897,11 +3915,12 @@ def prepare_sales_series(frame: pd.DataFrame, date_column: str, target_column: s
     inferred_freq, inferred_period_label = infer_sales_time_frequency(working[date_column])
     start_idx = PERIOD_COARSEN_ORDER.index(inferred_period_label) if inferred_period_label in PERIOD_COARSEN_ORDER else PERIOD_COARSEN_ORDER.index('month')
     last_error_detail: str | None = None
+    resolve_minimum = minimum_periods_for_label or (lambda label: 2 * seasonal_period_for_label(label))
 
     for period_label in PERIOD_COARSEN_ORDER[start_idx:]:
         freq = FREQ_FOR_PERIOD_LABEL[period_label]
         series_frame = aggregate_sales_series_at_frequency(working, date_column, target_column, freq)
-        minimum_periods = 2 * seasonal_period_for_label(period_label)
+        minimum_periods = int(resolve_minimum(period_label))
         if len(series_frame) >= minimum_periods:
             attach_sales_series_frequency_attrs(
                 series_frame,
@@ -5796,7 +5815,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'mape': selected_model['mape'],
         'smape': selected_model['smape'],
     }
-    frequency_label = 'week' if metadata['frequency'] == 'weekly' else 'month'
+    frequency_label = str(metadata.get('period_label') or ('week' if metadata['frequency'] == 'weekly' else 'month'))
     actual_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'actual']
     backtest_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'backtest']
     forecast_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'forecast']
@@ -5808,11 +5827,12 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
     total_periods = len(history)
     test_periods = len(test_results)
     train_periods = max(0, total_periods - test_periods)
+    usable_periods = int(metadata.get('usable_periods') or total_periods)
     data_quality = {
         'score': selected_model['data_quality_score'],
         'status': selected_model['data_quality_status'],
         'minimum_required_periods': 20 if metadata['frequency'] == 'weekly' else 12,
-        'usable_periods': metadata['usable_periods'],
+        'usable_periods': usable_periods,
         'missing_share': metadata.get('missing_share', 0),
         'zero_or_negative_share': metadata.get('zero_value_share', 0),
         'volatility': metadata['volatility'],
@@ -5843,7 +5863,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'period_label': frequency_label,
         'dataset_profile': {
             'detected_frequency': frequency_label,
-            'usable_periods': metadata['usable_periods'],
+            'usable_periods': usable_periods,
             'volatility': metadata['volatility'],
             'zero_value_share': metadata.get('zero_value_share', 0),
         },
@@ -7233,9 +7253,31 @@ def format_frame_datetimes_for_cleaning_preview(frame: pd.DataFrame) -> pd.DataF
     return preview
 
 
+def repair_truncated_datetime_years(series: pd.Series) -> pd.Series:
+    """Re-apply 00xx→20xx when a datetime series already holds year 1–99 values."""
+    parsed = pd.to_datetime(series, errors='coerce')
+    non_null = parsed.dropna()
+    if non_null.empty:
+        return parsed
+    # Only rewrite when the column is predominantly truncated years (ingest bypass case).
+    if float(non_null.dt.year.between(1, 99).mean()) < 0.6:
+        return parsed
+
+    def _repair_timestamp(value: object) -> object:
+        if value is None or (isinstance(value, float) and np.isnan(value)) or pd.isna(value):
+            return None
+        stamp = pd.Timestamp(value)
+        text = stamp.strftime('%Y-%m-%d %H:%M:%S')
+        return repair_zero_padded_century_timestamp(text)
+
+    repaired_text = parsed.map(_repair_timestamp)
+    return pd.to_datetime(repaired_text, errors='coerce')
+
+
 def try_parse_datetime_series(series: pd.Series) -> pd.Series | None:
     if pd.api.types.is_datetime64_any_dtype(series):
-        return pd.to_datetime(series, errors='coerce')
+        # Upload postprocess may have already cast 0014-… → year-14 datetime; repair before format.
+        return repair_truncated_datetime_years(series)
     if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
         return None
 

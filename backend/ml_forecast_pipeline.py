@@ -163,6 +163,79 @@ def detect_frequency(df: pd.DataFrame, date_col: str) -> str:
     return 'monthly'
 
 
+def ml_minimum_periods_for_label(period_label: str) -> int:
+    """ML feature configs only support weekly/monthly grains; keep mins aligned with get_config."""
+    if period_label in {'day', 'week'}:
+        return 20
+    if period_label == 'month':
+        return 12
+    if period_label == 'quarter':
+        return 8
+    return 3
+
+
+def period_label_to_ml_frequency(period_label: str) -> str:
+    return 'weekly' if period_label in {'day', 'week'} else 'monthly'
+
+
+def prepare_frame_for_ml_pipeline(
+    frame: pd.DataFrame,
+    date_col: str,
+    target_col: str,
+) -> tuple[pd.DataFrame, str, str, str, str]:
+    """Coarsen raw rows with shared prepare_sales_series helpers for train + chart.
+
+    Returns (ml_frame, date_col, target_col, ml_frequency, period_label).
+    """
+    # Lazy import avoids circular import: main.py imports this module at startup.
+    from main import (  # noqa: WPS433
+        FREQ_FOR_PERIOD_LABEL,
+        aggregate_sales_series_at_frequency,
+        attach_sales_series_frequency_attrs,
+        prepare_sales_series,
+    )
+    from fastapi import HTTPException
+
+    try:
+        series_frame, _freq, period_label = prepare_sales_series(
+            frame,
+            date_col,
+            target_col,
+            minimum_periods_for_label=ml_minimum_periods_for_label,
+        )
+    except HTTPException as error:
+        detail = error.detail if isinstance(error.detail, str) else str(error.detail)
+        raise ValueError(detail) from error
+
+    inferred_period_label = str(series_frame.attrs.get('inferred_period_label') or period_label)
+
+    # ML feature calendars are weekly|monthly only. Prefer week when daily series is dense enough.
+    if period_label == 'day':
+        working = frame[[date_col, target_col]].copy()
+        working[date_col] = pd.to_datetime(working[date_col], errors='coerce')
+        working[target_col] = pd.to_numeric(working[target_col], errors='coerce')
+        working = working.dropna(subset=[date_col])
+        week_frame = aggregate_sales_series_at_frequency(working, date_col, target_col, FREQ_FOR_PERIOD_LABEL['week'])
+        month_frame = aggregate_sales_series_at_frequency(working, date_col, target_col, FREQ_FOR_PERIOD_LABEL['month'])
+        if len(week_frame) >= ml_minimum_periods_for_label('week'):
+            series_frame = week_frame
+            period_label = 'week'
+        elif len(month_frame) >= ml_minimum_periods_for_label('month'):
+            series_frame = month_frame
+            period_label = 'month'
+        attach_sales_series_frequency_attrs(
+            series_frame,
+            period_label=period_label,
+            inferred_period_label=inferred_period_label,
+            frequency_auto_adjusted=period_label != inferred_period_label,
+        )
+
+    ml_frequency = period_label_to_ml_frequency(period_label)
+    ml_frame = series_frame.rename(columns={'period': date_col, 'sales': target_col}).copy()
+    ml_frame.attrs.update(dict(series_frame.attrs))
+    return ml_frame, date_col, target_col, ml_frequency, period_label
+
+
 def clean_data(df: pd.DataFrame, target_col: str, date_col: str, frequency: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Sort, trim leading zero target rows, drop null targets, and enforce minimum rows."""
     config = get_config(frequency)
@@ -571,6 +644,8 @@ def write_all_outputs(
     horizon: int,
     best_model: Any,
     feature_list: list[str],
+    *,
+    period_label: str | None = None,
 ) -> dict[str, Any]:
     """Write all ML forecast artifacts and return the API-compatible output bundle."""
     source = Path(input_path)
@@ -591,9 +666,11 @@ def write_all_outputs(
         f'{best_model_name} selected by lowest SMAPE. '
         'Note: SMAPE used as primary metric to avoid near-zero denominator inflation.'
     )
+    resolved_period_label = period_label or ('week' if frequency == 'weekly' else 'month')
     metadata = {
         'frequency': frequency,
         'detected_frequency_label': config['period_unit'],
+        'period_label': resolved_period_label,
         'target_col': target_col,
         'date_col': date_col,
         'usable_periods': int(len(clean_df)),
@@ -706,15 +783,22 @@ def run_full_pipeline(
 ) -> dict[str, Any]:
     """Run the complete Aroha IDA ML sales forecast pipeline with an 80/20 train-test split on the selected model."""
     if frame is None:
-        df, detected_date_col, detected_target_col = load_and_detect(path, date_col, target_col)
+        raw_df, detected_date_col, detected_target_col = load_and_detect(path, date_col, target_col)
     else:
-        df, detected_date_col, detected_target_col = load_and_detect_frame(frame, date_col, target_col)
-    date_col = date_col if date_col in df.columns else detected_date_col
-    target_col = target_col if target_col in df.columns else detected_target_col
+        raw_df, detected_date_col, detected_target_col = load_and_detect_frame(frame, date_col, target_col)
+    date_col = date_col if date_col in raw_df.columns else detected_date_col
+    target_col = target_col if target_col in raw_df.columns else detected_target_col
+
+    # Coarsen with shared sales-series helpers so history/chart/train share one period grain.
+    df, date_col, target_col, prepared_frequency, period_label = prepare_frame_for_ml_pipeline(
+        raw_df, date_col, target_col
+    )
     if frequency == 'auto':
-        frequency = detect_frequency(df, date_col)
+        frequency = prepared_frequency
+    elif frequency not in {'weekly', 'monthly'}:
+        logger.warning('Unsupported frequency %s; using prepared frequency %s.', frequency, prepared_frequency)
+        frequency = prepared_frequency
     if frequency not in {'weekly', 'monthly'}:
-        logger.warning('Unsupported frequency %s; falling back to monthly.', frequency)
         frequency = 'monthly'
     config = get_config(frequency)
     clean_df, trim_report = clean_data(df, target_col, date_col, frequency)
@@ -784,6 +868,23 @@ def run_full_pipeline(
     
     forecast = forecast_future(best_model, feature_df, feature_list, target_col, date_col, horizon, frequency)
     shap = compute_shap_importance(best_model, feature_df[feature_list], feature_list)
-    outputs = write_all_outputs(path, trim_report, results, selected_model_name, best_metrics, feature_df, forecast, shap, clean_df, target_col, date_col, frequency, horizon, best_model, feature_list)
+    outputs = write_all_outputs(
+        path,
+        trim_report,
+        results,
+        selected_model_name,
+        best_metrics,
+        feature_df,
+        forecast,
+        shap,
+        clean_df,
+        target_col,
+        date_col,
+        frequency,
+        horizon,
+        best_model,
+        feature_list,
+        period_label=period_label,
+    )
     print_summary(trim_report, results, selected_model_name, best_metrics, forecast)
     return outputs

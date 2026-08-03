@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd backend
 export ACTIVITY_DB_CONNECT_TIMEOUT=1
-pytest tests/test_agentic.py -v
+pytest tests/test_agentic.py tests/test_cleaning_dates.py tests/test_ml_forecast_aggregation.py tests/test_ts_stationarity_date_freq.py -v
 
 cd ../frontend
 npm run test -- --watchAll=false

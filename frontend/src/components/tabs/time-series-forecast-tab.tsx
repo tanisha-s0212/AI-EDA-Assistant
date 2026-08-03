@@ -14,24 +14,15 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { AlertCircle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, Loader2, ShieldCheck, TrendingUp, Waves, Zap, RadioTower, Info, AlertTriangle } from 'lucide-react';
-import { Area, ComposedChart, CartesianGrid, Legend, Line, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 
 import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
+import ForecastSeriesChart, { buildForecastSeriesChartData } from '@/components/forecast-series-chart';
 
 const STEP_ITEMS = [
   { step: 1, label: 'Data Config', icon: CalendarDays },
   { step: 2, label: 'TS Models', icon: RadioTower },
   { step: 3, label: 'Forecast', icon: TrendingUp },
 ];
-
-const TS_CHART_COLORS = {
-  actual: '#2563eb',
-  backtest: '#f59e0b',
-  forecast: '#8b5cf6',
-  band: '#22c55e',
-  bandBase: '#ecfccb',
-  grid: '#cbd5e1',
-} as const;
 
 const transition = { duration: 0.25, ease: 'easeOut' } as const;
 const HORIZON_OPTIONS = [3, 6, 12, 24] as const;
@@ -53,40 +44,10 @@ function formatIndianNumber(num: number | null | undefined) {
   return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(num);
 }
 
-function formatChartValue(value: number | null | undefined) {
-  return value == null || Number.isNaN(value) ? 'N/A' : value.toLocaleString();
-}
-
 function modelStatusClass(status: string) {
   if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
   if (status === 'failed') return 'border-red-200 bg-red-50 text-red-700';
   return 'border-amber-200 bg-amber-50 text-amber-700';
-}
-
-function ForecastTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ payload?: { actual?: number | null; backtest?: number | null; forecast?: number | null; lower?: number | null; upper?: number | null } }>; label?: string }) {
-  if (!active || !payload?.length) return null;
-  const point = payload[0]?.payload;
-  if (!point) return null;
-  const rows = [
-    { label: 'Actual', value: point.actual },
-    { label: 'Backtest', value: point.backtest },
-    { label: 'Forecast', value: point.forecast },
-    { label: 'Lower 95%', value: point.lower },
-    { label: 'Upper 95%', value: point.upper },
-  ].filter((item) => item.value != null);
-  return (
-    <div className="min-w-[180px] rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-[0_18px_45px_rgba(15,23,42,0.14)]">
-      <p className="text-sm font-semibold text-slate-900">{label}</p>
-      <div className="mt-2 space-y-1.5">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-center justify-between gap-4 text-xs">
-            <span className="text-slate-500">{row.label}</span>
-            <span className="font-semibold text-slate-900">{formatChartValue(row.value)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
@@ -224,7 +185,24 @@ export default function TimeSeriesForecastTab() {
     };
   }, [currentStep, datasetId, dateColumn, targetColumn]);
 
-  const profile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
+  const localProfile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
+  const profile = useMemo(() => {
+    if (result?.dataset_profile?.usable_periods || result?.dataset_profile?.detected_frequency) {
+      return {
+        detected_frequency: result.dataset_profile.detected_frequency || result.period_label || stationarity?.period_label || localProfile.detected_frequency,
+        usable_periods: result.dataset_profile.usable_periods ?? result.history.length ?? localProfile.usable_periods,
+        volatility: result.dataset_profile.volatility ?? localProfile.volatility,
+        zero_value_share: result.dataset_profile.zero_value_share ?? localProfile.zero_value_share,
+      };
+    }
+    if (stationarity?.period_label) {
+      return {
+        ...localProfile,
+        detected_frequency: stationarity.period_label,
+      };
+    }
+    return localProfile;
+  }, [localProfile, result, stationarity]);
   const periodGrainLabel = (label?: string | null) => {
     if (!label) return 'period';
     return ({ day: 'daily', week: 'weekly', month: 'monthly', quarter: 'quarterly', year: 'yearly' } as Record<string, string>)[label] ?? label;
@@ -239,52 +217,18 @@ export default function TimeSeriesForecastTab() {
 
   const chartData = useMemo(() => {
     if (!result) return [];
-    const testMap = new Map(result.test_forecast.map((item) => [item.period, item]));
-    return [
-      ...result.history.map((item) => {
-        const testPoint = testMap.get(item.period);
-        return {
-          period: item.period,
-          actual: item.actual,
-          backtest: testPoint?.predicted ?? null,
-          forecast: null as number | null,
-          lower: testPoint?.lower ?? null,
-          upper: testPoint?.upper ?? null,
-          lowerBand: testPoint?.lower ?? null,
-          confidenceRange: testPoint?.lower != null && testPoint?.upper != null ? Math.max(testPoint.upper - testPoint.lower, 0) : null,
-        };
-      }),
-      ...result.future_forecast.map((item) => ({
-        period: item.period,
-        actual: null,
-        backtest: null,
-        forecast: item.predicted,
-        lower: item.lower ?? null,
-        upper: item.upper ?? null,
-        lowerBand: item.lower ?? null,
-        confidenceRange: item.lower != null && item.upper != null ? Math.max(item.upper - item.lower, 0) : null,
-      })),
-    ];
+    return buildForecastSeriesChartData(result.history, result.test_forecast, result.future_forecast, { includeConfidence: true });
   }, [result]);
 
-  // New multi-model chart data
   const multiChartData = useMemo(() => {
-    if (!modelComparison.length || !selectedModel) return [];
-    const data: Array<{ period: string; actual?: number | null; backtest?: number | null; forecast?: number | null; lower?: number | null; upper?: number | null; lowerBand?: number | null; confidenceRange?: number | null }> = [];
-    forecastResults.forEach((item) => {
-      data.push({
-        period: item.period,
-        actual: null,
-        backtest: null,
-        forecast: item.forecast,
-        lower: item.lower,
-        upper: item.upper,
-        lowerBand: item.lower ?? null,
-        confidenceRange: item.lower != null && item.upper != null ? Math.max(item.upper - item.lower, 0) : null,
-      });
-    });
-    return data;
-  }, [modelComparison, selectedModel, forecastResults]);
+    if (!forecastResults.length) return [];
+    return buildForecastSeriesChartData([], [], forecastResults.map((item) => ({
+      period: item.period,
+      predicted: item.forecast,
+      lower: item.lower,
+      upper: item.upper,
+    })), { includeConfidence: true });
+  }, [forecastResults]);
 
   const handleRun = async () => {
     if (!dateColumn || !targetColumn) {
@@ -345,8 +289,13 @@ export default function TimeSeriesForecastTab() {
         date_column: dateColumn,
         target_column: targetColumn,
         frequency: data.stationarity.status,
-        period_label: 'period',
-        dataset_profile: { detected_frequency: profile.detected_frequency, usable_periods: profile.usable_periods, volatility: profile.volatility, zero_value_share: profile.zero_value_share },
+        period_label: data.stationarity.period_label || profile.detected_frequency || 'period',
+        dataset_profile: {
+          detected_frequency: data.stationarity.period_label || profile.detected_frequency,
+          usable_periods: profile.usable_periods,
+          volatility: profile.volatility,
+          zero_value_share: profile.zero_value_share,
+        },
         stationarity_check: { test_name: 'ADF-KPSS', p_value: data.stationarity.adf_pvalue, verdict: data.stationarity.status, note: data.stationarity.note },
         history: [],
         test_forecast: [],
@@ -722,22 +671,11 @@ export default function TimeSeriesForecastTab() {
                       <CardDescription>The shaded band shows the 95% confidence interval.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <div className="h-80 w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <ComposedChart data={chartData.length > 0 ? chartData : multiChartData}>
-                            <CartesianGrid stroke={TS_CHART_COLORS.grid} strokeDasharray="3 3" opacity={0.35} />
-                            <XAxis dataKey="period" tickLine={false} axisLine={false} tickMargin={10} tick={{ fill: '#64748b', fontSize: 12 }} />
-                            <YAxis tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
-                            <RechartsTooltip content={<ForecastTooltip />} />
-                            <Legend />
-                            <Area type="monotone" dataKey="lowerBand" name="Lower 95%" stackId="confidence" stroke="transparent" fill={TS_CHART_COLORS.bandBase} fillOpacity={0.12} isAnimationActive={false} />
-                            <Area type="monotone" dataKey="confidenceRange" name="95% Confidence Band" stackId="confidence" stroke="transparent" fill={TS_CHART_COLORS.band} fillOpacity={0.18} isAnimationActive={false} />
-                            <Line type="monotone" connectNulls dataKey="actual" name="Actual" stroke={TS_CHART_COLORS.actual} strokeWidth={3} dot={{ r: 4, fill: '#ffffff', stroke: TS_CHART_COLORS.actual, strokeWidth: 2.5 }} activeDot={{ r: 6, fill: TS_CHART_COLORS.actual, stroke: '#ffffff', strokeWidth: 2 }} isAnimationActive={false} />
-                            <Line type="monotone" connectNulls dataKey="backtest" name="Backtest" stroke={TS_CHART_COLORS.backtest} strokeWidth={2.5} strokeDasharray="6 4" dot={{ r: 3.5, fill: '#ffffff', stroke: TS_CHART_COLORS.backtest, strokeWidth: 2 }} activeDot={{ r: 5, fill: TS_CHART_COLORS.backtest, stroke: '#ffffff', strokeWidth: 2 }} isAnimationActive={false} />
-                            <Line type="monotone" connectNulls dataKey="forecast" name="Forecast" stroke={TS_CHART_COLORS.forecast} strokeWidth={3} dot={{ r: 4, fill: '#ffffff', stroke: TS_CHART_COLORS.forecast, strokeWidth: 2.5 }} activeDot={{ r: 6, fill: TS_CHART_COLORS.forecast, stroke: '#ffffff', strokeWidth: 2 }} isAnimationActive={false} />
-                          </ComposedChart>
-                        </ResponsiveContainer>
-                      </div>
+                      <ForecastSeriesChart
+                        data={chartData.length > 0 ? chartData : multiChartData}
+                        showConfidence
+                        heightClassName="h-80"
+                      />
                     </CardContent>
                   </Card>
                 )}
