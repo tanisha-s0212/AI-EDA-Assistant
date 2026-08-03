@@ -326,6 +326,8 @@ function buildFreshDatasetState(
     timeSeriesForecastResult: null,
     mlForecastResult: null,
     lossForecast: null,
+    lossIllustrativeAssumptions: false,
+    profitIllustrativeAssumptions: false,
     profitForecast: null,
     lossSegments: null,
     lossSummary: null,

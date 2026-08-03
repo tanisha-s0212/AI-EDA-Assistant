@@ -347,7 +347,7 @@ type PersistedAppSlice = Pick<
 >;
 
 const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
-const STORE_PERSIST_VERSION = 4;
+const STORE_PERSIST_VERSION = 5;
 
 // # AGENTIC LAYER START
 const AGENTIC_ENABLED = process.env.NEXT_PUBLIC_AGENTIC_ENABLED !== 'false';
@@ -445,6 +445,8 @@ const datasetStateKeys: Array<keyof DatasetWorkspaceState> = [
   'timeSeriesForecastResult',
   'mlForecastResult',
   'lossForecast',
+  'lossIllustrativeAssumptions',
+  'profitIllustrativeAssumptions',
   'profitForecast',
   'lossSegments',
   'lossSummary',
