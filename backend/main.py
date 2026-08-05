@@ -16,10 +16,11 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import escape
 from math import erf, sqrt
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
+from zoneinfo import ZoneInfo
 
 import joblib
 import matplotlib
@@ -320,6 +321,62 @@ MAX_UPLOAD_SIZE_BYTES = 512 * 1024 * 1024
 
 def utc_now_iso() -> str:
     return datetime.utcnow().isoformat()
+
+
+INDIA_TZ = ZoneInfo('Asia/Kolkata')
+UTC_TZ = timezone.utc
+
+
+def now_ist() -> datetime:
+    """Current wall clock in Indian Standard Time."""
+    return datetime.now(INDIA_TZ)
+
+
+def format_ist_display(value: Any = None) -> str:
+    """Format a timestamp for report display in Asia/Kolkata (IST).
+
+    Naive datetimes / ISO strings are treated as UTC (backend logs use utcnow),
+    then converted to IST. Returns strings like ``04 Aug 2026, 08:51 AM IST``.
+    """
+    stamp: datetime | None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        stamp = now_ist()
+    elif isinstance(value, datetime):
+        stamp = value if value.tzinfo is not None else value.replace(tzinfo=UTC_TZ)
+        stamp = stamp.astimezone(INDIA_TZ)
+    else:
+        text = str(value).strip()
+        try:
+            parsed = pd.Timestamp(text)
+            if pd.isna(parsed):
+                return text
+            if parsed.tzinfo is None:
+                parsed = parsed.tz_localize('UTC')
+            stamp = parsed.tz_convert(INDIA_TZ).to_pydatetime()
+        except Exception:
+            return text
+
+    return f"{stamp.strftime('%d %b %Y, %I:%M %p')} IST"
+
+
+def format_ist_date(value: Any = None) -> str:
+    """Date-only IST label for report footers (YYYY-MM-DD)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        stamp = now_ist()
+    elif isinstance(value, datetime):
+        stamp = value if value.tzinfo is not None else value.replace(tzinfo=UTC_TZ)
+        stamp = stamp.astimezone(INDIA_TZ)
+    else:
+        try:
+            parsed = pd.Timestamp(str(value).strip())
+            if pd.isna(parsed):
+                return 'N/A'
+            if parsed.tzinfo is None:
+                parsed = parsed.tz_localize('UTC')
+            stamp = parsed.tz_convert(INDIA_TZ).to_pydatetime()
+        except Exception:
+            return 'N/A'
+    return stamp.strftime('%Y-%m-%d')
 
 
 def get_activity_connection() -> psycopg.Connection:
@@ -7862,7 +7919,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
         ['Prediction', 'Latest prediction, model context, probabilities, and recent prediction history' if payload.predictionResult is not None else 'No prediction captured'],
     ]
 
-    generated_on = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    generated_on = format_ist_display()
     workflow_coverage = f"{7 if payload.salesForecastResult is not None else 6}/7 sections"
     report_status = 'Complete workflow captured' if payload.predictionResult is not None else 'Workflow summary generated'
 
@@ -7942,7 +7999,7 @@ def build_report_pdf(payload: ReportPayload) -> bytes:
     if payload.cleaningLogs:
         cleaning_rows = [['Action', 'Detail', 'Timestamp']]
         for log in payload.cleaningLogs[:20]:
-            cleaning_rows.append([log.action, log.detail, log.timestamp])
+            cleaning_rows.append([log.action, log.detail, format_ist_display(log.timestamp)])
         add_table(cleaning_rows, [120, 300, 120], header_bg='#0f766e')
     else:
         add_paragraph('No cleaning steps were recorded for this run.', small_style)
@@ -8298,7 +8355,7 @@ def _build_profit_chart_base64(
 def _generate_report_metadata(payload: ReportPayload) -> dict[str, str]:
     return {
         'report_id': str(uuid.uuid4())[:12],
-        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'generated_at': format_ist_display(),
         'dataset_name': payload.fileName,
         'analysis_type': 'Exploratory Data Analysis with Forecasting and ML',
         'agent_version': 'IDA v2.1.0',
@@ -8698,7 +8755,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     workflow_status = f"{sum(1 for row in workflow_rows[1:] if row[1] == 'Completed')}/10 workflow areas completed"
     forecast_status = ', '.join(name for name, present in [('TS', bool(ts_result)), ('ML', bool(ml_forecast_result)), ('Loss', bool(loss_forecast_result)), ('Profit', bool(selected_profit_result))] if present) or 'None'
 
-    generated_on = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    generated_on = format_ist_display()
     cover_card = Table([[
         Paragraph('INTELLIGENT DATA ASSISTANT', eyebrow_style),
         Paragraph('Executive Workflow Report', hero_title_style),
@@ -8832,7 +8889,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     if payload.cleaningLogs:
         cleaning_rows = [['Action', 'Detail', 'Timestamp']]
         for log in payload.cleaningLogs[:24]:
-            cleaning_rows.append([log.action, log.detail, log.timestamp])
+            cleaning_rows.append([log.action, log.detail, format_ist_display(log.timestamp)])
         add_table(cleaning_rows, [content_width * 0.18, content_width * 0.57, content_width * 0.18], header_bg='#0f766e')
     else:
         add_paragraph('No cleaning logs were captured for this run. The report still remains valid and summarizes the workflow with the currently available state.', small_style)
@@ -9210,7 +9267,7 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
         for column in payload.columns[:20]
     ]
     cleaning_rows = [
-        [log.action, log.detail, log.timestamp]
+        [log.action, log.detail, format_ist_display(log.timestamp)]
         for log in payload.cleaningLogs[:24]
     ] or [['None', 'No cleaning logs captured', 'N/A']]
     metric_rows = [[key, value] for key, value in (payload.modelMetrics or {}).items()] or [['N/A', 'No ML metrics captured']]
@@ -9242,8 +9299,8 @@ def build_dynamic_report_doc(payload: ReportPayload) -> bytes:
     workflow_status = 'Complete workflow captured' if payload.predictionResult is not None else 'Workflow summary generated'
     forecast_status = ', '.join(name for name, present in [('Time Series', bool(ts_result)), ('ML Forecast', bool(ml_forecast_result))] if present) or 'No forecasting branch executed'
     prediction_value = escape(str(payload.predictionResult if payload.predictionResult is not None else 'Pending'))
-    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M')
-    generation_date = datetime.now().strftime('%Y-%m-%d')
+    generated_at = format_ist_display()
+    generation_date = format_ist_date()
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -9622,7 +9679,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
 
     loaded_rows = payload.loadedRowCount or payload.totalRows
     preview_mode = payload.previewLoaded and payload.totalRows > loaded_rows
-    generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    generated_at = format_ist_display()
     report_id = str(uuid.uuid4())[:12]
     agent_version = 'IDA v2.1.0'
     analysis_type = 'Exploratory Data Analysis with Forecasting and ML'
@@ -9722,7 +9779,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     elements.append(Spacer(1, 8))
     if payload.cleaningLogs:
         clean_rows = [['Action Name', 'Detail Description', 'Timestamp']]
-        clean_rows.extend([[log.action, log.detail, log.timestamp] for log in payload.cleaningLogs])
+        clean_rows.extend([[log.action, log.detail, format_ist_display(log.timestamp)] for log in payload.cleaningLogs])
         add_table(clean_rows, [content_width * 0.2, content_width * 0.56, content_width * 0.18])
     else:
         add_note('Data was clean - no actions required', 'No cleaning actions were logged for this session.', '#ecfdf5', '#22c55e')
@@ -10582,7 +10639,7 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
     meta = _generate_report_metadata(payload)
     loaded_rows = payload.loadedRowCount or payload.totalRows
     preview_mode = payload.previewLoaded and payload.totalRows > loaded_rows
-    generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    generated_at = format_ist_display()
     rows_removed = max(0, payload.totalRows - (payload.cleanedRowCount or payload.totalRows))
     agent_version = 'IDA v2.1.0'
 
@@ -10735,7 +10792,7 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
     <p>Data quality assessment covers schema completeness, null ratios, uniqueness, and role inference. {f"{len(payload.cleaningLogs)} cleaning actions were applied." if payload.cleaningLogs else "No cleaning was required or applied."}</p>
     {add_table_html(
         ['Action', 'Detail', 'Timestamp'],
-        [[l.action, l.detail, l.timestamp] for l in payload.cleaningLogs[:24]]
+        [[l.action, l.detail, format_ist_display(l.timestamp)] for l in payload.cleaningLogs[:24]]
     ) if payload.cleaningLogs else '<p class="muted">No cleaning logs recorded.</p>'}
     {add_cards_html([
         ('Cleaning Status', 'Completed' if payload.cleaningDone else 'Pending'),
@@ -11256,7 +11313,7 @@ def build_dynamic_report_docx(payload: ReportPayload) -> bytes:
     profit_rows = payload.profitForecast or profit_scenarios.get(payload.reportConfig.scenario, []) or profit_scenarios.get('baseline', [])
     breakeven_period = payload.breakevenPeriod or (session_state.get('breakeven') or {}).get('breakeven_period')
     meta = _generate_report_metadata(payload)
-    generated_at = datetime.now().strftime('%d %b %Y, %I:%M %p')
+    generated_at = format_ist_display()
 
     def fmt(value: Any, digits: int = 3) -> str:
         if value is None: return 'N/A'
@@ -11417,7 +11474,7 @@ def build_dynamic_report_docx(payload: ReportPayload) -> bytes:
                ('Rows Retained', f'{payload.cleanedRowCount:,}')])
     if payload.cleaningLogs:
         add_table(['Action', 'Detail', 'Timestamp'],
-                  [[l.action, l.detail, l.timestamp] for l in payload.cleaningLogs[:20]])
+                  [[l.action, l.detail, format_ist_display(l.timestamp)] for l in payload.cleaningLogs[:20]])
     doc.add_page_break()
 
     # Section 4: EDA

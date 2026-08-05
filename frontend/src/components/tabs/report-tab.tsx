@@ -121,7 +121,14 @@ export default function ReportTab() {
   const [generatingHtml, setGeneratingHtml] = useState(false);
   const [generatingDocx, setGeneratingDocx] = useState(false);
   const [reportFileName, setReportFileName] = useState(() => buildReportFileName(fileName));
-  const generatedTimestamp = useMemo(() => new Date().toLocaleString(), []);
+  const generatedTimestamp = useMemo(() => {
+    const formatted = new Intl.DateTimeFormat('en-IN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'Asia/Kolkata',
+    }).format(new Date());
+    return `${formatted} IST`;
+  }, []);
   const analysisData = cleanedData ?? rawData ?? [];
   const edaStats = useMemo(() => computeEdaStats(analysisData, columns), [analysisData, columns]);
 

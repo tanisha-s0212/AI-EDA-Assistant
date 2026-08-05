@@ -26,3 +26,9 @@ backend/*.log
 .env.local
 backend/tmp/*
 backend/.pytest_cache/
+
+build-frontend.log
+
+.pytest_cache/
+
+__pycache__/
