@@ -316,6 +316,8 @@ EDA_MAX_CATEGORICAL_CHARTS = 8
 EDA_MAX_CATEGORY_BARS = 10
 EDA_MAX_INTERACTION_COLUMNS = 40
 EDA_MAX_INTERACTION_PAIRS = 3
+EDA_ANALYSIS_ROW_CAP = 75_000
+EDA_CHART_POINT_CAP = 10_000
 MAX_UPLOAD_SIZE_BYTES = 512 * 1024 * 1024
 
 
@@ -1694,8 +1696,27 @@ async def write_uploaded_file(upload_file: UploadFile, dataset_id: str, suffix: 
 
 
 def write_cached_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
+    """Legacy joblib writer (upload/restore edges only). Cleaning persists Parquet instead."""
     target = dataset_file_path(dataset_id, '.joblib')
     joblib.dump(frame, target)
+    return target
+
+
+def write_cached_parquet_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
+    """Persist a cleaned/inferred pandas frame as Parquet for fast downstream Polars IO."""
+    target = dataset_file_path(dataset_id, '.parquet')
+    # Convert extension dtypes that confuse some parquet writers; keep values.
+    serializable = frame.copy()
+    for column in serializable.columns:
+        series = serializable[column]
+        if str(series.dtype) == 'object':
+            continue
+        if pd.api.types.is_extension_array_dtype(series.dtype) and not pd.api.types.is_datetime64_any_dtype(series):
+            try:
+                serializable[column] = series.astype(object).where(series.notna(), None)
+            except Exception:
+                pass
+    serializable.to_parquet(target, index=False)
     return target
 
 
@@ -2127,22 +2148,75 @@ def load_cached_preview(dataset_entry: dict[str, Any], limit: int = DATASET_PREV
     raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
 
 
+def _sample_analysis_frame(frame: pd.DataFrame, total_rows: int) -> pd.DataFrame:
+    """Cap Advanced EDA analysis frames to EDA_ANALYSIS_ROW_CAP rows."""
+    if len(frame) <= EDA_ANALYSIS_ROW_CAP:
+        return frame
+    return frame.sample(n=EDA_ANALYSIS_ROW_CAP, random_state=42).reset_index(drop=True)
+
+
+def _load_sampled_parquet_analysis_frame(parquet_path: str, total_rows: int) -> pd.DataFrame:
+    """Load at most EDA_ANALYSIS_ROW_CAP rows from Parquet via Polars (stride sample)."""
+    if total_rows > 0 and total_rows <= EDA_ANALYSIS_ROW_CAP:
+        frame = pl.read_parquet(parquet_path)
+        return normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False))
+
+    known_total = total_rows
+    if known_total <= 0:
+        try:
+            known_total = int(pl.scan_parquet(parquet_path).select(pl.len()).collect().item())
+        except Exception:
+            known_total = EDA_ANALYSIS_ROW_CAP + 1
+
+    if known_total <= EDA_ANALYSIS_ROW_CAP:
+        frame = pl.read_parquet(parquet_path)
+        return normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False))
+
+    stride = max(1, int(known_total // EDA_ANALYSIS_ROW_CAP))
+    sampled = (
+        pl.scan_parquet(parquet_path)
+        .with_row_index('__eda_i')
+        .filter((pl.col('__eda_i') % stride) == 0)
+        .limit(EDA_ANALYSIS_ROW_CAP)
+        .drop('__eda_i')
+        .collect()
+    )
+    return normalize_dataframe(sampled.to_pandas(use_pyarrow_extension_array=False))
+
+
 def load_cached_analysis_frame(dataset_entry: dict[str, Any]) -> tuple[pd.DataFrame, int]:
     total_rows = int(dataset_entry.get('row_count') or 0)
 
     if dataset_entry.get('parquet_path'):
-        frame = read_cached_parquet(dataset_entry, low_memory=True)
-        return normalize_dataframe(frame.to_pandas(use_pyarrow_extension_array=False)), total_rows
+        parquet_path = str(dataset_entry['parquet_path'])
+        if total_rows <= 0:
+            try:
+                total_rows = int(pl.scan_parquet(parquet_path).select(pl.len()).collect().item())
+            except Exception:
+                total_rows = 0
+        pandas_frame = _load_sampled_parquet_analysis_frame(parquet_path, total_rows)
+        if total_rows <= 0:
+            total_rows = int(len(pandas_frame))
+        return pandas_frame, total_rows
 
     if dataset_entry.get('csv_path'):
-        return normalize_dataframe(read_cached_csv(dataset_entry)), total_rows
+        pandas_frame = normalize_dataframe(read_cached_csv(dataset_entry))
+        if total_rows <= 0:
+            total_rows = int(len(pandas_frame))
+        return _sample_analysis_frame(pandas_frame, total_rows), total_rows
 
     if dataset_entry.get('excel_path'):
-        return normalize_dataframe(read_cached_excel(dataset_entry)), total_rows
+        pandas_frame = normalize_dataframe(read_cached_excel(dataset_entry))
+        if total_rows <= 0:
+            total_rows = int(len(pandas_frame))
+        return _sample_analysis_frame(pandas_frame, total_rows), total_rows
 
     if dataset_entry.get('frame_path'):
         frame = read_cached_frame(dataset_entry)
-        return normalize_dataframe(frame), int(len(frame))
+        pandas_frame = normalize_dataframe(frame)
+        if total_rows <= 0:
+            total_rows = int(len(pandas_frame))
+        return _sample_analysis_frame(pandas_frame, total_rows), total_rows
 
     raise HTTPException(status_code=400, detail='Cached dataset storage is missing. Please upload the file again.')
 
@@ -2917,10 +2991,12 @@ def normalize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def persist_inferred_dataset_frame(dataset_id: str, source_entry: dict[str, Any], frame: pd.DataFrame) -> Path:
-    cached_path = write_cached_frame(dataset_id, frame)
+    """Persist cleaned/dtype-inferred data as Parquet (not joblib) so downstream tabs stay on the fast path."""
+    cached_path = write_cached_parquet_frame(dataset_id, frame)
     duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
+    # Replace cache entry entirely: drop frame_path/csv_path/excel_path so clean/EDA never prefer joblib.
     set_dataset_cache_entry(dataset_id, {
-        'frame_path': str(cached_path),
+        'parquet_path': str(cached_path),
         'filename': source_entry.get('filename') or 'dataset',
         'row_count': int(len(frame)),
         'column_count': int(len(frame.columns)),
@@ -3265,6 +3341,9 @@ def build_interaction_chart_matplotlib(x_values: np.ndarray, y_values: np.ndarra
 def estimate_kde(values: np.ndarray, point_count: int = 160) -> tuple[np.ndarray, np.ndarray] | None:
     if values.size < 2:
         return None
+    if values.size > EDA_CHART_POINT_CAP:
+        rng = np.random.default_rng(42)
+        values = rng.choice(values, size=EDA_CHART_POINT_CAP, replace=False)
     std = float(np.std(values))
     min_value = float(np.min(values))
     max_value = float(np.max(values))
@@ -3562,6 +3641,8 @@ def build_interaction_payload(frame: pd.DataFrame) -> dict[str, Any]:
         pair_frame = numeric_frame[[pair['x'], pair['y']]].dropna()
         if len(pair_frame) < 2:
             continue
+        if len(pair_frame) > EDA_CHART_POINT_CAP:
+            pair_frame = pair_frame.sample(n=EDA_CHART_POINT_CAP, random_state=42)
         x_values = pair_frame[pair['x']].to_numpy(dtype=float)
         y_values = pair_frame[pair['y']].to_numpy(dtype=float)
         figure = go.Figure()
@@ -3702,13 +3783,15 @@ def build_advanced_eda_payload(request: AdvancedEdaRequest) -> dict[str, Any]:
         frame = load_full_dataset_frame(request.dataset_id, request.data)
         if frame.empty or frame.shape[1] == 0:
             raise HTTPException(status_code=400, detail='Dataset must contain at least one row and one column.')
-        analysis_frame = frame
         row_count = int(len(frame))
+        analysis_frame = _sample_analysis_frame(frame, row_count)
         column_count = int(len(frame.columns))
 
+    sampled_row_count = int(len(analysis_frame))
     return {
         'row_count': row_count,
-        'sampled_row_count': int(len(analysis_frame)),
+        'sampled_row_count': sampled_row_count,
+        'analysis_sampled': bool(sampled_row_count < row_count),
         'column_count': column_count,
         'missingness': build_missingness_payload(analysis_frame),
         'distributions': build_distribution_payload(analysis_frame),

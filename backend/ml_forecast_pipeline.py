@@ -79,23 +79,38 @@ def _detect_target_column(frame: pd.DataFrame) -> str | None:
 
 
 def load_and_detect(path: str | Path, date_col: str | None = None, target_col: str | None = None) -> tuple[pd.DataFrame, str, str]:
-    """Load a parquet, csv, tsv, or excel file/directory and detect/override date and target columns."""
+    """Load a parquet, csv, tsv, or excel file/directory and detect/override date and target columns.
+
+    Parquet loads only the resolved date+target columns via Polars scan (TS-style IO),
+    not the full wide frame.
+    """
     source = Path(path)
     if source.is_dir():
         parquet_files = sorted(source.glob('*.parquet'))
         if not parquet_files:
             raise ValueError(f'No parquet files found in directory: {source}')
-        frame = pd.concat([pd.read_parquet(file) for file in parquet_files], ignore_index=True)
+        # Directory of parquets: still prefer column-pruned Polars reads when possible.
+        frames = []
+        for file in parquet_files:
+            frames.append(_load_parquet_date_target(file, date_col, target_col))
+        frame = pd.concat([item[0] for item in frames], ignore_index=True)
+        # Resolve columns once from first successful file metadata.
+        _, resolved_date, resolved_target = frames[0]
+        frame = _finalize_date_target_frame(frame, resolved_date, resolved_target)
+        return frame, resolved_date, resolved_target
+
+    suffix = source.suffix.lower()
+    if suffix == '.parquet':
+        frame, resolved_date, resolved_target = _load_parquet_date_target(source, date_col, target_col)
+        frame = _finalize_date_target_frame(frame, resolved_date, resolved_target)
+        return frame, resolved_date, resolved_target
+
+    if suffix in ('.xlsx', '.xls'):
+        frame = pd.read_excel(source)
+    elif suffix == '.tsv':
+        frame = pd.read_csv(source, sep='\t')
     else:
-        suffix = source.suffix.lower()
-        if suffix == '.parquet':
-            frame = pd.read_parquet(source)
-        elif suffix in ('.xlsx', '.xls'):
-            frame = pd.read_excel(source)
-        elif suffix == '.tsv':
-            frame = pd.read_csv(source, sep='\t')
-        else:
-            frame = pd.read_csv(source)
+        frame = pd.read_csv(source)
 
     frame = _parse_object_dates(frame)
     resolved_date = (
@@ -113,16 +128,69 @@ def load_and_detect(path: str | Path, date_col: str | None = None, target_col: s
             missing.append('target column')
         raise ValueError(f'Missing {" and ".join(missing)}. Available columns: {columns}')
 
-    frame[resolved_date] = pd.to_datetime(frame[resolved_date], errors='coerce')
-    frame[resolved_target] = pd.to_numeric(frame[resolved_target], errors='coerce')
-    frame = frame.dropna(subset=[resolved_date])
-    numeric_cols = [column for column in frame.select_dtypes(include=[np.number]).columns if column != resolved_target]
-    categorical_cols = [column for column in frame.columns if column not in set(numeric_cols + [resolved_date, resolved_target])]
-    aggregations: dict[str, Any] = {resolved_target: 'sum'}
-    aggregations.update({column: 'mean' for column in numeric_cols})
-    aggregations.update({column: 'first' for column in categorical_cols})
-    deduped = frame.groupby(resolved_date, as_index=False).agg(aggregations).sort_values(resolved_date)
-    return deduped, str(resolved_date), str(resolved_target)
+    return _finalize_date_target_frame(frame[[resolved_date, resolved_target]].copy(), resolved_date, resolved_target), str(resolved_date), str(resolved_target)
+
+
+def _resolve_parquet_date_target(
+    path: Path,
+    date_col: str | None,
+    target_col: str | None,
+) -> tuple[str, str]:
+    import polars as pl
+
+    schema_names = list(pl.scan_parquet(str(path)).collect_schema().names())
+    resolved_date = (
+        date_col
+        if date_col and date_col in schema_names and not is_date_part_column(date_col)
+        else pick_best_date_column(schema_names)
+    )
+    # Variance-based revenue pick needs a thin frame sample when target not provided.
+    if target_col and target_col in schema_names:
+        resolved_target = target_col
+    else:
+        sample = (
+            pl.scan_parquet(str(path))
+            .select(schema_names)
+            .head(5_000)
+            .collect()
+            .to_pandas(use_pyarrow_extension_array=False)
+        )
+        resolved_target = pick_best_revenue_column(schema_names, frame=sample, exclude={resolved_date} if resolved_date else None)
+    if not resolved_date or not resolved_target:
+        missing = []
+        if not resolved_date:
+            missing.append('date column')
+        if not resolved_target:
+            missing.append('target column')
+        raise ValueError(f'Missing {" and ".join(missing)}. Available columns: {", ".join(schema_names)}')
+    return str(resolved_date), str(resolved_target)
+
+
+def _load_parquet_date_target(
+    path: Path,
+    date_col: str | None,
+    target_col: str | None,
+) -> tuple[pd.DataFrame, str, str]:
+    import polars as pl
+
+    resolved_date, resolved_target = _resolve_parquet_date_target(path, date_col, target_col)
+    frame = (
+        pl.scan_parquet(str(path))
+        .select([resolved_date, resolved_target])
+        .collect()
+        .to_pandas(use_pyarrow_extension_array=False)
+    )
+    return frame, resolved_date, resolved_target
+
+
+def _finalize_date_target_frame(frame: pd.DataFrame, date_col: str, target_col: str) -> pd.DataFrame:
+    working = frame[[date_col, target_col]].copy()
+    working[date_col] = pd.to_datetime(working[date_col], errors='coerce')
+    working[target_col] = pd.to_numeric(working[target_col], errors='coerce')
+    working = working.dropna(subset=[date_col])
+    # Aggregate only date+target (other columns are not used after prepare_frame_for_ml_pipeline).
+    deduped = working.groupby(date_col, as_index=False).agg({target_col: 'sum'}).sort_values(date_col)
+    return deduped
 
 
 def load_and_detect_frame(frame: pd.DataFrame, date_col: str | None = None, target_col: str | None = None) -> tuple[pd.DataFrame, str, str]:
@@ -136,16 +204,7 @@ def load_and_detect_frame(frame: pd.DataFrame, date_col: str | None = None, targ
     resolved_target = target_col if target_col in working.columns else _detect_target_column(working)
     if not resolved_date or not resolved_target:
         raise ValueError(f'Missing date or target column. Available columns: {", ".join(map(str, working.columns.tolist()))}')
-    working[resolved_date] = pd.to_datetime(working[resolved_date], errors='coerce')
-    working[resolved_target] = pd.to_numeric(working[resolved_target], errors='coerce')
-    working = working.dropna(subset=[resolved_date])
-    numeric_cols = [column for column in working.select_dtypes(include=[np.number]).columns if column != resolved_target]
-    categorical_cols = [column for column in working.columns if column not in set(numeric_cols + [resolved_date, resolved_target])]
-    aggregations: dict[str, Any] = {resolved_target: 'sum'}
-    aggregations.update({column: 'mean' for column in numeric_cols})
-    aggregations.update({column: 'first' for column in categorical_cols})
-    deduped = working.groupby(resolved_date, as_index=False).agg(aggregations).sort_values(resolved_date)
-    return deduped, str(resolved_date), str(resolved_target)
+    return _finalize_date_target_frame(working, resolved_date, resolved_target), str(resolved_date), str(resolved_target)
 
 
 def detect_frequency(df: pd.DataFrame, date_col: str) -> str:

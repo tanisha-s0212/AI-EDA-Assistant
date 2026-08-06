@@ -13,6 +13,7 @@ import type { ColumnInfo, DataRow } from '@/lib/store';
 export type AdvancedEdaResponse = {
   row_count: number;
   sampled_row_count: number;
+  analysis_sampled?: boolean;
   column_count: number;
   missingness: {
     status: 'success' | 'chart' | 'empty' | 'error';
@@ -157,10 +158,22 @@ function ChartPanel({
 function AnalysisModeBanner({
   requestMode,
   totalRowCount,
+  sampledRowCount,
+  analysisSampled,
 }: {
   requestMode: 'cached' | 'direct' | null;
   totalRowCount: number;
+  sampledRowCount: number;
+  analysisSampled: boolean;
 }) {
+  if (analysisSampled && sampledRowCount > 0 && totalRowCount > sampledRowCount) {
+    return (
+      <div className="rounded-xl border border-amber-200/80 bg-amber-50/90 px-4 py-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+        Analysis based on a {sampledRowCount.toLocaleString()}-row sample of your {totalRowCount.toLocaleString()}-row dataset.
+      </div>
+    );
+  }
+
   if (requestMode === 'cached') {
     return (
       <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-primary">
@@ -299,6 +312,8 @@ export default function EdaAdvancedModules({
       <AnalysisModeBanner
         requestMode={requestMode}
         totalRowCount={analysis.row_count}
+        sampledRowCount={analysis.sampled_row_count}
+        analysisSampled={Boolean(analysis.analysis_sampled ?? analysis.sampled_row_count < analysis.row_count)}
       />
 
       <Card>
@@ -311,6 +326,9 @@ export default function EdaAdvancedModules({
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary">{analysis.row_count.toLocaleString()} rows</Badge>
+            {analysis.sampled_row_count < analysis.row_count ? (
+              <Badge variant="secondary">{analysis.sampled_row_count.toLocaleString()} sampled for charts</Badge>
+            ) : null}
             <Badge variant="secondary">{analysis.column_count.toLocaleString()} columns</Badge>
             <Badge variant="secondary">{analysis.missingness.total_missing.toLocaleString()} missing values</Badge>
           </div>
