@@ -198,11 +198,11 @@ export default function LoginPage({ onAuthSuccess }: LoginPageProps) {
                 aria-label="Visit Aroha website"
               >
                 <img
-                  src="/app-logo.svg"
+                  src="/aroha-logo-full.png"
                   alt="Aroha"
                   width={320}
-                  height={136}
-                  className="max-h-28 w-[140%] max-w-none object-contain drop-shadow-[0_16px_34px_rgba(67,56,202,0.24)]"
+                  height={128}
+                  className="max-h-24 w-full max-w-[240px] object-contain object-center drop-shadow-[0_16px_34px_rgba(67,56,202,0.24)]"
                 />
               </a>
               <div className="min-w-0 text-left">

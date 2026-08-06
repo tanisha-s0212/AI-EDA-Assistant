@@ -121,7 +121,8 @@ type DatasetPreviewResponse = {
 
 const INDIA_TIMEZONE = 'Asia/Kolkata';
 const AROHA_WEBSITE_URL = 'https://aroha.co.in/';
-const AROHA_LOGO_URL = '/app-logo.svg';
+const AROHA_LOGO_FULL_URL = '/aroha-logo-full.png';
+const AROHA_MARK_URL = '/aroha-mark.png';
 
 function formatActivityTimestamp(value: string | null) {
   const parsed = value ? new Date(value) : new Date();
@@ -241,20 +242,32 @@ function BrandWordmark({
   );
 }
 
-function CompanyLogo({ compact = false, mark = false }: { compact?: boolean; mark?: boolean }) {
-  const width = mark ? 96 : compact ? 224 : 296;
-  const height = mark ? 96 : compact ? 80 : 104;
+function CompanyLogo({
+  mark = false,
+  size = 'md',
+}: {
+  mark?: boolean;
+  /** md = sidebar mark; sm = header mark */
+  size?: 'sm' | 'md' | 'lg';
+}) {
+  const src = mark ? AROHA_MARK_URL : AROHA_LOGO_FULL_URL;
+  const sizeClass = mark
+    ? size === 'sm'
+      ? 'h-11 w-11'
+      : size === 'lg'
+        ? 'h-16 w-16'
+        : 'h-14 w-14'
+    : size === 'sm'
+      ? 'h-10 w-auto max-w-[160px]'
+      : 'h-12 w-auto max-w-[220px]';
 
   return (
     <img
-      src={AROHA_LOGO_URL}
+      src={src}
       alt="Aroha Technologies logo"
-      width={width}
-      height={height}
-      className={cn(
-        'shrink-0 object-contain',
-        mark ? 'h-24 w-24' : 'h-auto w-auto'
-      )}
+      width={mark ? 56 : 220}
+      height={mark ? 56 : 48}
+      className={cn('shrink-0 object-contain object-left', sizeClass)}
     />
   );
 }
@@ -583,8 +596,8 @@ function SidebarContent({
       <div className="relative px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
         <div className="group relative bg-transparent p-0 shadow-none transition-all duration-300 hover:-translate-y-0.5 dark:bg-transparent dark:shadow-none">
           <a href={AROHA_WEBSITE_URL} target="_blank" rel="noreferrer" aria-label="Open Aroha Technologies website" className="relative flex items-center gap-3">
-            <span className="flex h-24 w-56 shrink-0 items-center justify-start bg-transparent shadow-none dark:bg-transparent dark:shadow-none">
-              <CompanyLogo compact />
+            <span className="flex h-14 w-14 shrink-0 items-center justify-start bg-transparent shadow-none dark:bg-transparent dark:shadow-none">
+              <CompanyLogo mark size="md" />
             </span>
             <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-white/70 bg-white/58 text-muted-foreground shadow-sm transition-all duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary dark:border-white/10 dark:bg-white/8">
               <ExternalLink className="h-3.5 w-3.5" />
@@ -1065,7 +1078,7 @@ export default function HomePage() {
                         <div className="min-w-0">
                           <div className="mb-3 text-xs font-semibold text-white/78">{activeTabMeta.label}</div>
                           <div className="flex items-center gap-4">
-                            <CompanyLogo mark />
+                            <CompanyLogo mark size="sm" />
                             <div className="min-w-0">
                               <p className="text-xs font-bold uppercase tracking-widest text-white/72">AROHA TECHNOLOGIES</p>
                               <h1 className="mt-1 text-3xl font-black leading-tight tracking-normal text-white sm:text-4xl">
