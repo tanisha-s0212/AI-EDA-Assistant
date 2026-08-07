@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { apiClient } from '@/lib/api';
+import { computeColumnMissingPercent, computeProfileCompleteness } from '@/lib/data-quality';
 import { useAppStore } from '@/lib/store';
 
 type SalesReadiness = {
@@ -44,6 +45,8 @@ export default function UnderstandingTab() {
   const selectedSheets = useAppStore((s) => s.selectedSheets);
   const sheetMergeMode = useAppStore((s) => s.sheetMergeMode);
   const datasetId = useAppStore((s) => s.datasetId);
+  const previewLoaded = useAppStore((s) => s.previewLoaded);
+  const loadedRowCount = useAppStore((s) => s.loadedRowCount);
   const [salesReadiness, setSalesReadiness] = useState<SalesReadiness | null>(null);
 
   const data = cleanedData ?? rawData ?? [];
@@ -72,13 +75,14 @@ export default function UnderstandingTab() {
     return () => { cancelled = true; };
   }, [datasetId]);
   const sparseColumns = [...missingColumns].sort((a, b) => b.nullCount - a.nullCount).slice(0, 3);
-  const completeness = totalRows && columns.length
-    ? Math.round((columns.reduce((sum, col) => sum + col.nonNull, 0) / (totalRows * columns.length)) * 1000) / 10
-    : 0;
+  const completeness = computeProfileCompleteness(columns);
+  const profileScopeNote = previewLoaded && loadedRowCount > 0 && loadedRowCount < totalRows
+    ? ` Figures use the loaded profile of ${loadedRowCount.toLocaleString()} of ${totalRows.toLocaleString()} rows.`
+    : '';
   const qualitySignals = [
     {
       label: `${completeness}% overall completeness across ${columns.length} columns`,
-      details: `The current dataset keeps ${completeness}% of all cells populated, which is a quick indicator of how much imputation or review may be needed before deeper analysis.`,
+      details: `The current dataset keeps ${completeness}% of all cells populated, which is a quick indicator of how much imputation or review may be needed before deeper analysis.${profileScopeNote}`,
     },
     {
       label: duplicates > 0 ? `${duplicates.toLocaleString()} duplicate rows may need review` : 'No duplicate rows detected in the uploaded dataset',
@@ -101,7 +105,9 @@ export default function UnderstandingTab() {
   const modelingSignals = [
     identifierColumns.length > 0 ? `${identifierColumns.length} identifier-like column${identifierColumns.length === 1 ? '' : 's'} should usually be excluded from modeling` : 'No strong identifier columns detected',
     highlyUniqueColumns.length > 0 ? `${highlyUniqueColumns.length} high-cardinality column${highlyUniqueColumns.length === 1 ? '' : 's'} may require encoding care` : 'Column cardinality looks manageable for standard ML workflows',
-    sparseColumns.length > 0 ? `Most incomplete column: ${sparseColumns[0].name} (${Math.round((sparseColumns[0].nullCount / Math.max(totalRows, 1)) * 100)}% missing)` : 'Missingness risk is low across the current dataset view',
+    sparseColumns.length > 0
+      ? `Most incomplete column: ${sparseColumns[0].name} (${computeColumnMissingPercent(sparseColumns[0])}% missing)`
+      : 'Missingness risk is low across the current dataset view',
   ];
 
   if (!hasData) {

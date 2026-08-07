@@ -151,6 +151,10 @@ export interface TsStationarity {
   period_label?: string;
   inferred_period_label?: string;
   frequency_auto_adjusted?: boolean;
+  usable_periods?: number;
+  volatility?: number;
+  zero_value_share?: number;
+  dataset_profile?: DatasetProfile;
 }
 
 export interface TimeSeriesForecastResult {

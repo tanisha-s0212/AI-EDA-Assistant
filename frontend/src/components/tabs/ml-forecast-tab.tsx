@@ -17,6 +17,7 @@ import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip as Rec
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
+import { inferPreviewSeriesProfile, resolveForecastSeriesProfile } from '@/lib/forecast-series-profile';
 import ForecastSeriesChart, { buildForecastSeriesChartData } from '@/components/forecast-series-chart';
 
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
@@ -51,31 +52,6 @@ function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
 
 function getPreferredDateColumn(columns: ColumnInfo[]) {
   return pickPreferredSalesDateColumn(columns);
-}
-
-function inferSeriesProfile(data: DataRow[], dateColumn: string, targetColumn: string) {
-  const points = data
-    .map((row) => ({ date: new Date(String(row[dateColumn] ?? '')), value: Number(row[targetColumn]) }))
-    .filter((item) => !Number.isNaN(item.date.getTime()) && Number.isFinite(item.value))
-    .sort((left, right) => left.date.getTime() - right.date.getTime());
-
-  if (points.length < 2) {
-    return { detected_frequency: 'period', usable_periods: points.length, volatility: 0, zero_value_share: 0 };
-  }
-
-  const values = points.map((item) => item.value);
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-  const diffs = points.slice(1).map((item, index) => (item.date.getTime() - points[index].date.getTime()) / 86400000).sort((a, b) => a - b);
-  const medianDays = diffs[Math.floor(diffs.length / 2)] ?? 30;
-  const detected_frequency = medianDays <= 2 ? 'day' : medianDays <= 10 ? 'week' : medianDays <= 45 ? 'month' : medianDays <= 120 ? 'quarter' : 'year';
-
-  return {
-    detected_frequency,
-    usable_periods: points.length,
-    volatility: mean === 0 ? 0 : Math.sqrt(variance) / Math.abs(mean),
-    zero_value_share: values.filter((value) => value === 0).length / values.length,
-  };
 }
 
 function buildGeneratedFeaturePreview(featureGroups: FeatureGroupId[], lagPeriods: number) {
@@ -148,6 +124,7 @@ export default function MlForecastTab() {
   const [selectedModelType, setSelectedModelType] = useState('gradient_boosting');
   const [result, setResult] = useState<MlForecastResult | null>(storedResult);
   const [isTraining, setIsTraining] = useState(false);
+  const [salesPeriodCount, setSalesPeriodCount] = useState<number | null>(null);
 
   useEffect(() => {
     if ((!dateColumn || isDatePartColumn(dateColumn)) && preferredDateColumn) {
@@ -169,18 +146,45 @@ export default function MlForecastTab() {
     }
   }, [storedResult]);
 
-  const localProfile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
-  const profile = useMemo(() => {
-    if (result?.dataset_profile) {
-      return {
-        detected_frequency: result.dataset_profile.detected_frequency || result.period_label || localProfile.detected_frequency,
-        usable_periods: result.dataset_profile.usable_periods ?? result.history.length ?? localProfile.usable_periods,
-        volatility: result.dataset_profile.volatility ?? localProfile.volatility,
-        zero_value_share: result.dataset_profile.zero_value_share ?? localProfile.zero_value_share,
-      };
+  useEffect(() => {
+    if (!datasetId) {
+      setSalesPeriodCount(null);
+      return;
     }
-    return localProfile;
-  }, [localProfile, result]);
+    let cancelled = false;
+    apiClient
+      .post('/sales/readiness', {
+        dataset_id: datasetId,
+        date_column: dateColumn || undefined,
+        target_column: targetColumn || undefined,
+      })
+      .then((response) => {
+        if (cancelled) return;
+        const periodCount = Number(response.data?.period_count);
+        setSalesPeriodCount(Number.isFinite(periodCount) && periodCount > 0 ? periodCount : null);
+      })
+      .catch(() => {
+        if (!cancelled) setSalesPeriodCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, dateColumn, targetColumn]);
+
+  const localProfile = useMemo(
+    () => inferPreviewSeriesProfile(data as DataRow[], dateColumn, targetColumn),
+    [data, dateColumn, targetColumn],
+  );
+  const profile = useMemo(
+    () =>
+      resolveForecastSeriesProfile({
+        localProfile,
+        resultProfile: result?.dataset_profile,
+        backendPeriodCount: salesPeriodCount,
+        backendFrequency: result?.period_label,
+      }),
+    [localProfile, result, salesPeriodCount],
+  );
   const generatedFeatures = useMemo(() => buildGeneratedFeaturePreview(featureGroups, lagPeriods), [featureGroups, lagPeriods]);
   const recommendations = useMemo(() => buildModelRecommendations(generatedFeatures.length), [generatedFeatures.length]);
 

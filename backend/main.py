@@ -4325,8 +4325,26 @@ def with_fitted_order_note(stationarity: dict[str, Any], model_name: str, order:
     }
 
 
-def build_dataset_profile(series_frame: pd.DataFrame, period_label: str) -> dict[str, Any]:
-    values = series_frame['sales'].astype(float).tolist()
+def build_dataset_profile(
+    series_frame: pd.DataFrame,
+    period_label: str,
+    value_column: str | None = None,
+) -> dict[str, Any]:
+    """Profile aggregated series length/volatility. Prefer value_column (post load_ts_dataset rename) or legacy 'sales'."""
+    column = value_column
+    if column is None or column not in series_frame.columns:
+        column = 'sales' if 'sales' in series_frame.columns else None
+    if column is None:
+        numeric_cols = [name for name in series_frame.columns if pd.api.types.is_numeric_dtype(series_frame[name])]
+        column = numeric_cols[0] if numeric_cols else None
+    if column is None:
+        return {
+            'detected_frequency': period_label,
+            'usable_periods': int(len(series_frame)),
+            'volatility': 0.0,
+            'zero_value_share': 0.0,
+        }
+    values = pd.to_numeric(series_frame[column], errors='coerce').dropna().astype(float).tolist()
     mean = float(np.mean(values)) if values else 0.0
     volatility = 0.0 if mean == 0 else float(np.std(values) / abs(mean))
     zero_share = float(sum(value == 0 for value in values) / len(values)) if values else 0.0
@@ -5771,6 +5789,7 @@ def get_ts_stationarity(request: TsStationarityRequest) -> JSONResponse:
         frequency_auto_adjusted = bool(
             df.attrs.get('frequency_auto_adjusted', prepare_meta.get('frequency_auto_adjusted', False))
         )
+        profile = build_dataset_profile(df, str(period_label or 'period'), value_column=target_col)
         result = {
             **result,
             'date_column': date_col,
@@ -5778,6 +5797,10 @@ def get_ts_stationarity(request: TsStationarityRequest) -> JSONResponse:
             'period_label': period_label,
             'inferred_period_label': inferred_period_label,
             'frequency_auto_adjusted': frequency_auto_adjusted,
+            'usable_periods': profile['usable_periods'],
+            'volatility': profile['volatility'],
+            'zero_value_share': profile['zero_value_share'],
+            'dataset_profile': profile,
         }
         return JSONResponse(content=safe_serialize(result))
     except HTTPException:
@@ -5804,9 +5827,12 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             target_column=request.target_column,
         )
         frequency, freq_period = detect_ts_frequency(df, date_col)
-        period_label = 'day' if frequency == 'daily' else 'week' if frequency == 'weekly' else 'month'
+        period_label = df.attrs.get('period_label') or (
+            'day' if frequency == 'daily' else 'week' if frequency == 'weekly' else 'month'
+        )
         store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
         stationarity = check_stationarity(df[target_col], frequency)
+        dataset_profile = build_dataset_profile(df, str(period_label), value_column=target_col)
         results, y_train, y_test, train, test, clean_df, first_nonzero_date = train_all_ts_models(df, target_col, date_col, frequency, freq_period, split, horizon)
         best_name, best_metrics, reason = auto_select_ts_model(results)
         future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
@@ -5843,7 +5869,16 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             'mape': best_metrics.get('mape'),
             'reason': reason,
             'period_label': period_label,
-            'stationarity': stationarity,
+            'dataset_profile': dataset_profile,
+            'usable_periods': dataset_profile['usable_periods'],
+            'stationarity': {
+                **stationarity,
+                'period_label': period_label,
+                'usable_periods': dataset_profile['usable_periods'],
+                'volatility': dataset_profile['volatility'],
+                'zero_value_share': dataset_profile['zero_value_share'],
+                'dataset_profile': dataset_profile,
+            },
             'future_forecast': future_forecast,
             'insight': insight,
             'model_metrics': {k: {'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape')} for k, v in results.items()},
@@ -6349,7 +6384,8 @@ def repair_forecast_revenue_from_history(
     return repaired_forecast
 
 
-def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) -> tuple[pd.Series, str, float]:
+def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) -> tuple[pd.Series, str, float, bool]:
+    """Return (cogs_series, source, ratio, is_fallback). is_fallback is True only for the hard 60% revenue path."""
     revenue = numeric_series(frame, revenue_column, 0.0).clip(lower=0)
     quantity_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
     unit_cost_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
@@ -6368,19 +6404,19 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
         cogs = numeric_columns_sum(frame, cost_columns, 0.0).clip(lower=0)
         ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
         joined_columns = '", "'.join(cost_columns)
-        return cogs, f'mapped cost column(s) "{joined_columns}"', ratio
+        return cogs, f'mapped cost column(s) "{joined_columns}"', ratio, False
 
     if quantity_column and unit_cost_column:
         cogs = (numeric_series(frame, quantity_column, 0.0).clip(lower=0) * numeric_series(frame, unit_cost_column, 0.0).clip(lower=0)).clip(lower=0)
         if float(cogs.sum()) > 0:
             ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
-            return cogs, f'quantity "{quantity_column}" x unit cost "{unit_cost_column}"', ratio
+            return cogs, f'quantity "{quantity_column}" x unit cost "{unit_cost_column}"', ratio, False
 
     if revenue_column and gross_profit_column:
         cogs = (revenue - numeric_series(frame, gross_profit_column, 0.0)).clip(lower=0)
         if float(cogs.sum()) > 0:
             ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
-            return cogs, f'revenue minus gross profit "{gross_profit_column}"', ratio
+            return cogs, f'revenue minus gross profit "{gross_profit_column}"', ratio, False
 
     if revenue_column and margin_column:
         margin = numeric_series(frame, margin_column, 0.0)
@@ -6388,7 +6424,7 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
         cogs = (revenue * (1 - margin_ratio)).clip(lower=0)
         if float(cogs.sum()) > 0:
             ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
-            return cogs, f'gross margin column "{margin_column}"', ratio
+            return cogs, f'gross margin column "{margin_column}"', ratio, False
 
     universal_cost_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['universal_cost'], exclude={str(revenue_column)} if revenue_column else set())
     if universal_cost_columns:
@@ -6396,28 +6432,29 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
         if float(cogs.sum()) > 0:
             ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.60)
             joined_columns = '", "'.join(universal_cost_columns)
-            return cogs, f'universal cost scan column(s) "{joined_columns}"', ratio
+            return cogs, f'universal cost scan column(s) "{joined_columns}"', ratio, False
 
-    return (revenue * 0.60).clip(lower=0), 'fallback assumption: approximate cost is 60% of forecasted revenue', 0.60
+    return (revenue * 0.60).clip(lower=0), 'fallback assumption: approximate cost is 60% of forecasted revenue', 0.60, True
 
 
-def resolve_operating_expense_series(frame: pd.DataFrame, revenue_column: str | None, gross_profit: pd.Series | None = None) -> tuple[pd.Series, str, float]:
+def resolve_operating_expense_series(frame: pd.DataFrame, revenue_column: str | None, gross_profit: pd.Series | None = None) -> tuple[pd.Series, str, float, bool]:
+    """Return (opex_series, source, ratio, is_fallback). is_fallback is True only for the hard 12% revenue path."""
     revenue = numeric_series(frame, revenue_column, 0.0).clip(lower=0)
     operating_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['operating_cost'])
     if operating_columns:
         opex = numeric_columns_sum(frame, operating_columns, 0.0).clip(lower=0)
         ratio = bounded_ratio(float(opex.sum() / max(revenue.sum(), 1.0)), 0.12, lower=0.03, upper=0.45)
         joined_columns = '", "'.join(operating_columns)
-        return opex, f'mapped operating expense column(s) "{joined_columns}"', ratio
+        return opex, f'mapped operating expense column(s) "{joined_columns}"', ratio, False
 
     net_profit_column = first_matching_column(frame, LOSS_COLUMN_PATTERNS['net_profit'], numeric=True)
     if net_profit_column is not None and gross_profit is not None:
         opex = (gross_profit - numeric_series(frame, net_profit_column, 0.0)).clip(lower=0)
         if float(opex.sum()) > 0:
             ratio = bounded_ratio(float(opex.sum() / max(revenue.sum(), 1.0)), 0.12, lower=0.03, upper=0.45)
-            return opex, f'gross profit minus net profit "{net_profit_column}"', ratio
+            return opex, f'gross profit minus net profit "{net_profit_column}"', ratio, False
 
-    return (revenue * 0.12).clip(lower=0), 'standard 12% operating expense assumption', 0.12
+    return (revenue * 0.12).clip(lower=0), 'standard 12% operating expense assumption', 0.12, True
 
 
 def normalize_period_value(value: Any) -> date:
@@ -6513,7 +6550,7 @@ def fetch_upstream_forecasts(session_id: str, workflow_name: str = 'Loss Forecas
     merged = repair_forecast_revenue_from_history(merged, clean_frame, date_column, revenue_column, period_label)
     if merged.empty or not (pd.to_numeric(merged.get('forecasted_revenue', pd.Series(dtype='float64')), errors='coerce').fillna(0.0) > 0).any():
         raise HTTPException(status_code=422, detail=f'{workflow_name} requires valid revenue forecast values. Please re-run TS or ML Forecast with a revenue or sales column as the target.')
-    cogs_series, cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
+    cogs_series, cogs_source, cogs_ratio, _cogs_is_fallback = resolve_cogs_series(clean_frame, revenue_column)
     ml_target_column = str(ml_result.get('target_column') or '')
     if column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['cost']) or column_matches_pattern(ml_target_column, LOSS_COLUMN_PATTERNS['unit_cost']):
         merged['forecasted_cogs'] = merged['ml_forecast_value'].clip(lower=0)
@@ -6599,9 +6636,9 @@ def build_loss_base_frame(
 
     revenue = numeric_series(work, revenue_column)
     quantity = numeric_series(work, quantity_column, 1.0).clip(lower=0)
-    actual_cost, cogs_source, cogs_ratio = resolve_cogs_series(work, revenue_column)
+    actual_cost, cogs_source, cogs_ratio, _cogs_is_fallback = resolve_cogs_series(work, revenue_column)
     gross_profit = (revenue - actual_cost).clip(lower=0)
-    operating_cost, operating_source, operating_ratio = resolve_operating_expense_series(work, revenue_column, gross_profit)
+    operating_cost, operating_source, operating_ratio, _opex_is_fallback = resolve_operating_expense_series(work, revenue_column, gross_profit)
     returns = numeric_series(work, returns_column, 0.0).clip(lower=0)
     raw_revenue_loss = numeric_series(work, revenue_loss_column, 0.0).clip(lower=0)
     discount_amount_columns = [column for column in discount_columns if column_name_suggests_amount(column)]
@@ -6689,7 +6726,12 @@ def build_loss_base_frame(
         pressure = 1 + (index * 0.015)
         historical_revenue_loss = float(historical['_revenue_loss'].mean() or 0)
         forecast_shortfall_loss = max(0.0, average_actual_revenue - forecasted_revenue) * 0.12
-        revenue_loss = max(historical_revenue_loss, forecast_shortfall_loss, forecasted_revenue * 0.015) * pressure
+        # When no mapped revenue_loss column, inferred day-to-day dips make historical_mean
+        # dominate (Superstore ~50% loss/rev). Use only shortfall + 1.5% floors in that case.
+        if revenue_loss_column:
+            revenue_loss = max(historical_revenue_loss, forecast_shortfall_loss, forecasted_revenue * 0.015) * pressure
+        else:
+            revenue_loss = max(forecast_shortfall_loss, forecasted_revenue * 0.015) * pressure
         operational_loss = max(float(historical['_operational_loss'].mean() or 0), forecasted_revenue * 0.025) * pressure
         inventory_loss = max(float(historical['_inventory_loss'].mean() or 0), forecasted_revenue * inventory_loss_rate) * pressure
         discount_loss = max(float(historical['_discount_loss'].mean() or 0), forecasted_revenue * discount_loss_rate) * pressure
@@ -6821,7 +6863,7 @@ def build_profit_rows(
     scenario_parameters: dict[str, dict[str, float]] | None = None,
     column_mapping: dict[str, str] | None = None,
     confirmed_assumptions: bool = False,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str], bool]:
     forecast_frame, _ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id, 'Profit Forecast')
     loss_rows = query_loss_results(session_id)
     if not loss_rows:
@@ -6838,10 +6880,11 @@ def build_profit_rows(
     loss_by_period = {normalize_period_value(row['period']): float(row.get('total_loss') or 0) for row in loss_rows}
     forecast_frame = forecast_frame.head(forecast_periods).copy()
     revenue_column = mapped_or_matching_column(clean_frame, column_mapping, 'revenue', LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
-    cogs_series, _cogs_source, cogs_ratio = resolve_cogs_series(clean_frame, revenue_column)
+    cogs_series, cogs_source, cogs_ratio, cogs_is_fallback = resolve_cogs_series(clean_frame, revenue_column)
     revenue_series = numeric_series(clean_frame, revenue_column, 0.0).clip(lower=0)
     gross_profit_series = (revenue_series - cogs_series).clip(lower=0)
-    _opex_series, _opex_source, operating_expense_ratio = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
+    _opex_series, opex_source, operating_expense_ratio, opex_is_fallback = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
+    illustrative_assumptions = bool(cogs_is_fallback or opex_is_fallback)
     date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
     historical_cogs_ratios: list[float] = []
     seasonal_cogs_ratios: dict[int, float] = {}
@@ -6878,6 +6921,8 @@ def build_profit_rows(
     audit_trail = [
         *loss_audit,
         f'Profit revenue column mapped to "{revenue_column or "not available"}".',
+        f'COGS basis: {cogs_source}.',
+        f'Operating expense basis: {opex_source}.',
         f'COGS ratio basis: {cogs_ratio:.4f}.',
         f'Operating expense ratio basis: {operating_expense_ratio:.4f}.',
         f'Scenario multipliers: {json.dumps(scenario_config, sort_keys=True)}.',
@@ -6935,7 +6980,7 @@ def build_profit_rows(
         'breakeven_period': baseline[breakeven_index]['period'] if breakeven_index is not None else None,
         'periods_to_breakeven': breakeven_index + 1 if breakeven_index is not None else None,
     }
-    return scenarios, breakeven, audit_trail
+    return scenarios, breakeven, audit_trail, illustrative_assumptions
 
 
 def persist_profit_forecast(session_id: str, scenarios: dict[str, list[dict[str, Any]]]) -> None:
@@ -7053,7 +7098,7 @@ def get_loss_forecast_segments(session_id: str) -> JSONResponse:
 def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> JSONResponse:
     try:
         session_id = request.session_id
-        scenarios, breakeven, audit_trail = build_profit_rows(
+        scenarios, breakeven, audit_trail, illustrative = build_profit_rows(
             session_id,
             request.forecast_periods,
             request.scenario_parameters,
@@ -7070,16 +7115,12 @@ def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> J
         append_forecast_version(session_id, 'profit_forecast', {'status': 'success', 'metrics': breakeven, 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='profit_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail='Generated profit forecast scenarios.')
-        illustrative = any(
-            'standard' in str(note).lower() or 'falls back' in str(note).lower() or 'fallback assumption' in str(note).lower() or '60%' in str(note) or '12%' in str(note)
-            for note in (audit_trail or [])
-        )
         return JSONResponse(content=safe_serialize({
             'status': 'success',
             'scenarios': serialized,
             'breakeven': breakeven,
             'assumptions_audit': audit_trail,
-            'illustrative_assumptions': illustrative,
+            'illustrative_assumptions': bool(illustrative),
             'assumption_mode': 'illustrative' if illustrative else 'mapped',
         }))
     except HTTPException:

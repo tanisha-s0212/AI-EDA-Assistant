@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { AlertCircle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, Loader2, ShieldCheck, TrendingUp, Waves, Zap, RadioTower, Info, AlertTriangle } from 'lucide-react';
 
 import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
+import { inferPreviewSeriesProfile, resolveForecastSeriesProfile } from '@/lib/forecast-series-profile';
 import ForecastSeriesChart, { buildForecastSeriesChartData } from '@/components/forecast-series-chart';
 
 const STEP_ITEMS = [
@@ -56,27 +57,6 @@ function getSmartTargetColumn(columns: ColumnInfo[], data: DataRow[]) {
 
 function getPreferredDateColumn(columns: ColumnInfo[]) {
   return pickPreferredSalesDateColumn(columns);
-}
-
-function inferSeriesProfile(data: DataRow[], dateColumn: string, targetColumn: string) {
-  const points = data
-    .map((row) => ({ date: new Date(String(row[dateColumn] ?? '')), value: Number(row[targetColumn]) }))
-    .filter((item) => !Number.isNaN(item.date.getTime()) && Number.isFinite(item.value))
-    .sort((left, right) => left.date.getTime() - right.date.getTime());
-  if (points.length < 2) {
-    return { detected_frequency: 'period', usable_periods: points.length, volatility: 0, zero_value_share: 0 };
-  }
-  const values = points.map((item) => item.value);
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-  const diffs = points.slice(1).map((item, index) => (item.date.getTime() - points[index].date.getTime()) / 86400000).sort((a, b) => a - b);
-  const medianDays = diffs[Math.floor(diffs.length / 2)] ?? 30;
-  return {
-    detected_frequency: medianDays <= 2 ? 'day' : medianDays <= 10 ? 'week' : medianDays <= 45 ? 'month' : medianDays <= 120 ? 'quarter' : 'year',
-    usable_periods: points.length,
-    volatility: mean === 0 ? 0 : Math.sqrt(variance) / Math.abs(mean),
-    zero_value_share: values.filter((value) => value === 0).length / values.length,
-  };
 }
 
 export default function TimeSeriesForecastTab() {
@@ -185,24 +165,22 @@ export default function TimeSeriesForecastTab() {
     };
   }, [currentStep, datasetId, dateColumn, targetColumn]);
 
-  const localProfile = useMemo(() => inferSeriesProfile(data as DataRow[], dateColumn, targetColumn), [data, dateColumn, targetColumn]);
-  const profile = useMemo(() => {
-    if (result?.dataset_profile?.usable_periods || result?.dataset_profile?.detected_frequency) {
-      return {
-        detected_frequency: result.dataset_profile.detected_frequency || result.period_label || stationarity?.period_label || localProfile.detected_frequency,
-        usable_periods: result.dataset_profile.usable_periods ?? result.history.length ?? localProfile.usable_periods,
-        volatility: result.dataset_profile.volatility ?? localProfile.volatility,
-        zero_value_share: result.dataset_profile.zero_value_share ?? localProfile.zero_value_share,
-      };
-    }
-    if (stationarity?.period_label) {
-      return {
-        ...localProfile,
-        detected_frequency: stationarity.period_label,
-      };
-    }
-    return localProfile;
-  }, [localProfile, result, stationarity]);
+  const localProfile = useMemo(
+    () => inferPreviewSeriesProfile(data as DataRow[], dateColumn, targetColumn),
+    [data, dateColumn, targetColumn],
+  );
+  const profile = useMemo(
+    () =>
+      resolveForecastSeriesProfile({
+        localProfile,
+        resultProfile: result?.dataset_profile,
+        backendPeriodCount: stationarity?.usable_periods ?? stationarity?.dataset_profile?.usable_periods,
+        backendFrequency: stationarity?.period_label || result?.period_label,
+        backendVolatility: stationarity?.volatility ?? stationarity?.dataset_profile?.volatility,
+        backendZeroShare: stationarity?.zero_value_share ?? stationarity?.dataset_profile?.zero_value_share,
+      }),
+    [localProfile, result, stationarity],
+  );
   const periodGrainLabel = (label?: string | null) => {
     if (!label) return 'period';
     return ({ day: 'daily', week: 'weekly', month: 'monthly', quarter: 'quarterly', year: 'yearly' } as Record<string, string>)[label] ?? label;
@@ -272,7 +250,8 @@ export default function TimeSeriesForecastTab() {
       });
       const data = res.data as {
         status: string; best_model: string; smape: number; mae: number; rmse: number; mape: number | null;
-        reason: string; stationarity: TsStationarity; future_forecast: TsFutureForecast[];
+        reason: string; period_label?: string; dataset_profile?: TimeSeriesForecastResult['dataset_profile'];
+        usable_periods?: number; stationarity: TsStationarity; future_forecast: TsFutureForecast[];
         insight: TsInsight; model_comparison: TsForecastModelComparison[];
       };
       if (data.status !== 'completed') {
@@ -284,17 +263,26 @@ export default function TimeSeriesForecastTab() {
       setSelectionReason(data.reason);
       setInsight(data.insight);
       setStationarity(data.stationarity);
+      const backendProfile = data.dataset_profile ?? data.stationarity?.dataset_profile;
+      const resolvedProfile = resolveForecastSeriesProfile({
+        localProfile,
+        resultProfile: backendProfile,
+        backendPeriodCount: data.usable_periods ?? data.stationarity?.usable_periods ?? backendProfile?.usable_periods,
+        backendFrequency: data.period_label || data.stationarity?.period_label,
+        backendVolatility: backendProfile?.volatility ?? data.stationarity?.volatility,
+        backendZeroShare: backendProfile?.zero_value_share ?? data.stationarity?.zero_value_share,
+      });
       // Map to legacy format for chart display
       const mappedResult: TimeSeriesForecastResult = {
         date_column: dateColumn,
         target_column: targetColumn,
         frequency: data.stationarity.status,
-        period_label: data.stationarity.period_label || profile.detected_frequency || 'period',
+        period_label: data.period_label || data.stationarity.period_label || resolvedProfile.detected_frequency || 'period',
         dataset_profile: {
-          detected_frequency: data.stationarity.period_label || profile.detected_frequency,
-          usable_periods: profile.usable_periods,
-          volatility: profile.volatility,
-          zero_value_share: profile.zero_value_share,
+          detected_frequency: resolvedProfile.detected_frequency,
+          usable_periods: resolvedProfile.usable_periods,
+          volatility: resolvedProfile.volatility,
+          zero_value_share: resolvedProfile.zero_value_share,
         },
         stationarity_check: { test_name: 'ADF-KPSS', p_value: data.stationarity.adf_pvalue, verdict: data.stationarity.status, note: data.stationarity.note },
         history: [],
