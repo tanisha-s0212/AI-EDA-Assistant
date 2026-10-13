@@ -24,11 +24,11 @@ describe('shouldEnableSalesPreset', () => {
   test('is true for strong sales/revenue column names', () => {
     const columns = [
       { name: 'year_month', role: 'datetime' },
-      { name: 'total_total_value_sale_free', role: 'numeric' },
-      { name: 'region' },
+      { name: 'net_sales', role: 'numeric' },
+      { name: 'plant_region' },
     ];
     expect(shouldEnableSalesPreset(columns)).toBe(true);
-    expect(scoreSalesRevenueColumn('total_total_value_sale_free')).toBeGreaterThanOrEqual(70);
+    expect(scoreSalesRevenueColumn('net_sales')).toBeGreaterThanOrEqual(70);
   });
 });
 

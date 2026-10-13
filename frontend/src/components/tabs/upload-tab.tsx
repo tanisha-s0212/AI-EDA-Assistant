@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useToast } from '@/hooks/use-toast';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import { useAppStore, type ColumnInfo, type DataRow, type DatasetSheetSummary, type DatasetWorkspaceDraft } from '@/lib/store';
+import { inferCurrencyFromColumns } from '@/lib/currency-format';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -349,7 +350,7 @@ function buildFreshDatasetState(
 }
 
 export default function UploadTab() {
-  const { setActiveTab, addDataset, activeTab, uploadPickerRequestId, uploadPickerSourceTab } = useAppStore();
+  const { setActiveTab, addDataset, activeTab, uploadPickerRequestId, uploadPickerSourceTab, setDisplayCurrency } = useAppStore();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledUploadRequestRef = useRef(0);
@@ -405,6 +406,11 @@ export default function UploadTab() {
       }
 
       window.setTimeout(() => {
+        const inferredCurrency = inferCurrencyFromColumns(columns);
+        if (inferredCurrency) {
+          setDisplayCurrency(inferredCurrency);
+        }
+
         addDataset(buildFreshDatasetState(data, fileName, columns, resolvedOptions));
 
         setUploadedFileName(fileName);
@@ -419,7 +425,7 @@ export default function UploadTab() {
         }
       }, 0);
     },
-    [activeTab, addDataset, setActiveTab, toast, uploadPickerSourceTab],
+    [activeTab, addDataset, setActiveTab, setDisplayCurrency, toast, uploadPickerSourceTab],
   );
 
   // ── File Processing ──────────────────────────────────────────────────────

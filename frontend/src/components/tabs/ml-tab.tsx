@@ -235,7 +235,7 @@ function detectProblemType(col: ColumnInfo, data: DataRow[]): { type: ProblemTyp
 function getAutoTarget(columns: ColumnInfo[]): { target: string; reason: string } | null {
   const priorityPatterns = ['deposit', 'subscribed', 'subscribe', 'subscription', 'term_deposit', 'target', 'label', 'class', 'output', 'result', 'prediction', 'dependent', 'y'];
   const exactPriorityNames = ['deposit', 'y', 'subscribed', 'subscribe', 'subscription', 'term_deposit'];
-  const numericPatterns = ['price', 'sales', 'revenue', 'profit', 'cost', 'amount', 'score', 'rating', 'value', 'quantity'];
+  const numericPatterns = ['price', 'sales', 'revenue', 'profit', 'cost', 'amount', 'score', 'rating', 'value', 'quantity', 'net_sales', 'cogs'];
   const calendarPatterns = ['day', 'month', 'year', 'week', 'weekday', 'quarter'];
   const names = columns.map((col) => col.name.toLowerCase());
   const bankMarketingSignature = ['job', 'marital', 'housing', 'loan', 'contact', 'campaign', 'poutcome'].every((name) => names.includes(name));
@@ -258,6 +258,16 @@ function getAutoTarget(columns: ColumnInfo[]): { target: string; reason: string 
     }
   }
 
+  // Prefer sales/revenue-like numeric targets before low-cardinality categoricals (e.g. country).
+  for (const col of columns) {
+    const name = col.name.toLowerCase();
+    if (calendarPatterns.includes(name) || isIdLikeColumn(col)) continue;
+    if (col.role !== 'numeric' && col.role !== 'boolean') continue;
+    if (numericPatterns.some((p) => name === p || name.endsWith(p) || name.includes(`_${p}`))) {
+      return { target: col.name, reason: `Column "${col.name}" looks like a typical numeric prediction target (${col.role}).` };
+    }
+  }
+
   for (const col of columns) {
     const name = col.name.toLowerCase();
     if (priorityPatterns.some((p) => name === p || name.endsWith(p) || name.includes(`_${p}`))) {
@@ -273,14 +283,6 @@ function getAutoTarget(columns: ColumnInfo[]): { target: string; reason: string 
     return { target: binaryCategorical.name, reason: `Selected "${binaryCategorical.name}" as a likely classification target because it is a low-cardinality categorical field.` };
   }
 
-  for (const col of columns) {
-    const name = col.name.toLowerCase();
-    if (calendarPatterns.includes(name)) continue;
-    if (numericPatterns.some((p) => name === p || name.endsWith(p) || name.includes(`_${p}`))) {
-      return { target: col.name, reason: `Column "${col.name}" looks like a typical prediction target (${col.role}).` };
-    }
-  }
-
   const numericCols = columns.filter((c) => c.role === 'numeric' && !isIdLikeColumn(c) && !calendarPatterns.includes(c.name.toLowerCase()));
   if (numericCols.length > 0) {
     const lastNumeric = numericCols[numericCols.length - 1];
@@ -291,9 +293,17 @@ function getAutoTarget(columns: ColumnInfo[]): { target: string; reason: string 
 }
 
 function getAutoFeatures(columns: ColumnInfo[], target: string): string[] {
-  return columns
-    .filter(c => c.name !== target && !isIdLikeColumn(c) && c.role !== 'datetime')
-    .map(c => c.name);
+  const preferredPatterns = ['cogs', 'cost', 'plant_region', 'product_line', 'region', 'category', 'segment', 'quantity', 'discount', 'profit', 'price', 'amount', 'revenue'];
+  const candidates = columns
+    .filter((c) => c.name !== target && !isIdLikeColumn(c) && c.role !== 'datetime')
+    .map((c) => c.name);
+
+  const preferred = candidates.filter((name) => {
+    const lower = name.toLowerCase();
+    return preferredPatterns.some((p) => lower === p || lower.endsWith(p) || lower.includes(`_${p}`));
+  });
+  const remaining = candidates.filter((name) => !preferred.includes(name));
+  return [...preferred, ...remaining].slice(0, 8);
 }
 
 function formatMetricValue(value: number): string {
@@ -527,7 +537,7 @@ export default function MlTab() {
   // Step 3 state
   const [testSize, setTestSize] = useState(20);
   const [cvFolds, setCvFolds] = useState(3);
-  const [trainingMode, setTrainingMode] = useState<TrainingMode>('balanced');
+  const [trainingMode, setTrainingMode] = useState<TrainingMode>('fast');
   const [randomState, setRandomState] = useState(42);
 
   // Step 4 state
@@ -586,7 +596,7 @@ export default function MlTab() {
       userOverrodeTargetRef.current = false;
       setSelectedModel('');
       setTrainResults(null);
-      setTrainingMode('balanced');
+      setTrainingMode('fast');
       updateMlStep(1);
     }
 
@@ -763,7 +773,11 @@ export default function MlTab() {
 
     const progressInterval = setInterval(() => {
       setTrainingProgress(prev => {
-        if (prev >= 90) { clearInterval(progressInterval); return 90; }
+        if (prev >= 90) {
+          clearInterval(progressInterval);
+          setTrainingStepLabel('Training on server…');
+          return 90;
+        }
         const next = prev + Math.random() * 15;
         const stepIndex = Math.min(TRAINING_STEPS.length - 2, Math.floor(next / 20));
         setTrainingStepLabel(TRAINING_STEPS[stepIndex]);
@@ -975,6 +989,12 @@ export default function MlTab() {
     }
 
     response.push(`Current setup: predicting ${selectedTarget} as a ${targetProblemType} task using ${selectedFeatures.length} feature(s) from ${data?.length ?? 0} row(s).`);
+
+    if (/(future\s+sales|sales\s+forecast|forecast\s+sales|time\s*series|next\s+period)/.test(lower)) {
+      response.push(
+        'For future sales over time, use Time Series Forecast or Machine Learning Forecast. ML Assistant predicts a column from other row features, not a future time horizon.'
+      );
+    }
 
     if (selectedModel) {
       response.push(`Selected model: ${selectedModel.replace(/_/g, ' ')}.`);

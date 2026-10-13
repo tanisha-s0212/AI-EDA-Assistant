@@ -27,14 +27,14 @@ def main() -> None:
     frame = pd.read_csv(SAMPLE)
     frame['month_number'] = pd.to_datetime(frame['year_month']).dt.month
     frame['trend_index'] = range(len(frame))
-    feature_cols = ['month_number', 'trend_index', 'region', 'category']
-    target = 'total_total_value_sale_free'
+    feature_cols = ['month_number', 'trend_index', 'plant_region', 'product_line', 'customer_segment', 'units_shipped']
+    target = 'net_sales'
     X = frame[feature_cols]
     y = frame[target]
     model = Pipeline([
         ('prep', ColumnTransformer([
-            ('num', 'passthrough', ['month_number', 'trend_index']),
-            ('cat', OneHotEncoder(handle_unknown='ignore'), ['region', 'category']),
+            ('num', 'passthrough', ['month_number', 'trend_index', 'units_shipped']),
+            ('cat', OneHotEncoder(handle_unknown='ignore'), ['plant_region', 'product_line', 'customer_segment']),
         ])),
         ('model', GradientBoostingRegressor(random_state=42)),
     ])
@@ -48,6 +48,7 @@ def main() -> None:
         'target_column': target,
         'problem_type': 'regression',
         'source': str(SAMPLE.relative_to(ROOT)),
+        'domain': 'manufacturing',
     }, model_path)
     meta_path.write_text(json.dumps({
         'model_path': str(model_path.name),
@@ -55,6 +56,8 @@ def main() -> None:
         'target_column': target,
         'problem_type': 'regression',
         'rows_trained': int(len(frame)),
+        'domain': 'manufacturing',
+        'company': 'PrecisionForge Industries',
     }, indent=2), encoding='utf-8')
     print(f'Wrote {model_path}')
     print(f'Wrote {meta_path}')

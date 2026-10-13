@@ -23,6 +23,7 @@ import {
 } from 'recharts';
 import { useAppStore } from '@/lib/store';
 import { useToast } from '@/hooks/use-toast';
+import { useCurrencyFormat } from '@/lib/use-currency-format';
 import { getApiErrorMessage } from '@/lib/api';
 import type { ProfitForecastResult, ProfitScenario } from '@/types/forecast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -33,42 +34,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-
-const currency = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-const number = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
-const compactNumber = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
-
-function compactCurrency(value: number | string) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return '₹0';
-
-  const sign = numericValue < 0 ? '-' : '';
-  const absoluteValue = Math.abs(numericValue);
-  if (absoluteValue >= 1_00_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_00_000)} Cr`;
-  if (absoluteValue >= 1_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_000)} L`;
-  if (absoluteValue >= 1_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_000)} K`;
-  return `${sign}${currency.format(absoluteValue)}`;
-}
-
-function currencyTooltip(value: number | string) {
-  return currency.format(Number(value) || 0);
-}
-
-function formatIndianAxis(value: number | string) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return '\u20b90';
-
-  const sign = numericValue < 0 ? '-' : '';
-  const absoluteValue = Math.abs(numericValue);
-  if (absoluteValue >= 10000000) return `${sign}\u20b9${(absoluteValue / 10000000).toFixed(1)}Cr`;
-  if (absoluteValue >= 100000) return `${sign}\u20b9${(absoluteValue / 100000).toFixed(1)}L`;
-  if (absoluteValue >= 1000) return `${sign}\u20b9${(absoluteValue / 1000).toFixed(1)}K`;
-  return `${sign}\u20b9${absoluteValue}`;
-}
-
-function percentAxis(value: number | string) {
-  return `${number.format(Number(value) || 0)}%`;
-}
 
 const SCENARIOS: ProfitScenario[] = ['optimistic', 'baseline', 'pessimistic'];
 const PERIOD_OPTIONS = [
@@ -92,10 +57,10 @@ function scenarioColor(scenario: ProfitScenario) {
   return '#2563eb';
 }
 
-function deltaText(value: number, baseline: number) {
+function deltaText(value: number, baseline: number, formatNumber: (value: number | string | null | undefined, digits?: number) => string) {
   if (!baseline) return null;
   const delta = ((value - baseline) / Math.abs(baseline)) * 100;
-  return `${delta >= 0 ? '+' : ''}${number.format(delta)}%`;
+  return `${delta >= 0 ? '+' : ''}${formatNumber(delta, 1)}%`;
 }
 
 function deltaBadgeClass(delta: string | null) {
@@ -121,6 +86,14 @@ function waterfallData(row: ProfitForecastResult | null) {
 
 export default function ProfitForecastTab() {
   const { toast } = useToast();
+  const {
+    formatCurrency,
+    formatAxisCurrency,
+    formatCurrencyTooltip,
+    formatNumber,
+    formatPercentValue,
+  } = useCurrencyFormat();
+  const percentAxis = (value: number | string) => formatPercentValue(value);
   const datasetId = useAppStore((state) => state.datasetId);
   const lossForecast = useAppStore((state) => state.lossForecast);
   const scenarios = useAppStore((state) => state.scenarios);
@@ -192,11 +165,11 @@ export default function ProfitForecastTab() {
   });
 
   const kpiCards: { label: string; value: string; delta: string | null; Icon: LucideIcon }[] = [
-    { label: 'Forecasted Revenue', value: currency.format(summary.selected.revenue), delta: scenario === 'baseline' ? null : deltaText(summary.selected.revenue, summary.baseline.revenue), Icon: Wallet },
-    { label: 'Gross Profit', value: currency.format(summary.selected.grossProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossProfit, summary.baseline.grossProfit), Icon: TrendingUp },
-    { label: 'Net Profit', value: currency.format(summary.selected.netProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netProfit, summary.baseline.netProfit), Icon: Landmark },
-    { label: 'Gross Margin %', value: `${number.format(summary.selected.grossMargin)}%`, delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossMargin, summary.baseline.grossMargin), Icon: Scale },
-    { label: 'Net Margin %', value: `${number.format(summary.selected.netMargin)}%`, delta: scenario === 'baseline' ? null : deltaText(summary.selected.netMargin, summary.baseline.netMargin), Icon: Scale },
+    { label: 'Forecasted Revenue', value: formatCurrency(summary.selected.revenue), delta: scenario === 'baseline' ? null : deltaText(summary.selected.revenue, summary.baseline.revenue, formatNumber), Icon: Wallet },
+    { label: 'Gross Profit', value: formatCurrency(summary.selected.grossProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossProfit, summary.baseline.grossProfit, formatNumber), Icon: TrendingUp },
+    { label: 'Net Profit', value: formatCurrency(summary.selected.netProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netProfit, summary.baseline.netProfit, formatNumber), Icon: Landmark },
+    { label: 'Gross Margin %', value: formatPercentValue(summary.selected.grossMargin), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossMargin, summary.baseline.grossMargin, formatNumber), Icon: Scale },
+    { label: 'Net Margin %', value: formatPercentValue(summary.selected.netMargin), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netMargin, summary.baseline.netMargin, formatNumber), Icon: Scale },
   ];
 
   const handleRun = async (confirmedOverride?: boolean) => {
@@ -363,8 +336,8 @@ export default function ProfitForecastTab() {
                     <ComposedChart data={waterfallData(firstActive)}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="name" />
-                      <YAxis width={76} tickFormatter={formatIndianAxis} />
-                      <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                      <YAxis width={76} tickFormatter={formatAxisCurrency} />
+                      <RechartsTooltip formatter={(value: number) => formatCurrencyTooltip(value)} />
                       <Bar dataKey="value" radius={[8, 8, 0, 0]}>
                         {waterfallData(firstActive).map((row) => <Cell key={row.name} fill={row.fill} />)}
                       </Bar>
@@ -385,8 +358,8 @@ export default function ProfitForecastTab() {
                       <LineChart data={combinedLineData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis width={76} tickFormatter={formatIndianAxis} />
-                        <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                        <YAxis width={76} tickFormatter={formatAxisCurrency} />
+                        <RechartsTooltip formatter={(value: number) => formatCurrencyTooltip(value)} />
                         <Legend />
                         <ReferenceLine y={0} stroke="#64748b" label="Break-even" />
                         <Line connectNulls dataKey="optimistic" stroke="#10b981" strokeWidth={3} />
@@ -429,8 +402,8 @@ export default function ProfitForecastTab() {
                       <BarChart data={groupedBarData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="period" />
-                        <YAxis width={76} tickFormatter={formatIndianAxis} />
-                        <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                        <YAxis width={76} tickFormatter={formatAxisCurrency} />
+                        <RechartsTooltip formatter={(value: number) => formatCurrencyTooltip(value)} />
                         <Legend />
                         <Bar dataKey="revenue" name="Forecasted Revenue" fill="#2563eb" />
                         <Bar dataKey="costs" name="Total Costs" fill="#f97316" />
@@ -481,14 +454,14 @@ export default function ProfitForecastTab() {
                         {activeRows.map((row) => (
                           <TableRow key={row.id} className={row.net_profit >= 0 ? 'bg-emerald-50/60' : 'bg-rose-50/60'}>
                             <TableCell>{row.period}</TableCell>
-                            <TableCell>{currency.format(row.forecasted_revenue)}</TableCell>
-                            <TableCell>{currency.format(row.forecasted_cogs)}</TableCell>
-                            <TableCell>{currency.format(row.gross_profit)}</TableCell>
-                            <TableCell>{currency.format(row.operating_expenses)}</TableCell>
-                            <TableCell>{currency.format(row.total_losses)}</TableCell>
-                            <TableCell className={row.net_profit >= 0 ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>{currency.format(row.net_profit)}</TableCell>
-                            <TableCell>{number.format(row.gross_margin_pct)}%</TableCell>
-                            <TableCell>{number.format(row.net_margin_pct)}%</TableCell>
+                            <TableCell>{formatCurrency(row.forecasted_revenue)}</TableCell>
+                            <TableCell>{formatCurrency(row.forecasted_cogs)}</TableCell>
+                            <TableCell>{formatCurrency(row.gross_profit)}</TableCell>
+                            <TableCell>{formatCurrency(row.operating_expenses)}</TableCell>
+                            <TableCell>{formatCurrency(row.total_losses)}</TableCell>
+                            <TableCell className={row.net_profit >= 0 ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>{formatCurrency(row.net_profit)}</TableCell>
+                            <TableCell>{formatNumber(row.gross_margin_pct)}%</TableCell>
+                            <TableCell>{formatNumber(row.net_margin_pct)}%</TableCell>
                             <TableCell><Badge className="capitalize">{row.scenario}</Badge></TableCell>
                           </TableRow>
                         ))}
@@ -508,12 +481,12 @@ export default function ProfitForecastTab() {
                     <div key={row.scenario} className={`rounded-2xl border p-4 ${row.scenario === 'baseline' ? 'border-blue-300 bg-blue-50' : 'bg-card'}`}>
                       <p className="text-lg font-bold capitalize" style={{ color: scenarioColor(row.scenario) }}>{row.scenario}</p>
                       <div className="mt-4 space-y-2 text-sm">
-                        <p className="flex justify-between"><span>Total Revenue</span><b>{currency.format(row.revenue)}</b></p>
-                        <p className="flex justify-between"><span>Total COGS</span><b>{currency.format(row.cogs)}</b></p>
-                        <p className="flex justify-between"><span>Gross Profit</span><b>{currency.format(row.grossProfit)}</b></p>
-                        <p className="flex justify-between"><span>Total Losses</span><b>{currency.format(row.losses)}</b></p>
-                        <p className="flex justify-between"><span>Net Profit</span><b>{currency.format(row.netProfit)}</b></p>
-                        <p className="flex justify-between"><span>Net Margin</span><b>{number.format(row.netMargin)}%</b></p>
+                        <p className="flex justify-between"><span>Total Revenue</span><b>{formatCurrency(row.revenue)}</b></p>
+                        <p className="flex justify-between"><span>Total COGS</span><b>{formatCurrency(row.cogs)}</b></p>
+                        <p className="flex justify-between"><span>Gross Profit</span><b>{formatCurrency(row.grossProfit)}</b></p>
+                        <p className="flex justify-between"><span>Total Losses</span><b>{formatCurrency(row.losses)}</b></p>
+                        <p className="flex justify-between"><span>Net Profit</span><b>{formatCurrency(row.netProfit)}</b></p>
+                        <p className="flex justify-between"><span>Net Margin</span><b>{formatNumber(row.netMargin)}%</b></p>
                       </div>
                     </div>
                   ))}

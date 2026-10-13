@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
+import type { CurrencyCode } from '@/lib/currency-format';
 import type { LossForecastResult, LossForecastSummary, ProfitForecastResult, ScenarioComparison, SegmentBreakdown } from '@/types/forecast';
 
 export type TabId = 'upload' | 'understanding' | 'cleaning' | 'eda' | 'forecast_ts' | 'forecast_ml' | 'loss_forecast' | 'profit_forecast' | 'ml' | 'prediction' | 'report';
@@ -294,6 +295,7 @@ export interface AuthenticatedUser {
 
 export interface AppState extends DatasetWorkspaceState {
   activeTab: TabId;
+  displayCurrency: CurrencyCode;
   uploadPickerRequestId: number;
   uploadPickerSourceTab: TabId | null;
   currentUser: AuthenticatedUser | null;
@@ -313,6 +315,7 @@ export interface AppState extends DatasetWorkspaceState {
   clearHighlightedColumns: () => void;
   // # AGENTIC LAYER END
   setActiveTab: (tab: TabId) => void;
+  setDisplayCurrency: (currency: CurrencyCode) => void;
   requestUploadPicker: (sourceTab?: TabId) => void;
   resetWorkspace: () => void;
   setCurrentUser: (user: AuthenticatedUser) => void;
@@ -338,6 +341,7 @@ export interface AppState extends DatasetWorkspaceState {
 type PersistedAppSlice = Pick<
   AppState,
   | 'activeTab'
+  | 'displayCurrency'
   | 'mlWorkflowStep'
   | 'hasHydrated'
   | 'currentUser'
@@ -356,7 +360,7 @@ type PersistedAppSlice = Pick<
 >;
 
 const STORE_PERSIST_KEY = 'ai-eda-workspace-v2';
-const STORE_PERSIST_VERSION = 5;
+const STORE_PERSIST_VERSION = 6;
 
 // # AGENTIC LAYER START
 const AGENTIC_ENABLED = process.env.NEXT_PUBLIC_AGENTIC_ENABLED !== 'false';
@@ -495,6 +499,7 @@ function buildDatasetKey(dataset: DatasetWorkspaceDraft, preferredKey?: string) 
 
 const initialPersistedState: PersistedAppSlice = {
   activeTab: 'upload',
+  displayCurrency: 'USD',
   mlWorkflowStep: 1,
   hasHydrated: false,
   currentUser: null,
@@ -539,6 +544,7 @@ const store = create<AppState>()(
       clearHighlightedColumns: () => set({ highlightedColumns: [] }),
       // # AGENTIC LAYER END
       setActiveTab: (tab) => set({ activeTab: tab }),
+      setDisplayCurrency: (currency) => set({ displayCurrency: currency }),
       requestUploadPicker: (sourceTab) =>
         set((state) => ({
           uploadPickerRequestId: state.uploadPickerRequestId + 1,
@@ -697,6 +703,7 @@ const store = create<AppState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         activeTab: state.activeTab,
+        displayCurrency: state.displayCurrency,
         mlWorkflowStep: state.mlWorkflowStep,
         hasHydrated: state.hasHydrated,
         currentUser: state.currentUser,
@@ -725,6 +732,7 @@ const store = create<AppState>()(
 
         return {
           ...state,
+          displayCurrency: state.displayCurrency ?? 'USD',
           currentUser: state.currentUser ?? null,
           isAuthenticated: Boolean(state.currentUser ?? state.isAuthenticated),
           datasets: Object.fromEntries(

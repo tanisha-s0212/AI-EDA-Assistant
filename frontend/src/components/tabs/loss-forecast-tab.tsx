@@ -20,6 +20,7 @@ import {
 } from 'recharts';
 import { useAppStore } from '@/lib/store';
 import { useToast } from '@/hooks/use-toast';
+import { useCurrencyFormat } from '@/lib/use-currency-format';
 import { getApiErrorMessage } from '@/lib/api';
 import type { LossForecastResult, SegmentBreakdown } from '@/types/forecast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -30,38 +31,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-
-const currency = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-const percent = new Intl.NumberFormat('en-IN', { style: 'percent', maximumFractionDigits: 1 });
-const compactNumber = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 });
-
-function compactCurrency(value: number | string) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return '₹0';
-
-  const sign = numericValue < 0 ? '-' : '';
-  const absoluteValue = Math.abs(numericValue);
-  if (absoluteValue >= 1_00_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_00_000)} Cr`;
-  if (absoluteValue >= 1_00_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_00_000)} L`;
-  if (absoluteValue >= 1_000) return `${sign}₹${compactNumber.format(absoluteValue / 1_000)} K`;
-  return `${sign}${currency.format(absoluteValue)}`;
-}
-
-function currencyTooltip(value: number | string) {
-  return currency.format(Number(value) || 0);
-}
-
-function formatIndianAxis(value: number | string) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return '\u20b90';
-
-  const sign = numericValue < 0 ? '-' : '';
-  const absoluteValue = Math.abs(numericValue);
-  if (absoluteValue >= 10000000) return `${sign}\u20b9${(absoluteValue / 10000000).toFixed(1)}Cr`;
-  if (absoluteValue >= 100000) return `${sign}\u20b9${(absoluteValue / 100000).toFixed(1)}L`;
-  if (absoluteValue >= 1000) return `${sign}\u20b9${(absoluteValue / 1000).toFixed(1)}K`;
-  return `${sign}\u20b9${absoluteValue}`;
-}
 
 const LOSS_COLORS = {
   revenue_loss: '#ef4444',
@@ -126,6 +95,13 @@ function buildHeatmap(rows: LossForecastResult[], segments: SegmentBreakdown[]) 
 
 export default function LossForecastTab() {
   const { toast } = useToast();
+  const {
+    formatCurrency,
+    formatCompactCurrency,
+    formatAxisCurrency,
+    formatCurrencyTooltip,
+    formatPercent,
+  } = useCurrencyFormat();
   const datasetId = useAppStore((state) => state.datasetId);
   const timeSeriesForecastResult = useAppStore((state) => state.timeSeriesForecastResult);
   const mlForecastResult = useAppStore((state) => state.mlForecastResult);
@@ -288,9 +264,9 @@ export default function LossForecastTab() {
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {[
-              ['Total Forecasted Loss', currency.format(lossSummary?.total_loss ?? 0), TrendingDown],
+              ['Total Forecasted Loss', formatCurrency(lossSummary?.total_loss ?? 0), TrendingDown],
               ['Highest Risk Period', lossSummary?.highest_risk_period ?? 'N/A', ShieldAlert],
-              ['Average Loss Risk Score', percent.format(lossSummary?.average_risk_score ?? 0), AlertCircle],
+              ['Average Loss Risk Score', formatPercent(lossSummary?.average_risk_score ?? 0), AlertCircle],
               ['Top Loss Driver', lossSummary?.top_loss_driver ?? 'N/A', PieIcon],
             ].map(([label, value, Icon], index) => (
               <motion.div key={String(label)} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.1 }}>
@@ -316,8 +292,8 @@ export default function LossForecastTab() {
                   <LineChart data={lossForecast}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="period" />
-                    <YAxis width={76} tickFormatter={formatIndianAxis} />
-                    <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                    <YAxis width={76} tickFormatter={formatAxisCurrency} />
+                    <RechartsTooltip formatter={(value: number) => formatCurrencyTooltip(value)} />
                     <Legend />
                     <Line dataKey="revenue_loss" name="Revenue Loss" stroke={LOSS_COLORS.revenue_loss} strokeWidth={2} />
                     <Line dataKey="operational_loss" name="Operational Loss" stroke={LOSS_COLORS.operational_loss} strokeWidth={2} />
@@ -341,8 +317,8 @@ export default function LossForecastTab() {
                   <BarChart data={lossForecast}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="period" />
-                    <YAxis width={76} tickFormatter={formatIndianAxis} />
-                    <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                    <YAxis width={76} tickFormatter={formatAxisCurrency} />
+                    <RechartsTooltip formatter={(value: number) => formatCurrencyTooltip(value)} />
                     <Legend />
                     <Bar dataKey="revenue_loss" stackId="loss" fill={LOSS_COLORS.revenue_loss} name="Revenue" />
                     <Bar dataKey="operational_loss" stackId="loss" fill={LOSS_COLORS.operational_loss} name="Operational" />
@@ -374,10 +350,10 @@ export default function LossForecastTab() {
                       <Pie data={segmentRows} dataKey="total_loss" nameKey="segment" innerRadius={72} outerRadius={112} paddingAngle={2}>
                         {segmentRows.map((_, index) => <Cell key={index} fill={['#ef4444', '#f97316', '#f59e0b', '#8b5cf6', '#14b8a6', '#2563eb'][index % 6]} />)}
                       </Pie>
-                      <RechartsTooltip formatter={(value: number) => currencyTooltip(value)} />
+                      <RechartsTooltip formatter={(value: number) => formatCurrencyTooltip(value)} />
                       <Legend />
                       <text x="50%" y="50%" textAnchor="middle" dominantBaseline="middle" className="fill-foreground text-sm font-bold">
-                        {compactCurrency(totalSegmentLoss)}
+                        {formatCompactCurrency(totalSegmentLoss)}
                       </text>
                     </PieChart>
                   </ResponsiveContainer>
@@ -406,7 +382,7 @@ export default function LossForecastTab() {
                         initial={{ scale: 0.75, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
                         transition={{ delay: index * 0.025 }}
-                        title={`${cell.period}: ${percent.format(cell.score)}`}
+                        title={`${cell.period}: ${formatPercent(cell.score)}`}
                         className={`h-9 rounded-md border ${riskClass(cell.label)} text-center text-[10px] font-semibold leading-9`}
                       >
                         {Math.round(cell.score * 100)}%
@@ -454,12 +430,12 @@ export default function LossForecastTab() {
                     {pageRows.map((row) => (
                       <TableRow key={row.id}>
                         <TableCell>{row.period}</TableCell>
-                        <TableCell>{currency.format(row.revenue_loss)}</TableCell>
-                        <TableCell>{currency.format(row.operational_loss)}</TableCell>
-                        <TableCell>{currency.format(row.inventory_loss)}</TableCell>
-                        <TableCell>{currency.format(row.discount_loss)}</TableCell>
-                        <TableCell className="font-semibold">{currency.format(row.total_loss)}</TableCell>
-                        <TableCell>{percent.format(row.loss_risk_score)}</TableCell>
+                        <TableCell>{formatCurrency(row.revenue_loss)}</TableCell>
+                        <TableCell>{formatCurrency(row.operational_loss)}</TableCell>
+                        <TableCell>{formatCurrency(row.inventory_loss)}</TableCell>
+                        <TableCell>{formatCurrency(row.discount_loss)}</TableCell>
+                        <TableCell className="font-semibold">{formatCurrency(row.total_loss)}</TableCell>
+                        <TableCell>{formatPercent(row.loss_risk_score)}</TableCell>
                         <TableCell><Badge className={riskClass(row.risk_label)}>{row.risk_label}</Badge></TableCell>
                       </TableRow>
                     ))}
@@ -484,7 +460,7 @@ export default function LossForecastTab() {
                 <div key={item.label} className="rounded-2xl border bg-card p-4">
                   <p className="font-semibold">{item.label}</p>
                   <p className="mt-2 text-sm text-muted-foreground">{item.action}</p>
-                  <Badge className="mt-3 bg-red-100 text-red-700">{currency.format(item.value)}</Badge>
+                  <Badge className="mt-3 bg-red-100 text-red-700">{formatCurrency(item.value)}</Badge>
                 </div>
               ))}
             </CardContent>

@@ -3,10 +3,14 @@
   "feature_columns": [
     "month_number",
     "trend_index",
-    "region",
-    "category"
+    "plant_region",
+    "product_line",
+    "customer_segment",
+    "units_shipped"
   ],
-  "target_column": "total_total_value_sale_free",
+  "target_column": "net_sales",
   "problem_type": "regression",
-  "rows_trained": 48
+  "rows_trained": 1440,
+  "domain": "manufacturing",
+  "company": "PrecisionForge Industries"
 }

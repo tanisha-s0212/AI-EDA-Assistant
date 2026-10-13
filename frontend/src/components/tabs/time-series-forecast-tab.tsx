@@ -18,12 +18,15 @@ import { AlertCircle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, Loade
 import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
 import { inferPreviewSeriesProfile, resolveForecastSeriesProfile } from '@/lib/forecast-series-profile';
 import ForecastSeriesChart, { buildForecastSeriesChartData } from '@/components/forecast-series-chart';
+import { useCurrencyFormat } from '@/lib/use-currency-format';
 
 const STEP_ITEMS = [
   { step: 1, label: 'Data Config', icon: CalendarDays },
   { step: 2, label: 'TS Models', icon: RadioTower },
   { step: 3, label: 'Forecast', icon: TrendingUp },
 ];
+
+const MULTI_MODEL_MIN_PERIODS = 24;
 
 const transition = { duration: 0.25, ease: 'easeOut' } as const;
 const HORIZON_OPTIONS = [3, 6, 12, 24] as const;
@@ -40,11 +43,6 @@ const MODEL_STRENGTHS: Record<string, string[]> = {
   HoltWinters: ['Fast', 'Stable', 'Damped trend'],
 };
 
-function formatIndianNumber(num: number | null | undefined) {
-  if (num === null || num === undefined || Number.isNaN(num)) return 'N/A';
-  return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(num);
-}
-
 function modelStatusClass(status: string) {
   if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
   if (status === 'failed') return 'border-red-200 bg-red-50 text-red-700';
@@ -60,6 +58,7 @@ function getPreferredDateColumn(columns: ColumnInfo[]) {
 }
 
 export default function TimeSeriesForecastTab() {
+  const { formatNumber } = useCurrencyFormat();
   const rawData = useAppStore((state) => state.rawData);
   const cleanedData = useAppStore((state) => state.cleanedData);
   const columns = useAppStore((state) => state.columns);
@@ -193,6 +192,12 @@ export default function TimeSeriesForecastTab() {
       }.`
     : null;
 
+  const usablePeriods = profile.usable_periods ?? 0;
+  const hasEnoughPeriodsForMultiModel = usablePeriods >= MULTI_MODEL_MIN_PERIODS;
+  const insufficientPeriodsMessage = !hasEnoughPeriodsForMultiModel
+    ? `Need at least ${MULTI_MODEL_MIN_PERIODS} aggregated months for multi-model time-series (have ${usablePeriods}). Use a longer history or upload samples/sales/sales_monthly.csv (PrecisionForge manufacturing demo).`
+    : null;
+
   const chartData = useMemo(() => {
     if (!result) return [];
     return buildForecastSeriesChartData(result.history, result.test_forecast, result.future_forecast, { includeConfidence: true });
@@ -237,6 +242,14 @@ export default function TimeSeriesForecastTab() {
   const handleMultiModelRun = async () => {
     if (!dateColumn || !targetColumn) {
       showToast({ title: 'Configuration incomplete', description: 'Choose both a date column and a sales target.', variant: 'destructive' });
+      return;
+    }
+    if (!hasEnoughPeriodsForMultiModel) {
+      showToast({
+        title: 'Not enough history',
+        description: insufficientPeriodsMessage ?? `Need at least ${MULTI_MODEL_MIN_PERIODS} aggregated months.`,
+        variant: 'destructive',
+      });
       return;
     }
     setIsTraining(true);
@@ -339,7 +352,7 @@ export default function TimeSeriesForecastTab() {
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary">{dateColumn || 'Pick a date column'}</Badge>
                 <Badge variant="secondary">{targetColumn ? `Target: ${targetColumn}` : 'Pick a target column'}</Badge>
-                <Badge variant="secondary">{forecastPeriods} future periods</Badge>
+                <Badge variant="secondary">{forecastPeriods} future months</Badge>
                 <Badge variant="secondary">Auto-select best of 3</Badge>
               </div>
             </div>
@@ -349,7 +362,7 @@ export default function TimeSeriesForecastTab() {
                 <p className="mt-2 text-lg font-semibold capitalize">{profile.detected_frequency}</p>
               </div>
               <div className="rounded-2xl border bg-white/80 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-none">
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Usable Periods</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Usable Months</p>
                 <p className="mt-2 text-lg font-semibold">{profile.usable_periods}</p>
               </div>
               <div className="rounded-2xl border bg-white/80 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-none">
@@ -410,10 +423,10 @@ export default function TimeSeriesForecastTab() {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label>Future Periods</Label>
+                    <Label>Future Months</Label>
                     <Select value={String(forecastPeriods)} onValueChange={(value) => setForecastPeriods(Number(value))}>
                       <SelectTrigger><SelectValue placeholder="Select horizon" /></SelectTrigger>
-                      <SelectContent>{HORIZON_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value} periods</SelectItem>)}</SelectContent>
+                      <SelectContent>{HORIZON_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value} months</SelectItem>)}</SelectContent>
                     </Select>
                   </div>
                   <div className="flex justify-end">
@@ -495,8 +508,21 @@ export default function TimeSeriesForecastTab() {
 
                   <div className="flex justify-between">
                     <Button variant="outline" onClick={() => setCurrentStep(1)} className="gap-2"><ChevronLeft className="h-4 w-4" />Previous</Button>
-                    <Button onClick={() => setCurrentStep(3)} className="gap-2">Next: Train & Forecast <ArrowRight className="h-4 w-4" /></Button>
+                    <Button
+                      onClick={() => setCurrentStep(3)}
+                      disabled={!hasEnoughPeriodsForMultiModel && !stationarityLoading}
+                      className="gap-2"
+                      title={insufficientPeriodsMessage ?? undefined}
+                    >
+                      Next: Train & Forecast <ArrowRight className="h-4 w-4" />
+                    </Button>
                   </div>
+                  {insufficientPeriodsMessage && !stationarityLoading && (
+                    <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <p>{insufficientPeriodsMessage}</p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -509,6 +535,12 @@ export default function TimeSeriesForecastTab() {
                     <CardDescription>All 3 models are trained. The best is auto-selected by lowest SMAPE (tiebreak: SARIMA &gt; HoltWinters &gt; Prophet).</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-5">
+                    {insufficientPeriodsMessage && (
+                      <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        <p>{insufficientPeriodsMessage}</p>
+                      </div>
+                    )}
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="space-y-2">
                         <Label>Training Split (%)</Label>
@@ -522,11 +554,11 @@ export default function TimeSeriesForecastTab() {
                     <div className="flex justify-between">
                       <Button variant="outline" onClick={() => setCurrentStep(2)} className="gap-2"><ChevronLeft className="h-4 w-4" />Previous</Button>
                       <div className="flex gap-2">
-                        <Button onClick={handleRun} disabled={isTraining} variant="outline" className="gap-2">
+                        <Button onClick={handleRun} disabled={isTraining || !hasEnoughPeriodsForMultiModel} variant="outline" className="gap-2">
                           {isTraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                           {isTraining ? 'Training...' : 'Legacy TS'}
                         </Button>
-                        <Button onClick={handleMultiModelRun} disabled={isTraining} className="gap-2">
+                        <Button onClick={handleMultiModelRun} disabled={isTraining || !hasEnoughPeriodsForMultiModel} className="gap-2">
                           {isTraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                           {isTraining ? 'Training All 3...' : 'Train & Auto-Select'}
                         </Button>
@@ -568,8 +600,8 @@ export default function TimeSeriesForecastTab() {
                               <TableCell>
                                 <Badge variant="outline" className={modelStatusClass(row.status)}>{row.status}</Badge>
                               </TableCell>
-                              <TableCell>{formatIndianNumber(row.mae)}</TableCell>
-                              <TableCell>{formatIndianNumber(row.rmse)}</TableCell>
+                              <TableCell>{formatNumber(row.mae)}</TableCell>
+                              <TableCell>{formatNumber(row.rmse)}</TableCell>
                               <TableCell>{row.mape != null ? row.mape + '%' : 'N/A'}</TableCell>
                               <TableCell>{row.smape != null ? row.smape + '%' : 'N/A'}</TableCell>
                             </TableRow>
@@ -590,7 +622,7 @@ export default function TimeSeriesForecastTab() {
                       <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>Model</CardDescription><CardTitle className="text-2xl">{result.training_summary.model_name}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Statistical time-series model family selected for the series.</CardContent></Card>
                       <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>Split</CardDescription><CardTitle className="text-2xl">{result.training_summary.train_percentage}%</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Training share with the remaining {result.training_summary.test_percentage}% held out for backtesting.</CardContent></Card>
                       <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>MAE</CardDescription><CardTitle className="text-2xl">{result.metrics.mae.toLocaleString()}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Average absolute forecast error on the backtest window.</CardContent></Card>
-                      <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>MAPE</CardDescription><CardTitle className="text-2xl">{result.metrics.mape}%</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Average percentage error over held-out periods.</CardContent></Card>
+                      <Card className="dark:border-slate-800 dark:bg-slate-950/75"><CardHeader className="pb-2"><CardDescription>MAPE</CardDescription><CardTitle className="text-2xl">{result.metrics.mape}%</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Average percentage error over held-out months.</CardContent></Card>
                     </div>
 
                     <Card>
@@ -689,9 +721,9 @@ export default function TimeSeriesForecastTab() {
                           {forecastResults.map((point) => (
                             <TableRow key={point.period}>
                               <TableCell>{point.period}</TableCell>
-                              <TableCell>{formatIndianNumber(point.forecast)}</TableCell>
-                              <TableCell>{formatIndianNumber(point.lower)}</TableCell>
-                              <TableCell>{formatIndianNumber(point.upper)}</TableCell>
+                              <TableCell>{formatNumber(point.forecast)}</TableCell>
+                              <TableCell>{formatNumber(point.lower)}</TableCell>
+                              <TableCell>{formatNumber(point.upper)}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>

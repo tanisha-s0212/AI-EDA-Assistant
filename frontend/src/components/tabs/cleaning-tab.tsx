@@ -83,9 +83,13 @@ function formatCleaningLogTimestamp(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return 'Performed just now';
 
-  const parsed = new Date(trimmed);
+  // Backend historically emitted naive UTC ISO without Z; treat those as UTC.
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+  const normalized = !hasOffset && /T\d{2}:\d{2}/.test(trimmed) ? `${trimmed}Z` : trimmed;
+
+  const parsed = new Date(normalized);
   if (!Number.isNaN(parsed.getTime())) {
-    return new Intl.DateTimeFormat('en-IN', {
+    const formatted = new Intl.DateTimeFormat('en-IN', {
       day: '2-digit',
       month: 'short',
       year: 'numeric',
@@ -93,7 +97,9 @@ function formatCleaningLogTimestamp(value: string) {
       minute: '2-digit',
       second: '2-digit',
       hour12: true,
+      timeZone: 'Asia/Kolkata',
     }).format(parsed);
+    return `${formatted} IST`;
   }
 
   return trimmed;

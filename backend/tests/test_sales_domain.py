@@ -46,10 +46,10 @@ def monthly_dataset_id(tmp_path: Path):
         'columns': list(frame.columns),
         'column_info': [
             {'name': 'year_month', 'role': 'datetime'},
-            {'name': 'total_total_value_sale_free', 'role': 'numeric'},
+            {'name': 'net_sales', 'role': 'numeric'},
             {'name': 'cogs', 'role': 'numeric'},
-            {'name': 'region', 'role': 'categorical'},
-            {'name': 'category', 'role': 'categorical'},
+            {'name': 'plant_region', 'role': 'categorical'},
+            {'name': 'product_line', 'role': 'categorical'},
         ],
     })
     yield dataset_id
@@ -69,29 +69,29 @@ def test_pick_best_date_prefers_created_over_date_parts():
 
 
 def test_pick_best_date_still_prefers_year_month_for_sales():
-    columns = ['year_month', 'cogs', 'total_total_value_sale_free', 'region']
+    columns = ['year_month', 'cogs', 'net_sales', 'plant_region']
     assert pick_best_date_column(columns) == 'year_month'
 
 
 def test_should_enable_sales_preset_detection():
     assert should_enable_sales_preset(['sessionId', 'kwhTotal', 'dollars', 'created']) is False
     assert should_enable_sales_preset(['amount', 'total']) is False
-    assert should_enable_sales_preset(['year_month', 'total_total_value_sale_free', 'region']) is True
+    assert should_enable_sales_preset(['year_month', 'net_sales', 'plant_region']) is True
     assert should_enable_sales_preset(['revenue', 'invoice_date']) is True
 
 
 def test_sales_domain_prefers_revenue_over_cogs():
-    columns = ['year_month', 'cogs', 'total_total_value_sale_free', 'region']
+    columns = ['year_month', 'cogs', 'net_sales', 'plant_region']
     frame = pd.DataFrame({
         'year_month': pd.date_range('2022-01-01', periods=24, freq='MS'),
         'cogs': range(24),
-        'total_total_value_sale_free': [1000 + i * 10 for i in range(24)],
-        'region': ['North'] * 24,
+        'net_sales': [1000 + i * 10 for i in range(24)],
+        'plant_region': ['Midwest Plant'] * 24,
     })
     date_col = pick_best_date_column(columns)
     target_col = pick_best_revenue_column(columns, frame=frame)
     assert date_col == 'year_month'
-    assert target_col == 'total_total_value_sale_free'
+    assert target_col == 'net_sales'
 
 
 def test_resolve_sales_columns_ignores_date_part_override():
@@ -141,12 +141,12 @@ def test_stationarity_accepts_explicit_columns(client: TestClient, monthly_datas
         response = client.post('/api/ts-forecast/stationarity', json={
             'dataset_id': monthly_dataset_id,
             'date_column': 'year_month',
-            'target_column': 'total_total_value_sale_free',
+            'target_column': 'net_sales',
         })
     assert response.status_code == 200, response.text
     body = response.json()
     assert body.get('date_column') == 'year_month'
-    assert body.get('target_column') == 'total_total_value_sale_free'
+    assert body.get('target_column') == 'net_sales'
     assert 'status' in body
 
 
@@ -155,7 +155,7 @@ def test_sales_readiness(client: TestClient, monthly_dataset_id: str):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body['period_count'] >= 24
-    assert body['target_column'] == 'total_total_value_sale_free'
+    assert body['target_column'] == 'net_sales'
     assert body['status'] in {'ready', 'needs_attention'}
 
 

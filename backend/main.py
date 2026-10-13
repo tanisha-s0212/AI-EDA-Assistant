@@ -50,7 +50,14 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor, RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    GradientBoostingRegressor,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
 from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
@@ -299,7 +306,7 @@ def startup_event() -> None:
 ProblemType = Literal['regression', 'classification']
 TrainingMode = Literal['fast', 'balanced']
 
-LARGE_DATASET_ROW_THRESHOLD = 20_000
+LARGE_DATASET_ROW_THRESHOLD = 2_000
 VERY_LARGE_DATASET_ROW_THRESHOLD = 50_000
 CV_SAMPLE_LIMIT = 3_000
 VERY_LARGE_CV_SAMPLE_LIMIT = 1_500
@@ -320,13 +327,13 @@ EDA_ANALYSIS_ROW_CAP = 75_000
 EDA_CHART_POINT_CAP = 10_000
 MAX_UPLOAD_SIZE_BYTES = 512 * 1024 * 1024
 
-
-def utc_now_iso() -> str:
-    return datetime.utcnow().isoformat()
-
-
 INDIA_TZ = ZoneInfo('Asia/Kolkata')
 UTC_TZ = timezone.utc
+
+
+def utc_now_iso() -> str:
+    """UTC timestamp in ISO-8601 with explicit Z (safe for browser IST conversion)."""
+    return datetime.now(UTC_TZ).isoformat().replace('+00:00', 'Z')
 
 
 def now_ist() -> datetime:
@@ -942,8 +949,10 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
     clean_df[target_col] = pd.to_numeric(clean_df[target_col], errors='coerce')
     clean_df = clean_df.dropna(subset=[date_col, target_col]).sort_values(date_col).reset_index(drop=True)
     first_nonzero_date = str(clean_df[date_col].iloc[0])[:10]
-    if len(clean_df) < 24:
-        raise ValueError(f'Insufficient data after trimming: {len(clean_df)} rows. Min 24 required.')
+    if len(clean_df) < TS_MULTI_MODEL_MIN_PERIODS:
+        raise ValueError(
+            format_insufficient_ts_periods_message('period', len(clean_df), TS_MULTI_MODEL_MIN_PERIODS)
+        )
     split_idx = int(len(clean_df) * training_split)
     split_idx = min(max(split_idx, 12), len(clean_df) - 1)
     train = clean_df.iloc[:split_idx]
@@ -1917,6 +1926,26 @@ def choose_dayfirst(sample: pd.Series) -> bool:
     return first_token_gt_12 > second_token_gt_12
 
 
+def _column_name_hints_datetime(column_name: str) -> bool:
+    """True when the column name strongly suggests a date/time field (not substring false positives)."""
+    lowered = str(column_name).lower().strip()
+    if lowered in {'year_month', 'invoice_date', 'order_date', 'ship_date', 'bill_date', 'sale_date'}:
+        return True
+    if lowered.endswith('_date') or lowered.endswith('_time') or lowered.endswith('_timestamp'):
+        return True
+    if lowered in {'date', 'time', 'timestamp', 'datetime', 'created', 'ended', 'period'}:
+        return True
+    if lowered in {'year', 'fiscal_year', 'month'}:
+        return True
+    # fiscal_quarter contains 'year' as substring — do not treat as datetime.
+    if 'quarter' in lowered and 'date' not in lowered:
+        return False
+    blocked_tokens = ('_code', '_id', '_label', '_segment', '_family', '_line', '_region', '_country', 'incoterms')
+    if any(token in lowered for token in blocked_tokens):
+        return False
+    return any(token in lowered for token in ('date', 'time', 'timestamp', 'datetime', 'created', 'ended', 'period', 'year_month'))
+
+
 def postprocess_ingested_frame(frame: pd.DataFrame) -> pd.DataFrame:
     cleaned = pd.DataFrame(frame).copy()
     cleaned = cleaned.dropna(axis=0, how='all').dropna(axis=1, how='all')
@@ -1944,7 +1973,8 @@ def postprocess_ingested_frame(frame: pd.DataFrame) -> pd.DataFrame:
                         continue
 
                 column_name = str(column).lower()
-                date_candidate = any(token in column_name for token in ['date', 'time', 'month', 'year', 'period']) or float(sample.map(looks_like_date_value).mean()) >= 0.7
+                shape_ratio = float(sample.map(looks_like_date_string).mean())
+                date_candidate = _column_name_hints_datetime(column_name) or shape_ratio >= 0.7
                 if date_candidate:
                     dayfirst = choose_dayfirst(sample)
                     parsed = text_series.map(lambda value: parse_dateutil_value(value, dayfirst=dayfirst))
@@ -2528,28 +2558,65 @@ def build_training_profile(row_count: int, requested_cv_folds: int, training_mod
         'skip_cv_for_large_dataset': False,
     }
 
+    # Fast mode always skips CV for demo responsiveness.
+    if training_mode == 'fast':
+        profile['cv_folds'] = min(requested_cv_folds, 3)
+        profile['skip_cv_for_large_dataset'] = True
+        profile['cv_sample_limit'] = 0
+        if row_count >= VERY_LARGE_DATASET_ROW_THRESHOLD:
+            profile['train_sample_limit'] = VERY_LARGE_TRAIN_SAMPLE_LIMIT
+            profile['importance_sample_limit'] = VERY_LARGE_IMPORTANCE_SAMPLE_LIMIT
+            profile['importance_repeats'] = 1
+        elif row_count >= LARGE_DATASET_ROW_THRESHOLD:
+            profile['train_sample_limit'] = TRAIN_SAMPLE_LIMIT
+            profile['importance_sample_limit'] = IMPORTANCE_SAMPLE_LIMIT
+            profile['importance_repeats'] = 2
+        return profile
+
     if row_count >= VERY_LARGE_DATASET_ROW_THRESHOLD:
         profile['cv_folds'] = min(requested_cv_folds, 3)
         profile['train_sample_limit'] = VERY_LARGE_TRAIN_SAMPLE_LIMIT
         profile['importance_sample_limit'] = VERY_LARGE_IMPORTANCE_SAMPLE_LIMIT
         profile['importance_repeats'] = 1
-        if training_mode == 'fast':
-            profile['cv_sample_limit'] = 0
-            profile['skip_cv_for_large_dataset'] = True
-        else:
-            profile['cv_sample_limit'] = max(VERY_LARGE_CV_SAMPLE_LIMIT, 3000)
+        profile['cv_sample_limit'] = max(VERY_LARGE_CV_SAMPLE_LIMIT, 3000)
+        profile['skip_cv_for_large_dataset'] = True
     elif row_count >= LARGE_DATASET_ROW_THRESHOLD:
-        profile['cv_folds'] = min(requested_cv_folds, 4)
+        profile['cv_folds'] = min(requested_cv_folds, 3)
         profile['train_sample_limit'] = TRAIN_SAMPLE_LIMIT
         profile['importance_sample_limit'] = IMPORTANCE_SAMPLE_LIMIT
         profile['importance_repeats'] = 2
-        if training_mode == 'fast':
-            profile['cv_sample_limit'] = 0
-            profile['skip_cv_for_large_dataset'] = True
-        else:
-            profile['cv_sample_limit'] = max(CV_SAMPLE_LIMIT, 5000)
+        profile['cv_sample_limit'] = max(CV_SAMPLE_LIMIT, 2000)
+        # Single holdout is enough for large demo datasets in balanced mode too.
+        profile['skip_cv_for_large_dataset'] = True
 
     return profile
+
+
+def _is_single_selected_model(model_type: str) -> bool:
+    normalized = str(model_type or '').strip().lower()
+    return bool(normalized) and normalized not in {'auto', 'best', 'compare'}
+
+
+def _sample_xy_arrays(
+    X: np.ndarray,
+    y: pd.Series,
+    max_rows: int,
+    random_state: int,
+    *,
+    stratify: bool,
+) -> tuple[np.ndarray, pd.Series]:
+    if len(y) <= max_rows:
+        return X, y
+    stratify_values = y if stratify and y.nunique() > 1 and y.value_counts().min() >= 2 else None
+    indices = np.arange(len(y))
+    sampled_idx, _, sampled_y, _ = train_test_split(
+        indices,
+        y,
+        train_size=max_rows / len(y),
+        random_state=random_state,
+        stratify=stratify_values,
+    )
+    return X[np.asarray(sampled_idx, dtype=int)], sampled_y.reset_index(drop=True)
 
 
 class TrainRequest(BaseModel):
@@ -2562,7 +2629,7 @@ class TrainRequest(BaseModel):
     test_size: float = Field(default=0.2, ge=0.1, le=0.4)
     random_state: int = 42
     cv_folds: int = Field(default=5, ge=2, le=10)
-    training_mode: TrainingMode = 'balanced'
+    training_mode: TrainingMode = 'fast'
 
 
 class PredictRequest(BaseModel):
@@ -2871,7 +2938,12 @@ REGRESSION_MODELS: dict[str, tuple[str, Any, dict[str, Any]]] = {
     'lasso_regression': ('Lasso Regression', Lasso, {'alpha': 0.001, 'max_iter': 5000}),
     'elasticnet': ('Elastic Net', ElasticNet, {'alpha': 0.001, 'l1_ratio': 0.5, 'max_iter': 5000}),
     'random_forest': ('Random Forest', RandomForestRegressor, {'n_estimators': 100, 'min_samples_leaf': 2, 'n_jobs': TRAINING_N_JOBS}),
-    'gradient_boosting': ('Gradient Boosting', GradientBoostingRegressor, {'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 3}),
+    # HistGradientBoosting is much faster than classic GradientBoosting on mid/large tables.
+    'gradient_boosting': (
+        'Gradient Boosting',
+        HistGradientBoostingRegressor,
+        {'max_iter': 100, 'learning_rate': 0.05, 'max_depth': 3},
+    ),
     'svr': ('Support Vector Regression', SVR, {'kernel': 'rbf', 'C': 1.0}),
     'decision_tree': ('Decision Tree', DecisionTreeRegressor, {'max_depth': 8}),
     'knn_regressor': ('K-Nearest Neighbors', KNeighborsRegressor, {'n_neighbors': 7, 'weights': 'distance'}),
@@ -2880,7 +2952,11 @@ REGRESSION_MODELS: dict[str, tuple[str, Any, dict[str, Any]]] = {
 CLASSIFICATION_MODELS: dict[str, tuple[str, Any, dict[str, Any]]] = {
     'logistic_regression': ('Logistic Regression', LogisticRegression, {'max_iter': 2000, 'solver': 'lbfgs'}),
     'random_forest': ('Random Forest', RandomForestClassifier, {'n_estimators': 100, 'min_samples_leaf': 2, 'n_jobs': TRAINING_N_JOBS}),
-    'gradient_boosting': ('Gradient Boosting', GradientBoostingClassifier, {'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 3}),
+    'gradient_boosting': (
+        'Gradient Boosting',
+        HistGradientBoostingClassifier,
+        {'max_iter': 100, 'learning_rate': 0.05, 'max_depth': 3},
+    ),
     'svm': ('Support Vector Machine', SVC, {'kernel': 'rbf', 'C': 1.0, 'probability': True}),
     'decision_tree': ('Decision Tree', DecisionTreeClassifier, {'max_depth': 8}),
     'knn': ('K-Nearest Neighbors', KNeighborsClassifier, {'n_neighbors': 7, 'weights': 'distance'}),
@@ -3845,6 +3921,76 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
 
     period_freq_map = {'MS': '1mo', 'QS': '1q', 'YS': '1y', 'D': '1d', 'W-MON': '1w'}
 
+    def _aggregate_periods(*, sort_before_groupby: bool) -> dict[str, Any]:
+        counts: dict[str, Any] = {}
+        for period_label in PERIOD_COARSEN_ORDER:
+            freq = FREQ_FOR_PERIOD_LABEL[period_label]
+            period_freq = period_freq_map.get(freq, '1mo')
+            minimum_periods = minimum_periods_for_multi_model_ts(period_label)
+            try:
+                staged = (
+                    lazy_frame
+                    .with_columns([
+                        parsed_date_expr.alias('__parsed_date'),
+                        pl.col(target_column).cast(pl.Float64, strict=False).alias('__parsed_sales'),
+                    ])
+                    .drop_nulls(['__parsed_date'])
+                )
+                if sort_before_groupby:
+                    staged = staged.sort('__parsed_date')
+                aggregated = (
+                    staged
+                    .group_by_dynamic('__parsed_date', every=period_freq, label='left')
+                    .agg([
+                        pl.col('__parsed_sales').sum().alias('sales'),
+                        pl.col('__parsed_sales').is_not_null().sum().alias('__valid_sales_count'),
+                    ])
+                    .with_columns(
+                        pl.when(pl.col('__valid_sales_count') > 0)
+                        .then(pl.col('sales'))
+                        .otherwise(None)
+                        .alias('sales')
+                    )
+                    .drop('__valid_sales_count')
+                    .sort('__parsed_date')
+                    .collect(streaming=True)
+                )
+            except Exception as grain_error:
+                counts[period_label] = {
+                    'periods': None,
+                    'required': minimum_periods,
+                    'passes': False,
+                    'error': str(grain_error),
+                }
+                continue
+
+            if aggregated.height == 0:
+                counts[period_label] = {
+                    'periods': 0,
+                    'required': minimum_periods,
+                    'passes': False,
+                    'agg_min': None,
+                    'agg_max': None,
+                }
+                continue
+
+            series_frame = aggregated.rename({'__parsed_date': 'period'}).to_pandas(use_pyarrow_extension_array=False)
+            agg_min = series_frame['period'].min()
+            agg_max = series_frame['period'].max()
+            full_range = pd.date_range(agg_min, agg_max, freq=freq)
+            reindexed = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
+            reindexed['sales'] = reindexed['sales'].astype(float)
+            reindexed = repair_zero_period_values_with_seasonal_interpolation(reindexed, 'sales', repair_zeros=False)
+            period_count = int(len(reindexed))
+            counts[period_label] = {
+                'periods': period_count,
+                'required': minimum_periods,
+                'passes': period_count >= minimum_periods,
+                'agg_min': str(pd.Timestamp(agg_min).date()) if pd.notna(agg_min) else None,
+                'agg_max': str(pd.Timestamp(agg_max).date()) if pd.notna(agg_max) else None,
+            }
+        return counts
+
     try:
         lazy_frame = pl.scan_parquet(parquet_path).select([
             pl.col(date_column).alias(date_column),
@@ -3852,9 +3998,44 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
         ])
         schema = lazy_frame.collect_schema()
         parsed_date_expr = build_polars_datetime_expr(date_column, schema[date_column])
+
+        parsed_stats = (
+            lazy_frame
+            .select(parsed_date_expr.alias('__parsed_date'))
+            .drop_nulls()
+            .select([
+                pl.len().alias('parsed_row_count'),
+                pl.col('__parsed_date').min().alias('min_date'),
+                pl.col('__parsed_date').max().alias('max_date'),
+            ])
+            .collect(streaming=True)
+        )
+        if parsed_stats.height == 0 or int(parsed_stats['parsed_row_count'][0] or 0) == 0:
+            raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
+
+        parsed_row_count = int(parsed_stats['parsed_row_count'][0])
+        full_min_date = parsed_stats['min_date'][0]
+        full_max_date = parsed_stats['max_date'][0]
+        try:
+            date_span_days = int((pd.Timestamp(full_max_date) - pd.Timestamp(full_min_date)).days)
+        except Exception:
+            date_span_days = None
+
+        order_probe = (
+            lazy_frame
+            .select(parsed_date_expr.alias('__parsed_date'))
+            .drop_nulls()
+            .select([
+                pl.col('__parsed_date').first().alias('first_date'),
+                pl.col('__parsed_date').last().alias('last_date'),
+                (pl.col('__parsed_date').diff().drop_nulls() >= 0).all().alias('is_non_decreasing'),
+            ])
+            .collect(streaming=True)
+        )
+        dates_sorted = bool(order_probe['is_non_decreasing'][0]) if order_probe.height else None
+
         sample_dates = lazy_frame.select(parsed_date_expr.alias('__parsed_date')).limit(5000).collect(streaming=True).to_series()
-        parsed_sample = pd.to_datetime(pd.Series(sample_dates.to_list()), errors='coerce')
-        parsed_sample = parsed_sample.dropna()
+        parsed_sample = pd.to_datetime(pd.Series(sample_dates.to_list()), errors='coerce').dropna()
         if parsed_sample.empty:
             raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
 
@@ -3862,9 +4043,13 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
         start_idx = PERIOD_COARSEN_ORDER.index(inferred_period_label) if inferred_period_label in PERIOD_COARSEN_ORDER else PERIOD_COARSEN_ORDER.index('month')
         last_error_detail: str | None = None
 
+        grain_period_counts = _aggregate_periods(sort_before_groupby=True)
+        grain_period_counts_if_sorted = grain_period_counts
+
         for period_label in PERIOD_COARSEN_ORDER[start_idx:]:
             freq = FREQ_FOR_PERIOD_LABEL[period_label]
             period_freq = period_freq_map.get(freq, '1mo')
+            minimum_periods = minimum_periods_for_multi_model_ts(period_label)
             aggregated = (
                 lazy_frame
                 .with_columns([
@@ -3872,6 +4057,7 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                     pl.col(target_column).cast(pl.Float64, strict=False).alias('__parsed_sales'),
                 ])
                 .drop_nulls(['__parsed_date'])
+                .sort('__parsed_date')
                 .group_by_dynamic('__parsed_date', every=period_freq, label='left')
                 .agg([
                     pl.col('__parsed_sales').sum().alias('sales'),
@@ -3898,7 +4084,6 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
             series_frame['sales'] = series_frame['sales'].astype(float)
             series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
 
-            minimum_periods = 2 * seasonal_period_for_label(period_label)
             if len(series_frame) >= minimum_periods:
                 attach_sales_series_frequency_attrs(
                     series_frame,
@@ -3908,22 +4093,32 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                 )
                 return series_frame, freq, period_label
 
-            needed = minimum_periods - len(series_frame)
-            last_error_detail = (
-                f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. '
-                f'Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.'
+            last_error_detail = format_insufficient_ts_periods_message(
+                period_label, len(series_frame), minimum_periods
             )
     except HTTPException:
         raise
     except Exception as error:
         raise HTTPException(status_code=400, detail=f'Failed to prepare parquet sales series: {error}') from error
 
-    if last_error_detail and last_error_detail.startswith('No valid'):
-        raise HTTPException(status_code=400, detail=last_error_detail)
-    raise HTTPException(
-        status_code=422,
-        detail=last_error_detail or 'Forecasting needs more historical periods after aggregation.',
+    diagnostics = build_ts_prepare_diagnostics(
+        message=last_error_detail or 'Forecasting needs more historical periods after aggregation.',
+        min_date=full_min_date,
+        max_date=full_max_date,
+        parsed_row_count=parsed_row_count,
+        inferred_period_label=inferred_period_label,
+        grain_period_counts=grain_period_counts,
+        inference_sample_count=int(len(parsed_sample)),
+        inference_sample_min_date=parsed_sample.min(),
+        inference_sample_max_date=parsed_sample.max(),
+        dates_sorted=dates_sorted,
+        date_span_days=date_span_days,
     )
+    diagnostics['grain_period_counts_if_sorted'] = grain_period_counts_if_sorted
+    diagnostics['coarsen_start_label'] = PERIOD_COARSEN_ORDER[start_idx]
+    if last_error_detail and last_error_detail.startswith('No valid'):
+        raise HTTPException(status_code=400, detail=diagnostics)
+    raise HTTPException(status_code=422, detail=diagnostics)
 
 
 def prepare_sales_series_from_cached_dataset(dataset_entry: dict[str, Any], date_column: str, target_column: str) -> tuple[pd.DataFrame, str, str]:
@@ -4015,8 +4210,68 @@ def aggregate_sales_series_at_frequency(
     return repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
 
 
+TS_MULTI_MODEL_MIN_PERIODS = 24
+
+
 def seasonal_period_for_label(period_label: str) -> int:
     return {'day': 365, 'week': 52, 'month': 12, 'quarter': 4, 'year': 1}.get(period_label, 12)
+
+
+def minimum_periods_for_multi_model_ts(period_label: str) -> int:
+    """Multi-model TS needs enough history for walk-forward validation (min 24 periods)."""
+    return max(TS_MULTI_MODEL_MIN_PERIODS, 2 * seasonal_period_for_label(period_label))
+
+
+def format_insufficient_ts_periods_message(period_label: str, have: int, need: int) -> str:
+    grain = period_label if period_label in {'day', 'week', 'month', 'quarter', 'year'} else 'period'
+    needed = max(0, need - have)
+    return (
+        f'Need at least {need} aggregated {grain} periods for multi-model time-series '
+        f'(have {have} after aggregation). '
+        f'Add {needed} more {grain} row{"s" if needed != 1 else ""} with a longer history, '
+        f'or upload samples/sales/sales_monthly.csv for a demo-ready series.'
+    )
+
+
+def build_ts_prepare_diagnostics(
+    *,
+    message: str,
+    min_date: Any,
+    max_date: Any,
+    parsed_row_count: int,
+    inferred_period_label: str | None,
+    grain_period_counts: dict[str, Any],
+    inference_sample_count: int | None = None,
+    inference_sample_min_date: Any = None,
+    inference_sample_max_date: Any = None,
+    dates_sorted: bool | None = None,
+    date_span_days: int | None = None,
+) -> dict[str, Any]:
+    """Structured diagnostics attached to TS prepare 422 responses."""
+    def _fmt(value: Any) -> str | None:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        try:
+            stamp = pd.Timestamp(value)
+            if pd.isna(stamp):
+                return None
+            return stamp.strftime('%Y-%m-%d')
+        except Exception:
+            return str(value)
+
+    return {
+        'message': message,
+        'min_date': _fmt(min_date),
+        'max_date': _fmt(max_date),
+        'parsed_row_count': int(parsed_row_count),
+        'date_span_days': date_span_days,
+        'inferred_period_label': inferred_period_label,
+        'grain_period_counts': grain_period_counts,
+        'inference_sample_count': inference_sample_count,
+        'inference_sample_min_date': _fmt(inference_sample_min_date),
+        'inference_sample_max_date': _fmt(inference_sample_max_date),
+        'dates_sorted': dates_sorted,
+    }
 
 
 def statsmodels_frequency_for_label(period_label: str) -> str:
@@ -4052,16 +4307,44 @@ def prepare_sales_series(
     if working.empty:
         raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
 
+    dates_were_sorted = bool(working[date_column].is_monotonic_increasing)
+    working = working.sort_values(date_column).reset_index(drop=True)
+
+    parsed_row_count = int(len(working))
+    full_min_date = working[date_column].min()
+    full_max_date = working[date_column].max()
+    try:
+        date_span_days = int((pd.Timestamp(full_max_date) - pd.Timestamp(full_min_date)).days)
+    except Exception:
+        date_span_days = None
+    dates_sorted = dates_were_sorted
+
     inferred_freq, inferred_period_label = infer_sales_time_frequency(working[date_column])
     start_idx = PERIOD_COARSEN_ORDER.index(inferred_period_label) if inferred_period_label in PERIOD_COARSEN_ORDER else PERIOD_COARSEN_ORDER.index('month')
     last_error_detail: str | None = None
-    resolve_minimum = minimum_periods_for_label or (lambda label: 2 * seasonal_period_for_label(label))
+    resolve_minimum = minimum_periods_for_label or minimum_periods_for_multi_model_ts
 
-    for period_label in PERIOD_COARSEN_ORDER[start_idx:]:
+    grain_period_counts: dict[str, Any] = {}
+    for period_label in PERIOD_COARSEN_ORDER:
         freq = FREQ_FOR_PERIOD_LABEL[period_label]
         series_frame = aggregate_sales_series_at_frequency(working, date_column, target_column, freq)
         minimum_periods = int(resolve_minimum(period_label))
-        if len(series_frame) >= minimum_periods:
+        period_count = int(len(series_frame))
+        grain_period_counts[period_label] = {
+            'periods': period_count,
+            'required': minimum_periods,
+            'passes': period_count >= minimum_periods,
+            'agg_min': str(pd.Timestamp(series_frame['period'].min()).date()) if period_count else None,
+            'agg_max': str(pd.Timestamp(series_frame['period'].max()).date()) if period_count else None,
+        }
+
+    for period_label in PERIOD_COARSEN_ORDER[start_idx:]:
+        grain_info = grain_period_counts.get(period_label) or {}
+        period_count = int(grain_info.get('periods') or 0)
+        minimum_periods = int(grain_info.get('required') or resolve_minimum(period_label))
+        if period_count >= minimum_periods:
+            freq = FREQ_FOR_PERIOD_LABEL[period_label]
+            series_frame = aggregate_sales_series_at_frequency(working, date_column, target_column, freq)
             attach_sales_series_frequency_attrs(
                 series_frame,
                 period_label=period_label,
@@ -4070,16 +4353,26 @@ def prepare_sales_series(
             )
             return series_frame, freq, period_label
 
-        needed = minimum_periods - len(series_frame)
-        last_error_detail = (
-            f'Forecasting needs at least {minimum_periods} {period_label} rows after aggregation. '
-            f'Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.'
+        last_error_detail = format_insufficient_ts_periods_message(
+            period_label, period_count, minimum_periods
         )
 
-    raise HTTPException(
-        status_code=422,
-        detail=last_error_detail or 'Forecasting needs more historical periods after aggregation.',
+    sample = working[date_column].head(5000)
+    diagnostics = build_ts_prepare_diagnostics(
+        message=last_error_detail or 'Forecasting needs more historical periods after aggregation.',
+        min_date=full_min_date,
+        max_date=full_max_date,
+        parsed_row_count=parsed_row_count,
+        inferred_period_label=inferred_period_label,
+        grain_period_counts=grain_period_counts,
+        inference_sample_count=int(len(sample)),
+        inference_sample_min_date=sample.min() if len(sample) else None,
+        inference_sample_max_date=sample.max() if len(sample) else None,
+        dates_sorted=dates_sorted,
+        date_span_days=date_span_days,
     )
+    diagnostics['coarsen_start_label'] = PERIOD_COARSEN_ORDER[start_idx]
+    raise HTTPException(status_code=422, detail=diagnostics)
 
 
 def build_forecast_feature_row(history: list[float], current_period: pd.Timestamp, lag_periods: int) -> dict[str, float]:
@@ -5010,12 +5303,33 @@ def structured_training_failure(error: Exception, *, step: str, request: TrainRe
     )
 
 
-def get_cv_strategy(n_rows: int):
+def get_cv_strategy(n_rows: int, cv_folds: int | None = None):
     if n_rows < 30:
         return LeaveOneOut()
     if n_rows < 100:
         return KFold(n_splits=min(5, n_rows), shuffle=True, random_state=42)
-    return KFold(n_splits=min(10, n_rows), shuffle=True, random_state=42)
+    # Large datasets: keep CV light for demo responsiveness (user can still compare models later).
+    if n_rows >= 1000:
+        folds = min(max(2, int(cv_folds or 3)), 3)
+        return KFold(n_splits=min(folds, n_rows), shuffle=True, random_state=42)
+    folds = min(max(2, int(cv_folds or 5)), 10)
+    return KFold(n_splits=min(folds, n_rows), shuffle=True, random_state=42)
+
+
+def resolve_requested_training_candidates(
+    problem_type: ProblemType,
+    model_type: str,
+    n_rows: int,
+    n_features: int,
+    random_state: int,
+) -> list[tuple[str, Any]]:
+    """Prefer the user-selected model; fall back to a small candidate set when selecting auto."""
+    registry = REGRESSION_MODELS if problem_type == 'regression' else CLASSIFICATION_MODELS
+    normalized = str(model_type or '').strip().lower()
+    if normalized and normalized not in {'auto', 'best', 'compare'} and normalized in registry:
+        model_name, estimator = build_estimator(problem_type, normalized, random_state)
+        return [(model_name, estimator)]
+    return select_candidate_models(problem_type, n_rows, n_features, random_state)
 
 
 def select_candidate_models(task_type: ProblemType, n_rows: int, n_features: int, random_state: int) -> list[tuple[str, Any]]:
@@ -5025,36 +5339,32 @@ def select_candidate_models(task_type: ProblemType, n_rows: int, n_features: int
             return [('Ridge', Ridge(alpha=1.0)), ('Lasso', Lasso(alpha=1.0)), ('Linear Regression', LinearRegression())]
         if n_rows < 500:
             return [
-                ('Random Forest', RandomForestRegressor(n_estimators=100, random_state=random_state)),
-                ('Gradient Boosting', GradientBoostingRegressor(random_state=random_state)),
+                ('Random Forest', RandomForestRegressor(n_estimators=100, random_state=random_state, n_jobs=TRAINING_N_JOBS)),
+                ('Gradient Boosting', HistGradientBoostingRegressor(max_iter=100, learning_rate=0.05, max_depth=3, random_state=random_state)),
                 ('Ridge', Ridge(alpha=1.0)),
             ]
         large_candidates: list[tuple[str, Any]] = [
-            ('Random Forest', RandomForestRegressor(n_estimators=200, random_state=random_state)),
-            ('Gradient Boosting', GradientBoostingRegressor(n_estimators=200, random_state=random_state)),
+            ('Random Forest', RandomForestRegressor(n_estimators=100, random_state=random_state, n_jobs=TRAINING_N_JOBS)),
+            ('Gradient Boosting', HistGradientBoostingRegressor(max_iter=100, learning_rate=0.05, max_depth=3, random_state=random_state)),
         ]
         if XGBRegressor is not None:
-            large_candidates.append(('XGBoost', XGBRegressor(n_estimators=200, random_state=random_state, verbosity=0)))
-        else:
-            large_candidates.append(('Gradient Boosting Fallback', GradientBoostingRegressor(n_estimators=200, random_state=random_state)))
-        return large_candidates
+            large_candidates.append(('XGBoost', XGBRegressor(n_estimators=100, random_state=random_state, verbosity=0, n_jobs=TRAINING_N_JOBS)))
+        return large_candidates[:2]
 
     if n_rows < 50:
         return [('Logistic Regression', LogisticRegression(max_iter=1000)), ('SVC', SVC(probability=True))]
     if n_rows < 500:
         return [
-            ('Random Forest', RandomForestClassifier(n_estimators=100, random_state=random_state)),
+            ('Random Forest', RandomForestClassifier(n_estimators=100, random_state=random_state, n_jobs=TRAINING_N_JOBS)),
             ('Logistic Regression', LogisticRegression(max_iter=1000)),
         ]
     large_classifiers: list[tuple[str, Any]] = [
-        ('Random Forest', RandomForestClassifier(n_estimators=200, random_state=random_state)),
-        ('Gradient Boosting', GradientBoostingClassifier(random_state=random_state)),
+        ('Random Forest', RandomForestClassifier(n_estimators=100, random_state=random_state, n_jobs=TRAINING_N_JOBS)),
+        ('Gradient Boosting', HistGradientBoostingClassifier(max_iter=100, learning_rate=0.05, max_depth=3, random_state=random_state)),
     ]
     if XGBClassifier is not None:
-        large_classifiers.append(('XGBoost', XGBClassifier(n_estimators=200, random_state=random_state, verbosity=0)))
-    else:
-        large_classifiers.append(('Gradient Boosting Fallback', GradientBoostingClassifier(random_state=random_state)))
-    return large_classifiers
+        large_classifiers.append(('XGBoost', XGBClassifier(n_estimators=100, random_state=random_state, verbosity=0, n_jobs=TRAINING_N_JOBS)))
+    return large_classifiers[:2]
 
 
 def is_datetime_feature(series: pd.Series) -> bool:
@@ -5228,34 +5538,156 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
     except Exception as error:
         raise RuntimeError(f'Validation failed: {error}') from error
 
-    candidate_models = select_candidate_models(request.problem_type, len(y), len(feature_names), request.random_state)
-    cv = get_cv_strategy(len(y))
-    scoring = (
-        {'rmse': 'neg_root_mean_squared_error', 'r2': 'r2'}
+    y = pd.Series(y).reset_index(drop=True)
+    X = np.asarray(X, dtype=float)
+    rows_available = int(len(y))
+    profile = build_training_profile(rows_available, request.cv_folds, request.training_mode)
+    single_model = _is_single_selected_model(request.model_type)
+    skip_cv = bool(profile['skip_cv_for_large_dataset']) or (
+        rows_available >= LARGE_DATASET_ROW_THRESHOLD and single_model
+    )
+
+    train_sample_limit = int(profile.get('train_sample_limit') or 0)
+    training_sampled = False
+    if train_sample_limit > 0 and rows_available > train_sample_limit:
+        X, y = _sample_xy_arrays(
+            X,
+            y,
+            train_sample_limit,
+            request.random_state,
+            stratify=request.problem_type == 'classification',
+        )
+        training_sampled = True
+        warnings_list.append(
+            f'Training used a {len(y):,}-row sample of {rows_available:,} rows for faster model fitting.'
+        )
+
+    candidate_models = resolve_requested_training_candidates(
+        request.problem_type,
+        request.model_type,
+        len(y),
+        len(feature_names),
+        request.random_state,
+    )
+    scoring_keys = (
+        ('rmse', 'r2')
         if request.problem_type == 'regression'
-        else {'accuracy': 'accuracy', 'f1_weighted': 'f1_weighted'}
+        else ('accuracy', 'f1_weighted')
     )
     primary_metric = 'rmse' if request.problem_type == 'regression' else 'accuracy'
     model_failures: list[str] = []
     best: dict[str, Any] | None = None
+    cv_rows_evaluated = int(len(y))
+    cv_folds_used = 0
+    cv_sampled = False
+    cv = None
+    fitted_predictions = np.array([])
 
-    for model_name, estimator in candidate_models:
+    if skip_cv:
+        test_size = float(request.test_size)
+        stratify_values = y if request.problem_type == 'classification' and y.nunique() > 1 else None
         try:
-            scores = cross_validate(clone(estimator), X, y, cv=cv, scoring=scoring, n_jobs=TRAINING_N_JOBS, error_score='raise')
-            primary_values = scores[f'test_{primary_metric}']
-            ranking_score = float(np.mean(primary_values))
-            summary = {
-                metric: {
-                    'mean': float(np.mean(values if metric != 'rmse' else -values)),
-                    'std': float(np.std(values if metric != 'rmse' else -values)),
+            X_train, X_test, y_train, y_test = train_test_split(
+                X,
+                y,
+                test_size=test_size,
+                random_state=request.random_state,
+                stratify=stratify_values if stratify_values is not None and stratify_values.value_counts().min() >= 2 else None,
+            )
+        except ValueError:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=request.random_state
+            )
+        cv_rows_evaluated = int(len(y_test))
+        cv_folds_used = 1
+        for model_name, estimator in candidate_models:
+            try:
+                fitted = clone(estimator)
+                fitted.fit(X_train, y_train)
+                preds = fitted.predict(X_test)
+                if request.problem_type == 'regression':
+                    rmse_holdout = float(np.sqrt(mean_squared_error(y_test, preds)))
+                    r2_holdout = float(r2_score(y_test, preds))
+                    summary = {
+                        'rmse': {'mean': rmse_holdout, 'std': 0.0},
+                        'r2': {'mean': r2_holdout, 'std': 0.0},
+                    }
+                    ranking_score = -rmse_holdout
+                else:
+                    acc = float(accuracy_score(y_test, preds))
+                    f1 = float(f1_score(y_test, preds, average='weighted', zero_division=0))
+                    summary = {
+                        'accuracy': {'mean': acc, 'std': 0.0},
+                        'f1_weighted': {'mean': f1, 'std': 0.0},
+                    }
+                    ranking_score = acc
+                if best is None or ranking_score > best['ranking_score']:
+                    best = {
+                        'name': model_name,
+                        'estimator': clone(estimator),
+                        'scores': summary,
+                        'ranking_score': ranking_score,
+                    }
+            except Exception as error:
+                model_failures.append(f'{model_name}: {error}')
+                logger.exception('Candidate model failed during fast training model=%s', model_name)
+        warnings_list.append('Cross-validation was skipped for faster training; holdout metrics are reported instead.')
+    else:
+        cv = get_cv_strategy(len(y), int(profile.get('cv_folds') or request.cv_folds))
+        cv_folds_used = int(getattr(cv, 'n_splits', request.cv_folds))
+        X_cv, y_cv = X, y
+        cv_sample_limit = int(profile.get('cv_sample_limit') or 0)
+        if cv_sample_limit > 0 and len(y) > cv_sample_limit:
+            X_cv, y_cv = _sample_xy_arrays(
+                X,
+                y,
+                cv_sample_limit,
+                request.random_state,
+                stratify=request.problem_type == 'classification',
+            )
+            cv_sampled = True
+            cv_rows_evaluated = int(len(y_cv))
+            warnings_list.append(
+                f'CV used a {cv_rows_evaluated:,}-row sample for faster evaluation.'
+            )
+        else:
+            cv_rows_evaluated = int(len(y_cv))
+
+        scoring = (
+            {'rmse': 'neg_root_mean_squared_error', 'r2': 'r2'}
+            if request.problem_type == 'regression'
+            else {'accuracy': 'accuracy', 'f1_weighted': 'f1_weighted'}
+        )
+        for model_name, estimator in candidate_models:
+            try:
+                scores = cross_validate(
+                    clone(estimator),
+                    X_cv,
+                    y_cv,
+                    cv=cv,
+                    scoring=scoring,
+                    n_jobs=TRAINING_N_JOBS,
+                    error_score='raise',
+                )
+                primary_values = scores[f'test_{primary_metric}']
+                ranking_score = float(np.mean(primary_values))
+                summary = {
+                    metric: {
+                        'mean': float(np.mean(values if metric != 'rmse' else -values)),
+                        'std': float(np.std(values if metric != 'rmse' else -values)),
+                    }
+                    for metric, values in ((key, scores[f'test_{key}']) for key in scoring_keys)
                 }
-                for metric, values in ((key, scores[f'test_{key}']) for key in scoring.keys())
-            }
-            if best is None or ranking_score > best['ranking_score']:
-                best = {'name': model_name, 'estimator': clone(estimator), 'scores': summary, 'ranking_score': ranking_score}
-        except Exception as error:
-            model_failures.append(f'{model_name}: {error}')
-            logger.exception('Candidate model failed during training model=%s', model_name)
+                if best is None or ranking_score > best['ranking_score']:
+                    best = {
+                        'name': model_name,
+                        'estimator': clone(estimator),
+                        'scores': summary,
+                        'ranking_score': ranking_score,
+                    }
+            except Exception as error:
+                model_failures.append(f'{model_name}: {error}')
+                logger.exception('Candidate model failed during training model=%s', model_name)
 
     if best is None:
         raise RuntimeError('Training failed for all candidate models. ' + ' | '.join(model_failures))
@@ -5288,6 +5720,7 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
         logger.exception('Failed to compute fitted metrics; returning CV metrics only.')
         metrics_primary = {}
         rmse = None
+        fitted_predictions = np.array([])
 
     feature_importance = []
     importances = getattr(best['estimator'], 'feature_importances_', None)
@@ -5303,7 +5736,7 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
     feature_importance.sort(key=lambda item: item['importance'], reverse=True)
 
     model_id = request.dataset_id or str(uuid.uuid4())[:8]
-    trained_at = datetime.utcnow().isoformat()
+    trained_at = utc_now_iso()
     bundle = {
         'model': best['estimator'],
         'pipeline': best['estimator'],
@@ -5334,24 +5767,27 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
     except Exception as error:
         raise RuntimeError(f'Saving failed: {error}') from error
 
-    if request.problem_type == 'classification' and label_encoder is not None:
-        actual_values = label_encoder.inverse_transform(y.astype(int))
-        predicted_values = label_encoder.inverse_transform(pd.Series(fitted_predictions).astype(int))
+    if len(fitted_predictions):
+        if request.problem_type == 'classification' and label_encoder is not None:
+            actual_values = label_encoder.inverse_transform(y.astype(int))
+            predicted_values = label_encoder.inverse_transform(pd.Series(fitted_predictions).astype(int))
+        else:
+            actual_values = y.tolist()
+            predicted_values = pd.Series(fitted_predictions).tolist()
+        sample_predictions = [
+            {'actual': safe_serialize(actual_values[index]), 'predicted': safe_serialize(predicted_values[index])}
+            for index in range(min(10, len(predicted_values)))
+        ]
     else:
-        actual_values = y.tolist()
-        predicted_values = pd.Series(fitted_predictions).tolist()
-    sample_predictions = [
-        {'actual': safe_serialize(actual_values[index]), 'predicted': safe_serialize(predicted_values[index])}
-        for index in range(min(10, len(predicted_values)))
-    ]
+        sample_predictions = []
 
     full_metrics = {
         'primary': metrics_primary,
-        'cv_scores': [round(float(v), 6) for v in np.atleast_1d(best['scores'][primary_metric]['mean'])],
+        'cv_scores': [round(float(best['scores'][primary_metric]['mean']), 6)],
         'cv_mean': round(float(best['scores'][primary_metric]['mean']), 6),
         'cv_std': round(float(best['scores'][primary_metric]['std']), 6),
-        'cv_folds_used': int(getattr(cv, 'n_splits', len(y))),
-        'cv_rows_evaluated': int(len(y)),
+        'cv_folds_used': int(cv_folds_used or getattr(cv, 'n_splits', 0) or 0),
+        'cv_rows_evaluated': int(cv_rows_evaluated),
     }
     response = {
         'status': 'success',
@@ -5372,16 +5808,21 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
         'cv_scores': [round(float(best['scores'][primary_metric]['mean']), 6)],
         'overfitting_detected': False,
         'overfitting_status': 'healthy',
-        'overfitting_explanation': 'Model quality is reported from cross-validation mean and standard deviation.',
+        'overfitting_explanation': (
+            'Model quality is reported from a holdout split (CV skipped for speed).'
+            if skip_cv
+            else 'Model quality is reported from cross-validation mean and standard deviation.'
+        ),
         'generalization_gap': 0,
         'cv_gap': None,
         'optimization': {
-            'training_rows_available': int(len(data_frame)),
+            'training_rows_available': int(rows_available),
             'training_rows_used': int(len(y)),
-            'training_sampled': False,
-            'cv_rows_evaluated': int(len(y)),
-            'cv_folds_used': int(getattr(cv, 'n_splits', len(y))),
-            'cv_sampled': False,
+            'training_sampled': training_sampled,
+            'cv_rows_evaluated': int(cv_rows_evaluated),
+            'cv_folds_used': int(cv_folds_used or getattr(cv, 'n_splits', 0) or 0),
+            'cv_sampled': cv_sampled,
+            'cv_skipped': skip_cv,
             'training_mode': request.training_mode,
             'importance_rows_evaluated': int(len(y)),
             'importance_repeats': 0,
@@ -5397,6 +5838,7 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
         metadata={'target_column': request.target_column, 'feature_count': len(feature_names), 'primary_metrics': metrics_primary},
     )
     return response
+
 
 
 def infer_problem_type_from_estimator(estimator: Any) -> ProblemType:
@@ -5733,7 +6175,7 @@ def sales_readiness(request: SalesReadinessRequest) -> JSONResponse:
         )
         values = pd.to_numeric(df[target_col], errors='coerce')
         periods = int(len(df))
-        min_required = 24
+        min_required = TS_MULTI_MODEL_MIN_PERIODS
         zero_share = float((values.fillna(0) <= 0).mean()) if periods else 0.0
         missing_share = float(values.isna().mean()) if periods else 0.0
         date_span_days = 0
@@ -5755,7 +6197,7 @@ def sales_readiness(request: SalesReadinessRequest) -> JSONResponse:
             'zero_sales_share': round(zero_share, 4),
             'missing_share': round(missing_share, 4),
             'notes': [] if ready else [
-                f'Need at least {min_required} aggregated periods for multi-model time-series (have {periods}).' if periods < min_required else None,
+                format_insufficient_ts_periods_message('period', periods, min_required) if periods < min_required else None,
                 'Revenue column confidence is low; confirm the sales target mapping.' if confidence < 40 else None,
             ],
         }))
@@ -5833,6 +6275,14 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
         store_ts_frequency_metadata(dataset_id, frequency, freq_period, date_col, target_col)
         stationarity = check_stationarity(df[target_col], frequency)
         dataset_profile = build_dataset_profile(df, str(period_label), value_column=target_col)
+        usable_periods = int(dataset_profile.get('usable_periods') or len(df))
+        if usable_periods < TS_MULTI_MODEL_MIN_PERIODS:
+            raise HTTPException(
+                status_code=422,
+                detail=format_insufficient_ts_periods_message(
+                    str(period_label or 'period'), usable_periods, TS_MULTI_MODEL_MIN_PERIODS
+                ),
+            )
         results, y_train, y_test, train, test, clean_df, first_nonzero_date = train_all_ts_models(df, target_col, date_col, frequency, freq_period, split, horizon)
         best_name, best_metrics, reason = auto_select_ts_model(results)
         future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
@@ -7505,7 +7955,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 logs.append({
                     'action': 'Standardized Column Names',
                     'detail': 'Normalized column names for easier analysis and modeling.',
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': utc_now_iso(),
                 })
 
         if request.remove_duplicates:
@@ -7516,7 +7966,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 logs.append({
                     'action': 'Removed Duplicates',
                     'detail': f'Removed {removed} duplicate rows.',
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': utc_now_iso(),
                 })
 
         if request.handle_missing:
@@ -7591,13 +8041,13 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                         f'Filled missing values in {len(filled_columns)} column(s). '
                         + '; '.join(fill_summaries)
                     ),
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': utc_now_iso(),
                 })
             if protected_targets and request.sales_preset:
                 logs.append({
                     'action': 'Protected Sales Target',
                     'detail': f'Skipped median imputation for sales target column(s): {", ".join(sorted(protected_targets))}.',
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': utc_now_iso(),
                 })
 
         if request.sales_preset and request.drop_non_positive_revenue:
@@ -7613,7 +8063,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                     logs.append({
                         'action': 'Dropped Non-Positive Revenue',
                         'detail': f'Removed {removed} row(s) with non-positive {revenue_col}.',
-                        'timestamp': datetime.utcnow().isoformat(),
+                        'timestamp': utc_now_iso(),
                     })
 
         if request.convert_dates:
@@ -7632,7 +8082,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 logs.append({
                     'action': 'Converted Date Columns',
                     'detail': f'Converted {len(converted_columns)} date-like column(s).',
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': utc_now_iso(),
                 })
 
         dtype_payload: dict[str, Any] | None = None
@@ -7642,7 +8092,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             logs.append({
                 'action': 'Inferred Data Types',
                 'detail': f'Applied universal dtype inference across {len(frame.columns)} column(s); {accepted_count} column decision(s) accepted.',
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': utc_now_iso(),
             })
 
         updated_dataset_path = persist_inferred_dataset_frame(request.dataset_id, dataset_entry, frame)
@@ -7677,7 +8127,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             logs.append({
                 'action': 'Standardized Column Names',
                 'detail': 'Normalized column names for easier analysis and modeling.',
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': utc_now_iso(),
             })
 
     if request.remove_duplicates:
@@ -7688,7 +8138,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             logs.append({
                 'action': 'Removed Duplicates',
                 'detail': f'Removed {removed} duplicate rows.',
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': utc_now_iso(),
             })
 
     if request.handle_missing:
@@ -7721,7 +8171,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             logs.append({
                 'action': 'Handled Missing Values',
                 'detail': f'Filled missing values in {len(filled_columns)} column(s).',
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': utc_now_iso(),
             })
 
     if request.convert_dates:
@@ -7770,7 +8220,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
             logs.append({
                 'action': 'Converted Date Columns',
                 'detail': f'Converted {len(converted_columns)} date-like column(s).',
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': utc_now_iso(),
             })
 
     if request.infer_dtypes:
@@ -7783,7 +8233,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         logs.append({
             'action': 'Inferred Data Types',
             'detail': f'Applied universal dtype inference across {len(inferred_frame.columns)} column(s); {accepted_count} column decision(s) accepted.',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': utc_now_iso(),
         })
         preview_frame = format_frame_datetimes_for_cleaning_preview(
             inferred_frame.head(DATASET_PREVIEW_ROW_LIMIT)

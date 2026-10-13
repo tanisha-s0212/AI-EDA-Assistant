@@ -236,7 +236,7 @@ export default function UnderstandingTab() {
                   <span>Date: {salesReadiness.date_column ?? 'N/A'}</span>
                   <span>Target: {salesReadiness.target_column ?? 'N/A'}</span>
                 </div>
-                <p>Periods: {salesReadiness.period_count ?? 0} (min {salesReadiness.minimum_periods_for_ts ?? 24} for multi-model TS)</p>
+                <p>Months: {salesReadiness.period_count ?? 0} (minimum {salesReadiness.minimum_periods_for_ts ?? 24} months for multi-model Time Series)</p>
                 <p>Date span: {salesReadiness.date_span_days ?? 0} days · Revenue confidence: {salesReadiness.revenue_column_confidence ?? 0} · Zero-sales share: {Math.round((salesReadiness.zero_sales_share ?? 0) * 100)}%</p>
                 {(salesReadiness.notes ?? []).filter(Boolean).map((note) => (
                   <p key={String(note)} className="rounded-xl bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{note}</p>

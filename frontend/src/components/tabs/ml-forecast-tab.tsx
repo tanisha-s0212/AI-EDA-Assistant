@@ -19,6 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { pickPreferredSalesDateColumn, pickSmartSalesTargetColumn, isDatePartColumn, isForecastDateColumnCandidate } from '@/lib/sales-domain';
 import { inferPreviewSeriesProfile, resolveForecastSeriesProfile } from '@/lib/forecast-series-profile';
 import ForecastSeriesChart, { buildForecastSeriesChartData } from '@/components/forecast-series-chart';
+import { useCurrencyFormat } from '@/lib/use-currency-format';
 
 type FeatureGroupId = 'trend' | 'calendar' | 'lags' | 'rolling';
 
@@ -92,14 +93,8 @@ function buildModelRecommendations(featureCount: number) {
   ];
 }
 
-function formatForecastValue(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
 export default function MlForecastTab() {
+  const { formatNumber } = useCurrencyFormat();
   const { toast } = useToast();
   const rawData = useAppStore((state) => state.rawData);
   const cleanedData = useAppStore((state) => state.cleanedData);
@@ -569,19 +564,19 @@ export default function MlForecastTab() {
                             <div className="rounded-2xl border bg-gradient-to-br from-primary/8 to-background p-4">
                               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Latest Actual</p>
                               <p className="mt-2 text-xl font-semibold text-primary">
-                                {result.history.length ? formatForecastValue(result.history[result.history.length - 1].actual) : 'N/A'}
+                                {result.history.length ? formatNumber(result.history[result.history.length - 1].actual) : 'N/A'}
                               </p>
                             </div>
                             <div className="rounded-2xl border bg-gradient-to-br from-secondary to-background p-4">
                               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Avg Forecast</p>
                               <p className="mt-2 text-xl font-semibold text-foreground">
-                                {forecastSummary ? formatForecastValue(forecastSummary.average) : 'N/A'}
+                                {forecastSummary ? formatNumber(forecastSummary.average) : 'N/A'}
                               </p>
                             </div>
                             <div className="rounded-2xl border bg-gradient-to-br from-muted/30 to-background p-4">
                               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Peak Projection</p>
                               <p className="mt-2 text-xl font-semibold text-foreground">
-                                {forecastSummary ? formatForecastValue(forecastSummary.maxPoint.predicted) : 'N/A'}
+                                {forecastSummary ? formatNumber(forecastSummary.maxPoint.predicted) : 'N/A'}
                               </p>
                               <p className="mt-1 text-xs text-muted-foreground">{forecastSummary?.maxPoint.period ?? 'No horizon'}</p>
                             </div>
@@ -590,7 +585,7 @@ export default function MlForecastTab() {
                             <ForecastSeriesChart
                               data={chartData}
                               heightClassName="h-full"
-                              yTickFormatter={(value) => formatForecastValue(value)}
+                              yTickFormatter={(value) => formatNumber(value)}
                             />
                           </div>
                         </CardContent>
@@ -677,11 +672,11 @@ export default function MlForecastTab() {
                               <div className="grid grid-cols-2 gap-4 text-sm">
                                 <div>
                                   <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Horizon Avg</p>
-                                  <p className="mt-1 font-semibold">{forecastSummary ? formatForecastValue(forecastSummary.average) : 'N/A'}</p>
+                                  <p className="mt-1 font-semibold">{forecastSummary ? formatNumber(forecastSummary.average) : 'N/A'}</p>
                                 </div>
                                 <div>
                                   <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Peak Value</p>
-                                  <p className="mt-1 font-semibold">{forecastSummary ? formatForecastValue(forecastSummary.maxPoint.predicted) : 'N/A'}</p>
+                                  <p className="mt-1 font-semibold">{forecastSummary ? formatNumber(forecastSummary.maxPoint.predicted) : 'N/A'}</p>
                                 </div>
                               </div>
                             </div>
@@ -697,7 +692,7 @@ export default function MlForecastTab() {
                                   {result.future_forecast.map((point) => (
                                     <TableRow key={point.period}>
                                       <TableCell className="font-medium">{point.period}</TableCell>
-                                      <TableCell className="text-right">{formatForecastValue(point.predicted)}</TableCell>
+                                      <TableCell className="text-right">{formatNumber(point.predicted)}</TableCell>
                                     </TableRow>
                                   ))}
                                 </TableBody>

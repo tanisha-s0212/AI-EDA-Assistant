@@ -18,6 +18,7 @@ from main import (  # noqa: E402
     app,
     load_ts_dataset,
     prepare_sales_series,
+    prepare_sales_series_from_parquet,
     set_dataset_cache_entry,
 )
 
@@ -27,18 +28,38 @@ def client():
     return TestClient(app)
 
 
-def test_prepare_sales_series_auto_coarsens_short_daily_span():
-    # ~600 daily points fails 2y day/week/month/quarter mins after reindex, but YS yields 2 years.
+def test_unsorted_superstore_like_parquet_returns_day_grain_full_span(tmp_path: Path):
+    """Unsorted daily history must sort before group_by_dynamic so day grain keeps full span (~1458)."""
+    dates = pd.date_range('2015-01-03', '2018-12-30', freq='D')
+    frame = pd.DataFrame({
+        'order_date': dates,
+        'sales': [float((i % 47) + 1) for i in range(len(dates))],
+    }).sample(frac=1, random_state=42).reset_index(drop=True)
+    assert not frame['order_date'].is_monotonic_increasing
+
+    parquet_path = tmp_path / 'unsorted_superstore_like.parquet'
+    frame.to_parquet(parquet_path, index=False)
+    series_frame, freq, period_label = prepare_sales_series_from_parquet(
+        {'parquet_path': str(parquet_path), 'columns': ['order_date', 'sales']},
+        'order_date',
+        'sales',
+    )
+    assert period_label == 'day'
+    assert freq == 'D'
+    assert len(series_frame) == 1458
+    assert len(series_frame) >= 730
+
+
+def test_prepare_sales_series_rejects_short_daily_span_under_multi_model_min():
+    # ~600 daily points coarsens past month/quarter; yearly (~2) is still below the multi-model min of 24.
     frame = pd.DataFrame({
         'created': pd.date_range('2023-01-01', periods=600, freq='D'),
         'dollars': [10.0 + i for i in range(600)],
     })
-    series_frame, freq, period_label = prepare_sales_series(frame, 'created', 'dollars')
-    assert period_label == 'year'
-    assert freq == 'YS'
-    assert series_frame.attrs.get('frequency_auto_adjusted') is True
-    assert series_frame.attrs.get('inferred_period_label') == 'day'
-    assert len(series_frame) >= 2
+    with pytest.raises(HTTPException) as exc_info:
+        prepare_sales_series(frame, 'created', 'dollars')
+    assert exc_info.value.status_code == 422
+    assert 'Need at least 24' in str(exc_info.value.detail)
 
 
 def test_prepare_sales_series_raises_422_when_even_yearly_is_too_short():
@@ -82,7 +103,7 @@ def test_stationarity_endpoint_preserves_422(client: TestClient, tmp_path: Path)
         assert response.status_code == 422, response.text
         body = response.json()
         detail = body.get('error') or body.get('detail') or ''
-        assert 'Forecasting needs at least' in str(detail)
+        assert 'Need at least' in str(detail)
     finally:
         DATASET_CACHE.pop(dataset_id, None)
 
@@ -129,9 +150,10 @@ def test_load_ts_auto_picks_created_not_month(tmp_path: Path):
 
 
 def test_stationarity_endpoint_surfaces_frequency_meta(client: TestClient, tmp_path: Path):
+    # ~725 daily points: fails day (730) and week (104) mins, accepts monthly (>=24).
     frame = pd.DataFrame({
-        'created': pd.date_range('2023-01-01', periods=600, freq='D'),
-        'dollars': [10.0 + i for i in range(600)],
+        'created': pd.date_range('2021-01-01', periods=725, freq='D'),
+        'dollars': [10.0 + i for i in range(725)],
     })
     dataset_id = 'ts_freq_meta'
     frame_path = tmp_path / f'{dataset_id}.parquet'
@@ -144,8 +166,8 @@ def test_stationarity_endpoint_surfaces_frequency_meta(client: TestClient, tmp_p
         'column_count': int(len(frame.columns)),
         'columns': list(frame.columns),
         'column_info': [
-            {'name': 'created', 'role': 'datetime', 'uniqueCount': 600},
-            {'name': 'dollars', 'role': 'numeric', 'uniqueCount': 600},
+            {'name': 'created', 'role': 'datetime', 'uniqueCount': 725},
+            {'name': 'dollars', 'role': 'numeric', 'uniqueCount': 725},
         ],
     })
     try:
@@ -166,7 +188,8 @@ def test_stationarity_endpoint_surfaces_frequency_meta(client: TestClient, tmp_p
         body = response.json()
         assert body.get('date_column') == 'created'
         assert body.get('frequency_auto_adjusted') is True
-        assert body.get('period_label') == 'year'
+        assert body.get('period_label') in {'week', 'month'}
         assert body.get('inferred_period_label') == 'day'
+        assert int(body.get('usable_periods') or 0) >= 24
     finally:
         DATASET_CACHE.pop(dataset_id, None)

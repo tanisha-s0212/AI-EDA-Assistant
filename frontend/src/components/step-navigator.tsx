@@ -21,6 +21,9 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { isStepTabEnabled } from '@/lib/step-gates';
+import CurrencySelector from '@/components/currency-selector';
+
+const FORECAST_TABS: TabId[] = ['forecast_ts', 'forecast_ml', 'loss_forecast', 'profit_forecast'];
 
 const tabs: { id: TabId; label: string; shortLabel: string; icon: React.ElementType }[] = [
   { id: 'upload', label: 'Data Upload', shortLabel: 'Upload', icon: Upload },
@@ -144,9 +147,15 @@ export default function StepNavigator({
       ? `Next: ${mlSteps[mlWorkflowStep]?.label ?? 'Next'}`
       : 'Next: Predict'
     : nextTab?.label ? `Next: ${nextTab.label}` : 'Next';
+  const showCurrencySelector = FORECAST_TABS.includes(activeTab);
 
   return (
     <div className={cn('mb-5 space-y-3', className)}>
+      {showCurrencySelector && (
+        <div className="flex justify-end">
+          <CurrencySelector />
+        </div>
+      )}
       {showTabs && (
         <div
           onTouchStart={onTouchStart}

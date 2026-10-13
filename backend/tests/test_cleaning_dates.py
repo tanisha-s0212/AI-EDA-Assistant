@@ -328,3 +328,21 @@ def test_median_imputation_does_not_overwrite_non_nulls(client: TestClient, tmp_
         assert f'pre_existing_equal={pre_existing_median_count}' in detail
     finally:
         DATASET_CACHE.pop(dataset_id, None)
+
+
+def test_postprocess_preserves_manufacturing_quarter_and_plant_code():
+    """fiscal_quarter/plant_code must stay categorical — not fuzzy-parsed as dates."""
+    frame = pd.DataFrame({
+        'year_month': ['2019-01-01', '2019-01-01'],
+        'fiscal_year': [2019, 2019],
+        'fiscal_quarter': ['FY-Q1', 'FY-Q1'],
+        'plant_code': ['PF-MW-01', 'PF-MX-04'],
+        'plant_region': ['Midwest Plant', 'Monterrey Plant'],
+        'net_sales': [48953.26, 42816.2],
+    })
+    ingested = postprocess_ingested_frame(frame)
+    assert ingested['fiscal_quarter'].tolist() == ['FY-Q1', 'FY-Q1']
+    assert ingested['plant_code'].tolist() == ['PF-MW-01', 'PF-MX-04']
+    assert not pd.api.types.is_datetime64_any_dtype(ingested['fiscal_quarter'])
+    assert not pd.api.types.is_datetime64_any_dtype(ingested['plant_code'])
+    assert pd.api.types.is_datetime64_any_dtype(ingested['year_month'])
