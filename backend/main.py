@@ -3228,15 +3228,42 @@ def is_identifier_like_numeric(series: pd.Series, column_name: str) -> bool:
     return unique_count >= 50 and unique_ratio >= 0.98
 
 
+def format_eda_field_label(field_name: Any) -> str:
+    """Turn a dataset field identifier into a readable chart label."""
+    raw = str(field_name).strip()
+    if not raw or raw.lower() in {'none', 'null', 'undefined'}:
+        return 'Column'
+    spaced = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', raw)
+    spaced = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', spaced)
+    words = re.sub(r'[_\-.]+', ' ', spaced).split()
+    if not words:
+        return 'Column'
+    expansions = {
+        'avg': 'Average', 'id': 'ID', 'sku': 'SKU', 'gmv': 'GMV',
+        'api': 'API', 'url': 'URL', 'usd': 'USD', 'eur': 'EUR',
+        'gbp': 'GBP', 'inr': 'INR',
+    }
+    return ' '.join(
+        expansions.get(word.casefold(), word if word.isupper() and len(word) <= 5 else word.capitalize())
+        for word in words
+    )
+
+
 def figure_to_base64(figure: go.Figure, *, width: int = 1400, height: int = 700) -> str | None:
     if not ENABLE_PLOTLY_STATIC_EXPORT:
         return None
     try:
+        requested_margin = figure.layout.margin.to_plotly_json() if figure.layout.margin else {}
         figure.update_layout(
             template='plotly_white',
             paper_bgcolor='white',
             plot_bgcolor='white',
-            margin=dict(l=40, r=30, t=60, b=40),
+            margin=dict(
+                l=max(requested_margin.get('l') or 0, 80),
+                r=max(requested_margin.get('r') or 0, 30),
+                t=max(requested_margin.get('t') or 0, 60),
+                b=max(requested_margin.get('b') or 0, 75),
+            ),
         )
         image_bytes = figure.to_image(format='png', width=width, height=height, scale=2)
         return f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}"
@@ -3265,14 +3292,14 @@ def build_missingness_chart_matplotlib(matrix: list[list[float]], columns: list[
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         image = ax.imshow(np.array(matrix), aspect='auto', cmap='BuGn', vmin=0, vmax=100)
         ax.set_title('Missingness intensity across row groups', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Columns with missing values')
-        ax.set_ylabel('Row index percentile groups')
+        ax.set_xlabel('Column')
+        ax.set_ylabel('Row Group (% of rows)')
         ax.set_xticks(np.arange(len(columns)))
-        ax.set_xticklabels(columns, rotation=35, ha='right', fontsize=8)
+        ax.set_xticklabels([format_eda_field_label(column) for column in columns], rotation=35, ha='right', fontsize=8)
         ax.set_yticks(np.arange(len(y_labels)))
         ax.set_yticklabels(y_labels, fontsize=8)
         colorbar = fig.colorbar(image, ax=ax, fraction=0.025, pad=0.03)
-        colorbar.set_label('Missing %')
+        colorbar.set_label('Missing (%)')
         fig.tight_layout()
         return matplotlib_figure_to_base64(fig)
     except Exception:
@@ -3300,9 +3327,13 @@ def build_distribution_chart_matplotlib(frame: pd.DataFrame, selected_columns: l
             if kde is not None:
                 hist_ax.plot(kde[0], kde[1], color='#7c3aed', linewidth=2)
             hist_ax.set_title(f'{column} distribution', fontsize=10, fontweight='bold')
+            hist_ax.set_xlabel(format_eda_field_label(column))
+            hist_ax.set_ylabel('Probability Density')
             hist_ax.grid(alpha=0.18)
             box_ax.boxplot(raw_values, vert=False, patch_artist=True, boxprops=dict(facecolor='#10b981', alpha=0.55), medianprops=dict(color='#065f46', linewidth=2))
             box_ax.set_title(f'{column} outlier view', fontsize=10, fontweight='bold')
+            box_ax.set_xlabel(format_eda_field_label(column))
+            box_ax.set_yticks([])
             box_ax.grid(alpha=0.18)
         fig.tight_layout()
         return matplotlib_figure_to_base64(fig)
@@ -3369,15 +3400,18 @@ def build_distribution_chart_for_column(frame: pd.DataFrame, column: str) -> str
         margin=dict(l=90, r=50, t=90, b=80),
         template='plotly_white',
     )
-    figure.update_xaxes(title_text='Value', automargin=True, tickangle=0)
-    figure.update_yaxes(automargin=True)
+    field_label = format_eda_field_label(column)
+    figure.update_xaxes(title_text=field_label, automargin=True, tickangle=0)
+    figure.update_yaxes(title_text='Probability Density', automargin=True, row=1, col=1)
+    # A single horizontal boxplot has no meaningful categorical Y variable.
+    figure.update_yaxes(title_text='', showticklabels=False, automargin=True, row=1, col=2)
     chart_base64 = figure_to_base64(figure, width=1380, height=520)
     if chart_base64 is not None:
         return chart_base64
     return build_distribution_chart_matplotlib(frame, [column])
 
 
-def build_categorical_chart_matplotlib(counts: pd.Series, title: str) -> str | None:
+def build_categorical_chart_matplotlib(counts: pd.Series, title: str, column: str) -> str | None:
     try:
         labels = [str(value) for value in counts.index[::-1]]
         values = counts.values[::-1]
@@ -3386,6 +3420,7 @@ def build_categorical_chart_matplotlib(counts: pd.Series, title: str) -> str | N
         ax.barh(labels, values, color='#0ea5e9', alpha=0.85)
         ax.set_title(title, fontsize=12, fontweight='bold')
         ax.set_xlabel('Count')
+        ax.set_ylabel(format_eda_field_label(column))
         ax.grid(axis='x', alpha=0.18)
         fig.tight_layout()
         return matplotlib_figure_to_base64(fig)
@@ -3404,8 +3439,8 @@ def build_interaction_chart_matplotlib(x_values: np.ndarray, y_values: np.ndarra
             line_y = slope * line_x + intercept
             ax.plot(line_x, line_y, color='#7c3aed', linewidth=2)
         ax.set_title(title, fontsize=12, fontweight='bold')
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(y_label)
+        ax.set_xlabel(format_eda_field_label(x_label))
+        ax.set_ylabel(format_eda_field_label(y_label))
         ax.grid(alpha=0.18)
         fig.tight_layout()
         return matplotlib_figure_to_base64(fig)
@@ -3471,16 +3506,22 @@ def build_missingness_payload(frame: pd.DataFrame) -> dict[str, Any]:
             x=display_columns,
             y=y_labels,
             colorscale='Teal',
-            colorbar=dict(title='Missing %'),
+            colorbar=dict(title='Missing (%)'),
             hovertemplate='Row Group %{y}<br>Column %{x}<br>Missing %{z:.2f}%<extra></extra>',
         )
     )
     figure.update_layout(
         title='Missingness intensity across row groups',
-        xaxis_title='Columns with missing values',
-        yaxis_title='Row index percentile groups',
+        xaxis_title='Column',
+        yaxis_title='Row Group (% of rows)',
         margin=dict(l=100, r=40, t=80, b=120),
-        xaxis=dict(tickangle=-45, automargin=True),
+        xaxis=dict(
+            tickangle=-45,
+            automargin=True,
+            tickmode='array',
+            tickvals=display_columns,
+            ticktext=[format_eda_field_label(column) for column in display_columns],
+        ),
         yaxis=dict(automargin=True),
     )
     chart_base64 = figure_to_base64(
@@ -3635,14 +3676,14 @@ def build_categorical_payload(frame: pd.DataFrame) -> dict[str, Any]:
         figure.update_layout(
             title=f'Top categories for {column}',
             xaxis_title='Count',
-            yaxis_title='Category',
+            yaxis_title=format_eda_field_label(column),
             margin=dict(l=left_margin, r=50, t=80, b=60),
             yaxis=dict(automargin=True, tickfont=dict(size=11)),
             xaxis=dict(automargin=True, tickfont=dict(size=11)),
         )
         chart_base64 = figure_to_base64(figure, width=1440, height=max(480, 140 + len(counts) * 42))
         if chart_base64 is None:
-            chart_base64 = build_categorical_chart_matplotlib(counts, f'Top categories for {column}')
+            chart_base64 = build_categorical_chart_matplotlib(counts, f'Top categories for {column}', column)
         chart_payloads.append({
             'column': column,
             'unique_count': int(labels.nunique()),
@@ -3748,8 +3789,8 @@ def build_interaction_payload(frame: pd.DataFrame) -> dict[str, Any]:
             )
         figure.update_layout(
             title=f"{pair['x']} vs {pair['y']}",
-            xaxis_title=pair['x'],
-            yaxis_title=pair['y'],
+            xaxis_title=format_eda_field_label(pair['x']),
+            yaxis_title=format_eda_field_label(pair['y']),
             margin=dict(l=130, r=50, t=80, b=100),
             xaxis=dict(tickangle=-20, automargin=True, tickfont=dict(size=11)),
             yaxis=dict(automargin=True, tickfont=dict(size=11)),
@@ -3909,7 +3950,10 @@ def build_polars_datetime_expr(column_name: str, dtype: pl.DataType) -> pl.Expr:
         repaired_column.str.strptime(pl.Datetime, '%Y-%m', strict=False),
         repaired_column.str.strptime(pl.Datetime, '%m-%Y', strict=False),
     ])
-    if dtype in pl.TEMPORAL_DTYPES:
+    # ``pl.TEMPORAL_DTYPES`` was removed in Polars 1.0.  Use the dtype's
+    # supported predicate so parquet columns already typed as dates/times keep
+    # their native values across current and future Polars releases.
+    if dtype.is_temporal():
         return pl.coalesce([parsed_repaired, column.cast(pl.Datetime, strict=False)])
     return parsed_repaired
 
@@ -3953,7 +3997,7 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                     )
                     .drop('__valid_sales_count')
                     .sort('__parsed_date')
-                    .collect(streaming=True)
+                    .collect(engine='streaming')
                 )
             except Exception as grain_error:
                 counts[period_label] = {
@@ -4008,7 +4052,7 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                 pl.col('__parsed_date').min().alias('min_date'),
                 pl.col('__parsed_date').max().alias('max_date'),
             ])
-            .collect(streaming=True)
+            .collect(engine='streaming')
         )
         if parsed_stats.height == 0 or int(parsed_stats['parsed_row_count'][0] or 0) == 0:
             raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
@@ -4030,11 +4074,11 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                 pl.col('__parsed_date').last().alias('last_date'),
                 (pl.col('__parsed_date').diff().drop_nulls() >= 0).all().alias('is_non_decreasing'),
             ])
-            .collect(streaming=True)
+            .collect(engine='streaming')
         )
         dates_sorted = bool(order_probe['is_non_decreasing'][0]) if order_probe.height else None
 
-        sample_dates = lazy_frame.select(parsed_date_expr.alias('__parsed_date')).limit(5000).collect(streaming=True).to_series()
+        sample_dates = lazy_frame.select(parsed_date_expr.alias('__parsed_date')).limit(5000).collect(engine='streaming').to_series()
         parsed_sample = pd.to_datetime(pd.Series(sample_dates.to_list()), errors='coerce').dropna()
         if parsed_sample.empty:
             raise HTTPException(status_code=400, detail='No valid rows remained after parsing the date and sales columns.')
@@ -4071,7 +4115,7 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
                 )
                 .drop('__valid_sales_count')
                 .sort('__parsed_date')
-                .collect(streaming=True)
+                .collect(engine='streaming')
             )
 
             if aggregated.height == 0:
@@ -7791,7 +7835,7 @@ def build_column_info_from_polars_frame(frame: pl.DataFrame) -> list[dict[str, A
             role = 'boolean'
         elif dtype.is_numeric():
             role = 'numeric'
-        elif dtype in pl.TEMPORAL_DTYPES:
+        elif dtype.is_temporal():
             role = 'datetime'
         elif unique_count == total_rows and total_rows > 0:
             role = 'identifier'
@@ -8157,7 +8201,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 mode_frame = frame.select(pl.col(column).drop_nulls().mode().first().alias('mode'))
                 fill_value = mode_frame.item(0, 0) if mode_frame.height > 0 else None
                 if fill_value is None:
-                    if dtype in pl.TEMPORAL_DTYPES:
+                    if dtype.is_temporal():
                         non_null_values = series.drop_nulls()
                         fill_value = non_null_values[0] if non_null_values.len() > 0 else None
                     elif dtype.is_(pl.String):
@@ -8179,7 +8223,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
         date_expressions: list[pl.Expr] = []
         for column, dtype in frame.schema.items():
             try:
-                if dtype not in pl.TEMPORAL_DTYPES:
+                if not dtype.is_temporal():
                     raw_sample = (
                         frame.select(pl.col(column).cast(pl.String, strict=False).str.strip_chars().alias('__raw'))
                         .drop_nulls()
@@ -8197,7 +8241,7 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
                 if sample.len() == 0:
                     continue
                 success_ratio = float(sample.len() / min(50, max(1, frame.select(pl.col(column).drop_nulls().len()).item()))) if frame.height > 0 else 0.0
-                if dtype not in pl.TEMPORAL_DTYPES and success_ratio < 0.6:
+                if not dtype.is_temporal() and success_ratio < 0.6:
                     continue
                 has_time = bool(
                     sample.dt.hour().gt(0).any()

@@ -2,7 +2,7 @@ fastapi
 uvicorn[standard]
 scikit-learn
 pandas
-polars
+polars>=1.39.3,<3
 numpy
 pydantic
 joblib

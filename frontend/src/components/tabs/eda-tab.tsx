@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { buildCorrelationHeatmap, computeEdaStats, formatMetric, heatColor } from '@/lib/eda';
+import { buildCorrelationHeatmap, computeEdaStats, formatEdaFieldLabel, formatMetric, heatColor } from '@/lib/eda';
 import { useAppStore } from '@/lib/store';
 import EdaAdvancedModules, { type AdvancedEdaResponse } from '@/components/tabs/eda-advanced-modules';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
@@ -114,13 +114,13 @@ export default function EdaTab() {
         ? stats.correlations.slice(0, 8).map((item) => `<li><strong>${escapeHtml(item.pair)}</strong><span>${item.correlation >= 0 ? '+' : ''}${item.correlation}</span></li>`).join('')
         : '<li><strong>Relationships</strong><span>Need at least two numeric columns</span></li>';
 
-      const heatmapHeader = heatmapColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join('');
+      const heatmapHeader = heatmapColumns.map((column) => `<th>${escapeHtml(formatEdaFieldLabel(column))}</th>`).join('');
       const heatmapBody = heatmapColumns.map((rowLabel) => {
         const cells = heatmapColumns.map((column) => {
           const cell = heatmap.find((item) => item.x === rowLabel && item.y === column);
           return `<td>${(cell?.value ?? 0).toFixed(2)}</td>`;
         }).join('');
-        return `<tr><th>${escapeHtml(rowLabel)}</th>${cells}</tr>`;
+        return `<tr><th>${escapeHtml(formatEdaFieldLabel(rowLabel))}</th>${cells}</tr>`;
       }).join('');
 
       const advancedSections = advancedAnalysis ? `
@@ -518,13 +518,13 @@ export default function EdaTab() {
                   <div />
                   {stats.numericColumns.slice(0, 5).map((column) => (
                     <div key={`head-${column}`} className="flex min-h-[72px] items-center justify-center rounded-lg bg-muted/40 px-3 py-3 text-center text-[11px] font-semibold leading-4 text-foreground">
-                      <span className="break-words [word-break:break-word]">{column}</span>
+                      <span className="break-words [word-break:break-word]">{formatEdaFieldLabel(column)}</span>
                     </div>
                   ))}
                   {stats.numericColumns.slice(0, 5).map((rowLabel) => (
                     <div key={`row-${rowLabel}`} className="contents">
                       <div className="flex min-h-[72px] items-center rounded-lg bg-muted/40 px-3 py-3 text-[11px] font-semibold leading-4 text-foreground">
-                        <span className="break-words [word-break:break-word]">{rowLabel}</span>
+                        <span className="break-words [word-break:break-word]">{formatEdaFieldLabel(rowLabel)}</span>
                       </div>
                       {stats.numericColumns.slice(0, 5).map((column) => {
                         const cell = heatmap.find((item) => item.x === rowLabel && item.y === column);

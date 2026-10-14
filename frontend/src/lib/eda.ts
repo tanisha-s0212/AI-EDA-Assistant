@@ -2,6 +2,36 @@ import type { ColumnInfo, DataRow } from '@/lib/store';
 
 const EDA_SAMPLE_LIMIT = 5000;
 
+const EDA_LABEL_EXPANSIONS: Record<string, string> = {
+  avg: 'Average',
+  id: 'ID',
+  sku: 'SKU',
+  gmv: 'GMV',
+  api: 'API',
+  url: 'URL',
+  usd: 'USD',
+  eur: 'EUR',
+  gbp: 'GBP',
+  inr: 'INR',
+};
+
+export function formatEdaFieldLabel(fieldName: unknown): string {
+  const raw = String(fieldName ?? '').trim();
+  if (!raw || ['none', 'null', 'undefined'].includes(raw.toLowerCase())) return 'Column';
+
+  const words = raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-.]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!words.length) return 'Column';
+  return words
+    .map((word) => EDA_LABEL_EXPANSIONS[word.toLowerCase()] ?? (word.length <= 5 && word === word.toUpperCase() ? word : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`))
+    .join(' ');
+}
+
 function sampleRows(data: DataRow[], limit = EDA_SAMPLE_LIMIT): DataRow[] {
   if (data.length <= limit) return data;
 
