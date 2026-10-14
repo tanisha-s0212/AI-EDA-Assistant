@@ -514,6 +514,7 @@ export default function MlTab() {
   const rawData = useAppStore((state) => state.rawData);
   const columns = useAppStore((state) => state.columns);
   const datasetId = useAppStore((state) => state.datasetId);
+  const savedModelId = useAppStore((state) => state.modelId);
   const appProblemType = useAppStore((state) => state.problemType);
   const mlWorkflowStep = useAppStore((state) => state.mlWorkflowStep);
   const setMlWorkflowStep = useAppStore((state) => state.setMlWorkflowStep);
@@ -562,10 +563,39 @@ export default function MlTab() {
   const [comparisonResults, setComparisonResults] = useState<ComparisonResult[]>([]);
   const [bestModel, setBestModel] = useState<string>('');
 
-  // ML assistant question box
+  // ML assistant question box (universal dataset-aware engine: POST /api/assistant/ask)
   const [mlQuestion, setMlQuestion] = useState('');
+  const [mlCustomerId, setMlCustomerId] = useState('');
   const [mlAssistantReply, setMlAssistantReply] = useState('');
-  const datasetSignatureRef = useRef('');
+  const [mlAssistantTables, setMlAssistantTables] = useState<Record<string, { column?: string; agg?: string; rows?: { group: string; value: number; rank: number }[] }> | null>(null);
+  const [mlAssistantMeta, setMlAssistantMeta] = useState<string>('');
+  const [mlPrediction, setMlPrediction] = useState<{
+    customer?: string; output_label?: string; method?: string;
+    ranked?: { product: string; score: number; evidence?: { times_bought_by_customer?: number; last_bought?: string | null; also_bought_with?: string[]; reason?: string } }[];
+    timing?: { status?: string; predicted_next_date?: string; range?: { lower?: string | null; upper?: string | null }; reason?: string };
+    confidence?: { ranking_score?: { value?: number | null }; probability?: { value?: number | null; reason?: string }; method_reliability?: { type?: string; hit_rate_at_3?: number; mrr?: number; evaluable_customers?: number; reason?: string }; overall?: string };
+    explanation?: { why?: { product: string; score: number; times_bought?: number; last_bought?: string | null }[] };
+    buyers?: { customer: string; times_bought: number; last_bought: string }[];
+    at_risk?: { customer: string; days_since_last: number; typical_interval_days: number; last_purchase: string }[];
+    needs?: string[];
+  } | null>(null);
+  const [mlExecution, setMlExecution] = useState<{
+    model?: string; model_id?: string; target?: string; features?: string[];
+    metrics?: Record<string, number | null>; evaluation?: { rows?: number; method?: string; cv_folds?: number };
+    feature_importance?: { name: string; importance: number }[];
+    single_prediction?: { inputs?: Record<string, string | number>; prediction?: string | number; error_band?: [number, number]; error_band_note?: string; probabilities?: Record<string, number> | null; probability_note?: string | null; confidence?: number | null; top_class?: string; probability_class?: string | null; ece?: number | null; ece_note?: string; default_note?: string } | null;
+    future_forecast?: { period: string; forecast: number; lower?: number; upper?: number }[];
+    model_comparison?: { model: string; status?: string; smape?: number | null; mae?: number | null }[];
+    baseline_smape?: number | null; reliability?: string; frequency?: string;
+    selection_reason?: string; fallback_note?: string;
+    anomalies?: { rank: number; score: number; iqr_confirmed?: boolean; record?: Record<string, number | null> }[];
+    rows_flagged?: number; rows_scored?: number; anomaly_columns?: string[];
+    clusters?: { cluster: number; size: number; share: number; center?: Record<string, number> }[];
+    k?: number; silhouette?: number; rows_clustered?: number;
+    warnings?: string[];
+  } | null>(null);
+  const [isAskingAssistant, setIsAskingAssistant] = useState(false);
+  const datasetSignatureRef = useRef<{ signature: string; data: unknown }>({ signature: '', data: null });
   const userOverrodeTargetRef = useRef(false);
 
   const updateMlStep = useCallback((nextStep: number | ((prev: number) => number)) => {
@@ -589,14 +619,42 @@ export default function MlTab() {
     if (!data || columns.length === 0) return;
 
     const datasetSignature = `${datasetId ?? 'local'}::${columns.map((column) => column.name).join('|')}::${data.length}`;
-    const isNewDataset = datasetSignatureRef.current !== datasetSignature;
+    // A replacement can have the same dataset id, schema, and row count.
+    // Track the actual data object as well so answers from the old contents
+    // cannot remain visible after a same-shape replacement.
+    const isNewDataset = datasetSignatureRef.current.signature !== datasetSignature ||
+      datasetSignatureRef.current.data !== data;
 
     if (isNewDataset) {
-      datasetSignatureRef.current = datasetSignature;
+      const previousData = datasetSignatureRef.current.data;
+      const hasDifferentSavedModel = Boolean(savedModelId && datasetId && savedModelId !== datasetId);
+      const dataWasReplacedInSession = previousData !== null && previousData !== data;
+      datasetSignatureRef.current = { signature: datasetSignature, data };
       userOverrodeTargetRef.current = false;
       setSelectedModel('');
       setTrainResults(null);
       setTrainingMode('fast');
+      // Clear stale assistant answers: they belong to the previous dataset.
+      setMlAssistantReply('');
+      setMlAssistantMeta('');
+      setMlAssistantTables(null);
+      setMlPrediction(null);
+      setMlExecution(null);
+      if (hasDifferentSavedModel || dataWasReplacedInSession) {
+        // The shared Prediction tab must not keep running a model trained on
+        // a different or replaced dataset.
+        useAppStore.setState({
+          modelId: null,
+          modelTrained: false,
+          modelMetrics: null,
+          selectedModel: null,
+          featureImportance: null,
+          predictionResult: null,
+          predictionAnalysis: null,
+          predictionProbabilities: null,
+          predictionHistory: [],
+        });
+      }
       updateMlStep(1);
     }
 
@@ -648,7 +706,7 @@ export default function MlTab() {
     }
 
     if (!hasUpdates) return;
-  }, [data, columns, datasetId, selectedTarget, recommendationReason, selectedFeatures, targetProblemType, detectedType, confidence, setMlWorkflowStep]);
+  }, [data, columns, datasetId, savedModelId, selectedTarget, recommendationReason, selectedFeatures, targetProblemType, detectedType, confidence, setMlWorkflowStep]);
 
   // ─── Update when target changes ───────────────────────────────────────────
 
@@ -971,11 +1029,118 @@ export default function MlTab() {
   }, []);
 
   
-  const handleAskAssistant = useCallback(() => {
+  const handleAskAssistant = useCallback(async () => {
     const question = mlQuestion.trim();
     if (!question) {
       toast({ title: 'Enter a problem', description: 'Describe the modeling problem, training quality concern, or prediction behavior you want help with.', variant: 'destructive' });
       return;
+    }
+
+    // Prefer the dataset-aware backend engine (deterministic analytics + executed predictions).
+    if (datasetId) {
+      setIsAskingAssistant(true);
+      setMlAssistantTables(null);
+      setMlAssistantMeta('');
+      setMlPrediction(null);
+      setMlExecution(null);
+      try {
+        const response = await apiClient.post('/assistant/ask', {
+          dataset_id: datasetId,
+          data: [],
+          question,
+          top_n: 10,
+          customer_id: mlCustomerId.trim() || null,
+          product_id: null,
+        });
+        const result = response.data as {
+          status?: string; intent?: string; answer?: string; message?: string;
+          routing?: { intent?: string; confidence?: number };
+          filter?: { column?: string; value?: string } | null;
+          group_by?: string; tables?: Record<string, { column?: string; agg?: string; assumption?: string; rows?: { group: string; value: number; rank: number }[] }>;
+          winners?: Record<string, { group: string; value: number }>;
+          coverage?: { filtered_rows?: number; total_rows?: number };
+          ml_plan?: { target?: string; task?: string; note?: string } | null;
+          customer?: string; output_label?: string; needs?: string[];
+          prediction?: { customer?: string; label?: string; method?: string; ranked?: { product: string; score: number; evidence?: { times_bought_by_customer?: number; last_bought?: string | null; also_bought_with?: string[]; reason?: string } }[] };
+          timing?: { status?: string; predicted_next_date?: string; range?: { lower?: string | null; upper?: string | null }; reason?: string };
+          confidence?: { ranking_score?: { value?: number | null }; probability?: { value?: number | null; reason?: string }; method_reliability?: { type?: string; hit_rate_at_3?: number; mrr?: number; evaluable_customers?: number; reason?: string }; overall?: string };
+          explanation?: { why?: { product: string; score: number; times_bought?: number; last_bought?: string | null }[] };
+          buyers?: { customer: string; times_bought: number; last_bought: string }[];
+          at_risk?: { customer: string; days_since_last: number; typical_interval_days: number; last_purchase: string }[];
+          provenance?: { method?: string; validation?: { validated?: boolean; chosen_method?: string; metrics?: Record<string, { hit_rate_at_3?: number; mrr?: number }> } };
+          model?: string; model_id?: string; target?: string; features?: string[];
+          metrics?: Record<string, number | null>; evaluation?: { rows?: number; method?: string; cv_folds?: number };
+          feature_importance?: { name: string; importance: number }[];
+          single_prediction?: { inputs?: Record<string, string | number>; prediction?: string | number; error_band?: [number, number]; error_band_note?: string; probabilities?: Record<string, number> | null; probability_note?: string | null; confidence?: number | null; top_class?: string; probability_class?: string | null; ece?: number | null; ece_note?: string; default_note?: string } | null;
+          future_forecast?: { period: string; forecast: number; lower?: number; upper?: number }[];
+          model_comparison?: { model: string; status?: string; smape?: number | null; mae?: number | null }[];
+          baseline_smape?: number | null; reliability?: string; frequency?: string;
+          selection_reason?: string; fallback_note?: string;
+          anomalies?: { rank: number; score: number; iqr_confirmed?: boolean; record?: Record<string, number | null> }[];
+          rows_flagged?: number; rows_scored?: number;
+          clusters?: { cluster: number; size: number; share: number; center?: Record<string, number> }[];
+          k?: number; silhouette?: number; rows_clustered?: number;
+          warnings?: string[];
+        };
+        const answerText = result.answer || result.message || 'No answer returned.';
+        const intentLabel = result.routing?.intent || result.intent || 'unknown';
+        const metaParts = [`intent: ${intentLabel}`];
+        if (result.routing?.confidence !== undefined) metaParts.push(`confidence: ${result.routing.confidence}%`);
+        if (result.filter?.column) metaParts.push(`filter: ${result.filter.column} = '${result.filter.value}'`);
+        if (result.group_by) metaParts.push(`grouped by: ${result.group_by}`);
+        if (result.coverage) metaParts.push(`rows: ${result.coverage.filtered_rows ?? '?'} / ${result.coverage.total_rows ?? '?'}`);
+        if (result.ml_plan?.target) metaParts.push(`ML target: ${result.ml_plan.target} (${result.ml_plan.task ?? 'predict'})`);
+        if (result.model) metaParts.push(`model: ${result.model}`);
+        if (result.evaluation?.rows !== undefined) metaParts.push(`evaluated on ${result.evaluation.rows} rows (${result.evaluation.method ?? 'validation'})`);
+        if (result.reliability) metaParts.push(`reliability: ${result.reliability}`);
+        if (result.fallback_note) metaParts.push('fallback method');
+        if (result.provenance?.method) metaParts.push(`method: ${result.provenance.method}`);
+        if (result.output_label) metaParts.push(result.output_label === 'prediction' ? 'validated prediction' : 'recommendation');
+        if (result.status === 'ml_required') metaParts.push('predictive question — no numbers fabricated; use training/forecast workflow');
+        if (result.status === 'clarify') metaParts.push(`needs: ${(result.needs ?? []).join(', ') || 'more info'}`);
+        setMlAssistantReply(answerText);
+        setMlAssistantMeta(metaParts.join(' · '));
+        if (result.tables && Object.keys(result.tables).length > 0) {
+          setMlAssistantTables(result.tables);
+        }
+        if (result.prediction || result.buyers || result.at_risk || result.status === 'clarify') {
+          setMlPrediction({
+            customer: result.customer ?? result.prediction?.customer,
+            output_label: result.output_label ?? result.prediction?.label,
+            method: result.prediction?.method ?? result.provenance?.method,
+            ranked: result.prediction?.ranked,
+            timing: result.timing,
+            confidence: result.confidence,
+            explanation: result.explanation,
+            buyers: result.buyers,
+            at_risk: result.at_risk,
+            needs: result.needs,
+          });
+        }
+        if (result.model || result.future_forecast || result.anomalies || result.clusters) {
+          setMlExecution({
+            model: result.model, model_id: result.model_id, target: result.target,
+            features: result.features, metrics: result.metrics, evaluation: result.evaluation,
+            feature_importance: result.feature_importance,
+            single_prediction: result.single_prediction ?? null,
+            future_forecast: result.future_forecast,
+            model_comparison: result.model_comparison,
+            baseline_smape: result.baseline_smape ?? null,
+            reliability: result.reliability, frequency: result.frequency,
+            selection_reason: result.selection_reason, fallback_note: result.fallback_note,
+            anomalies: result.anomalies, rows_flagged: result.rows_flagged,
+            rows_scored: result.rows_scored, anomaly_columns: (result as { columns?: string[] }).columns,
+            clusters: result.clusters, k: result.k, silhouette: result.silhouette,
+            rows_clustered: result.rows_clustered, warnings: result.warnings,
+          });
+        }
+        return;
+      } catch (error: unknown) {
+        // Fall through to local guidance when the backend engine is unavailable.
+        setMlAssistantMeta('backend engine unavailable — local guidance');
+      } finally {
+        setIsAskingAssistant(false);
+      }
     }
 
     const lower = question.toLowerCase();
@@ -1042,7 +1207,7 @@ export default function MlTab() {
     }
 
     setMlAssistantReply(response.join('\n\n'));
-  }, [data, mlQuestion, selectedFeatures.length, selectedModel, selectedTarget, targetProblemType, toast, recommendedModel, trainResults]);
+  }, [data, datasetId, mlCustomerId, mlQuestion, selectedFeatures.length, selectedModel, selectedTarget, targetProblemType, toast, recommendedModel, trainResults]);
 
   const canAdvanceMlStep =
     currentStep === 1
@@ -1191,30 +1356,371 @@ export default function MlTab() {
             <Bot className="h-4 w-4 text-primary" />
             <CardTitle className="text-base">Ask The ML Assistant</CardTitle>
           </div>
-          <CardDescription>Enter a problem about model analysis, training quality, or prediction behavior.</CardDescription>
+          <CardDescription>Ask about analytics, forecasts, or customer purchase predictions. Optionally provide a customer ID for “this customer” questions.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Textarea
             value={mlQuestion}
             onChange={(e) => setMlQuestion(e.target.value)}
-            placeholder="Example: Which model should I try first for this target, and how will predictions behave?"
+            placeholder="Example: What product will customer C123 buy next? Or: Which product lines have the highest sales for OEM?"
             className="min-h-24 resize-y bg-background/80"
           />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <label htmlFor="ml-customer-id" className="text-xs text-muted-foreground sm:w-40">
+              Customer ID (optional)
+            </label>
+            <input
+              id="ml-customer-id"
+              value={mlCustomerId}
+              onChange={(e) => setMlCustomerId(e.target.value)}
+              placeholder="e.g. C123 — used when the question says “this customer”"
+              className="flex-1 rounded-md border border-input bg-background/80 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-primary/50"
+            />
+          </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
             <Button
               onClick={handleAskAssistant}
+              disabled={isAskingAssistant}
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
-              <Sparkles className="mr-2 h-4 w-4" />
-              Analyze Problem
+              {isAskingAssistant ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+              {isAskingAssistant ? 'Analyzing…' : 'Analyze Problem'}
             </Button>
             <p className="text-xs text-muted-foreground sm:pt-2">
-              The solution uses your current target, selected features, chosen model, and latest training results when available.
+              Descriptive questions run deterministic analytics; next-purchase questions execute validated recommendations on the active dataset.
             </p>
           </div>
+          {mlAssistantMeta && (
+            <p className="text-xs text-muted-foreground">{mlAssistantMeta}</p>
+          )}
           {mlAssistantReply && (
             <div className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground whitespace-pre-wrap">
               {mlAssistantReply}
+            </div>
+          )}
+          {mlAssistantTables && Object.entries(mlAssistantTables).map(([metric, table]) => (
+            <div key={metric} className="overflow-x-auto rounded-lg border bg-background/70">
+              <p className="px-4 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {metric} {table.column ? `· ${table.column}` : ''} {table.agg ? `(${table.agg})` : ''}
+              </p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="px-4 py-2">Rank</th>
+                    <th className="px-4 py-2">Group</th>
+                    <th className="px-4 py-2 text-right">Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(table.rows ?? []).map((row) => (
+                    <tr key={`${metric}-${row.group}`} className="border-b last:border-0">
+                      <td className="px-4 py-1.5">{row.rank}</td>
+                      <td className="px-4 py-1.5">{row.group}</td>
+                      <td className="px-4 py-1.5 text-right tabular-nums">{row.value.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+          {mlExecution && (
+            <div className="space-y-3 rounded-lg border bg-background/70 p-4">
+              {mlExecution.model && (
+                <p className="text-sm font-medium">
+                  {mlExecution.model}
+                  {mlExecution.target && <span className="text-muted-foreground"> · target: {mlExecution.target}</span>}
+                  {mlExecution.model_id && <span className="ml-2 text-xs text-muted-foreground">model_id: {mlExecution.model_id}</span>}
+                </p>
+              )}
+              {mlExecution.fallback_note && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">{mlExecution.fallback_note}</p>
+              )}
+              {mlExecution.selection_reason && (
+                <p className="text-xs text-muted-foreground">{mlExecution.selection_reason}</p>
+              )}
+              {mlExecution.metrics && Object.keys(mlExecution.metrics).length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">Metric</th>
+                        <th className="px-2 py-1.5 text-right">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(mlExecution.metrics).map(([k, v]) => (
+                        <tr key={k} className="border-b last:border-0">
+                          <td className="px-2 py-1.5">{k}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{v === null || v === undefined ? 'unavailable' : Number(v).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {mlExecution.evaluation && (
+                    <p className="pt-1 text-[11px] text-muted-foreground">
+                      Evaluated on {mlExecution.evaluation.rows ?? '?'} rows via {mlExecution.evaluation.method ?? 'validation'}
+                      {mlExecution.evaluation.cv_folds ? ` (${mlExecution.evaluation.cv_folds} folds)` : ''}. Lower error is better; these are not confidence percentages.
+                    </p>
+                  )}
+                </div>
+              )}
+              {mlExecution.single_prediction && (
+                <div className="text-sm">
+                  <p className="font-medium">Prediction: {String(mlExecution.single_prediction.prediction)}</p>
+                  {mlExecution.single_prediction.error_band && (
+                    <p className="text-xs text-muted-foreground">
+                      Approximate error band: {mlExecution.single_prediction.error_band[0]} to {mlExecution.single_prediction.error_band[1]}. {mlExecution.single_prediction.error_band_note ?? 'Based on validation RMSE; not a calibrated 95% prediction interval.'}
+                    </p>
+                  )}
+                  {mlExecution.single_prediction.default_note && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">{mlExecution.single_prediction.default_note}</p>
+                  )}
+                  {mlExecution.single_prediction.probabilities && (
+                    <div className="overflow-x-auto pt-1">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b text-left text-muted-foreground">
+                            <th className="px-2 py-1">Class</th>
+                            <th className="px-2 py-1 text-right">Probability</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(mlExecution.single_prediction.probabilities).map(([cls, p]) => (
+                            <tr key={cls} className="border-b last:border-0">
+                              <td className="px-2 py-1">{cls}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{p}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <p className="pt-1 text-[11px] text-muted-foreground">
+                        {mlExecution.single_prediction.ece !== undefined && mlExecution.single_prediction.ece !== null
+                          ? `Calibration ECE: ${mlExecution.single_prediction.ece} (3-fold out-of-fold; lower is better).`
+                          : (mlExecution.single_prediction.ece_note ?? 'Calibration not measured on held-out data.')}
+                      </p>
+                    </div>
+                  )}
+                  {!mlExecution.single_prediction.probabilities && mlExecution.single_prediction.probability_note && (
+                    <p className="text-xs text-muted-foreground">{mlExecution.single_prediction.probability_note}</p>
+                  )}
+                </div>
+              )}
+              {mlExecution.future_forecast && mlExecution.future_forecast.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">Period</th>
+                        <th className="px-2 py-1.5 text-right">Forecast</th>
+                        <th className="px-2 py-1.5 text-right">95% interval</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlExecution.future_forecast.map((f) => (
+                        <tr key={f.period} className="border-b last:border-0">
+                          <td className="px-2 py-1.5">{f.period}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{f.forecast.toLocaleString()}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                            {f.lower !== undefined && f.upper !== undefined ? `${f.lower?.toLocaleString()} – ${f.upper?.toLocaleString()}` : 'unavailable'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {mlExecution.model_comparison && mlExecution.model_comparison.length > 0 && (
+                    <p className="pt-1 text-[11px] text-muted-foreground">
+                      {mlExecution.model_comparison.map((m) => `${m.model}: SMAPE ${m.smape ?? 'unavailable'}%`).join(' · ')}
+                      {mlExecution.reliability ? ` · reliability: ${mlExecution.reliability}` : ''}
+                    </p>
+                  )}
+                </div>
+              )}
+              {mlExecution.anomalies && mlExecution.anomalies.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">Rank</th>
+                        <th className="px-2 py-1.5 text-right">Score*</th>
+                        <th className="px-2 py-1.5">IQR check</th>
+                        <th className="px-2 py-1.5">Values</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlExecution.anomalies.map((a) => (
+                        <tr key={a.rank} className="border-b last:border-0">
+                          <td className="px-2 py-1.5">{a.rank}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{a.score}</td>
+                          <td className="px-2 py-1.5 text-xs">{a.iqr_confirmed ? 'confirmed' : '—'}</td>
+                          <td className="px-2 py-1.5 text-xs text-muted-foreground">
+                            {a.record ? Object.entries(a.record).filter(([k]) => k !== '_row').map(([k, v]) => `${k}=${v}`).join(', ') : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="pt-1 text-[11px] text-muted-foreground">
+                    Flagged {mlExecution.rows_flagged ?? mlExecution.anomalies.length} of {mlExecution.rows_scored ?? '?'} rows. *Anomaly score ranks anomalousness; not a probability.
+                  </p>
+                </div>
+              )}
+              {mlExecution.clusters && mlExecution.clusters.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">Segment</th>
+                        <th className="px-2 py-1.5 text-right">Size</th>
+                        <th className="px-2 py-1.5 text-right">Share</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlExecution.clusters.map((cseg) => (
+                        <tr key={cseg.cluster} className="border-b last:border-0">
+                          <td className="px-2 py-1.5">Segment {cseg.cluster}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{cseg.size}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{(cseg.share * 100).toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="pt-1 text-[11px] text-muted-foreground">
+                    {mlExecution.rows_clustered ?? '?'} rows in {mlExecution.k ?? mlExecution.clusters.length} segments
+                    {mlExecution.silhouette !== undefined ? ` · silhouette ${mlExecution.silhouette} (validation quality, not confidence)` : ''}.
+                  </p>
+                </div>
+              )}
+              {mlExecution.feature_importance && mlExecution.feature_importance.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Top features: {mlExecution.feature_importance.slice(0, 5).map((f) => `${f.name} (${f.importance})`).join(', ')}.
+                </p>
+              )}
+              {mlExecution.warnings && mlExecution.warnings.length > 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">{mlExecution.warnings.slice(0, 2).join(' ')}</p>
+              )}
+            </div>
+          )}
+          {mlPrediction && (
+            <div className="space-y-3 rounded-lg border bg-background/70 p-4">
+              {mlPrediction.needs && mlPrediction.needs.length > 0 && (
+                <p className="text-sm text-amber-600 dark:text-amber-400">
+                  Clarification needed: {mlPrediction.needs.join(', ')}. Provide the missing detail and ask again.
+                </p>
+              )}
+              {mlPrediction.customer && (
+                <p className="text-sm font-medium">
+                  Customer: {mlPrediction.customer}
+                  {mlPrediction.output_label && (
+                    <span className="ml-2 rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+                      {mlPrediction.output_label === 'prediction' ? 'validated prediction' : 'recommendation'}
+                    </span>
+                  )}
+                  {mlPrediction.method && (
+                    <span className="ml-2 text-xs text-muted-foreground">method: {mlPrediction.method.replace(/_/g, ' ')}</span>
+                  )}
+                </p>
+              )}
+              {mlPrediction.ranked && mlPrediction.ranked.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">#</th>
+                        <th className="px-2 py-1.5">Product</th>
+                        <th className="px-2 py-1.5 text-right">Score*</th>
+                        <th className="px-2 py-1.5">Evidence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlPrediction.ranked.map((item, idx) => (
+                        <tr key={`${item.product}-${idx}`} className="border-b last:border-0">
+                          <td className="px-2 py-1.5">{idx + 1}</td>
+                          <td className="px-2 py-1.5 font-medium">{item.product}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{item.score}</td>
+                          <td className="px-2 py-1.5 text-xs text-muted-foreground">
+                            {item.evidence?.reason
+                              ?? `bought ${item.evidence?.times_bought_by_customer ?? 0}x${item.evidence?.last_bought ? `, last ${item.evidence.last_bought}` : ''}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="pt-1 text-[11px] text-muted-foreground">*Ranking score (0–1), not a probability.</p>
+                </div>
+              )}
+              {mlPrediction.timing && mlPrediction.timing.status === 'estimate' && (
+                <p className="text-sm text-muted-foreground">
+                  Next purchase estimated around {mlPrediction.timing.predicted_next_date}
+                  {mlPrediction.timing.range?.lower && mlPrediction.timing.range?.upper && (
+                    <> (range {mlPrediction.timing.range.lower} to {mlPrediction.timing.range.upper})</>
+                  )}.
+                </p>
+              )}
+              {mlPrediction.confidence && (
+                <div className="text-xs text-muted-foreground">
+                  {mlPrediction.confidence.probability?.value == null && mlPrediction.confidence.probability?.reason && (
+                    <p>{mlPrediction.confidence.probability.reason}</p>
+                  )}
+                  {mlPrediction.confidence.method_reliability?.type === 'hit_rate' ? (
+                    <p>
+                      Method reliability: hit-rate@3 {mlPrediction.confidence.method_reliability.hit_rate_at_3},
+                      MRR {mlPrediction.confidence.method_reliability.mrr} over{' '}
+                      {mlPrediction.confidence.method_reliability.evaluable_customers} held-out customers.
+                    </p>
+                  ) : (
+                    mlPrediction.confidence.method_reliability?.reason && (
+                      <p>{mlPrediction.confidence.method_reliability.reason}</p>
+                    )
+                  )}
+                  {mlPrediction.confidence.overall && <p>{mlPrediction.confidence.overall}</p>}
+                </div>
+              )}
+              {mlPrediction.buyers && mlPrediction.buyers.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">Customer</th>
+                        <th className="px-2 py-1.5 text-right">Times bought</th>
+                        <th className="px-2 py-1.5">Last bought</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlPrediction.buyers.map((b) => (
+                        <tr key={b.customer} className="border-b last:border-0">
+                          <td className="px-2 py-1.5 font-medium">{b.customer}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{b.times_bought}</td>
+                          <td className="px-2 py-1.5 text-muted-foreground">{b.last_bought}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {mlPrediction.at_risk && mlPrediction.at_risk.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="px-2 py-1.5">Customer</th>
+                        <th className="px-2 py-1.5 text-right">Silent (days)</th>
+                        <th className="px-2 py-1.5 text-right">Typical interval</th>
+                        <th className="px-2 py-1.5">Last purchase</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlPrediction.at_risk.map((r) => (
+                        <tr key={r.customer} className="border-b last:border-0">
+                          <td className="px-2 py-1.5 font-medium">{r.customer}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{r.days_since_last}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">{r.typical_interval_days}d</td>
+                          <td className="px-2 py-1.5 text-muted-foreground">{r.last_purchase}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

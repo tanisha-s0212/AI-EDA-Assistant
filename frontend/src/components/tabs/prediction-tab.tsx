@@ -89,6 +89,8 @@ interface PredictResponse {
   probabilities?: Record<string, number>;
   confidence?: number;
   top_class?: string;
+  error_band?: { lower: number; upper: number; margin: number };
+  error_band_note?: string;
   confidence_interval?: { lower: number; upper: number; margin: number };
   cv_score_mean?: number | null;
   cv_score_std?: number | null;
@@ -1676,8 +1678,9 @@ export default function PredictionTab() {
         featureImportance,
         store.problemType,
       );
-      if (result.confidence_interval) {
-        analysis += ` Regression interval: ${result.confidence_interval.lower.toLocaleString()} to ${result.confidence_interval.upper.toLocaleString()} (plus/minus ${result.confidence_interval.margin.toLocaleString()}).`;
+      const errorBand = result.error_band ?? result.confidence_interval;
+      if (errorBand) {
+        analysis += ` Approximate validation error band: ${errorBand.lower.toLocaleString()} to ${errorBand.upper.toLocaleString()} (plus/minus ${errorBand.margin.toLocaleString()}). ${result.error_band_note || 'This range is not a calibrated 95% prediction interval.'}`;
       }
       if (result.cv_score_mean != null) {
         analysis += ` Cross-validation reliability: mean ${Number(result.cv_score_mean).toFixed(4)}${result.cv_score_std != null ? `, std ${Number(result.cv_score_std).toFixed(4)}` : ''}.`;

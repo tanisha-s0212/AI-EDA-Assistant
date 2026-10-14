@@ -272,19 +272,28 @@ def set_dataset_cache_entry(dataset_id: str, entry: dict[str, Any]) -> None:
 async def structured_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     if exc.status_code >= 500:
         logger.exception('HTTP error %s on %s %s: %s', exc.status_code, request.method, request.url.path, exc.detail)
-    return JSONResponse(status_code=exc.status_code, content={'error': exc.detail, 'status': 'failed'})
+    public_error = (
+        'An unexpected server error occurred.'
+        if exc.status_code >= 500
+        else exc.detail
+    )
+    return JSONResponse(status_code=exc.status_code, content={'error': public_error, 'status': 'failed'})
 
 
 @app.exception_handler(RequestValidationError)
 async def structured_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     logger.exception('Validation error on %s %s: %s', request.method, request.url.path, exc)
-    return JSONResponse(status_code=422, content={'error': exc.errors(), 'status': 'failed'})
+    errors = [
+        {'loc': item.get('loc'), 'msg': item.get('msg'), 'type': item.get('type')}
+        for item in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={'error': errors, 'status': 'failed'})
 
 
 @app.exception_handler(Exception)
 async def structured_unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception('Unhandled error on %s %s', request.method, request.url.path)
-    return JSONResponse(status_code=500, content={'error': str(exc), 'status': 'failed'})
+    return JSONResponse(status_code=500, content={'error': 'An unexpected server error occurred.', 'status': 'failed'})
 
 
 @app.on_event('startup')
@@ -1112,8 +1121,9 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
 
 # ── Programmatic insight ──────────────────────────────────────
 
-def generate_ts_insight(best_model_name: str, metrics: dict[str, Any], stationarity: dict[str, Any], model_comparison: list[dict[str, Any]]) -> dict[str, Any]:
+def generate_ts_insight(best_model_name: str, metrics: dict[str, Any], stationarity: dict[str, Any], model_comparison: list[dict[str, Any]], target_column: str = 'selected data') -> dict[str, Any]:
     """Generate insight text programmatically from metric values. No LLM call."""
+    target_label = ' '.join(str(target_column).replace('_', ' ').split()).strip() or 'selected data'
     smape = metrics.get('smape', 0)
     mae = metrics.get('mae', 0)
     if smape < 15:
@@ -1127,7 +1137,7 @@ def generate_ts_insight(best_model_name: str, metrics: dict[str, Any], stationar
         quality_note = 'high volatility detected'
     risk_flag = None
     if stationarity.get('status') == 'non_stationary':
-        risk_flag = 'Non-stationary series — forecast confidence decreases over longer horizons.'
+        risk_flag = f'{target_label} values do not show a consistent pattern over time. Past patterns may not continue, so forecasts further ahead are less certain. Use the 95% forecast range to see the possible outcomes.'
     elif smape > 50:
         risk_flag = f'SMAPE {smape}% indicates high variance — use forecast range not point values.'
     insight_text = f'{best_model_name} selected for sales forecasting with {quality_note} (SMAPE: {smape}%, MAE: {round(mae / 1e6, 2)}M). Series stationarity: {stationarity.get("status", "unknown")}.'
@@ -2630,11 +2640,21 @@ class TrainRequest(BaseModel):
     random_state: int = 42
     cv_folds: int = Field(default=5, ge=2, le=10)
     training_mode: TrainingMode = 'fast'
+    time_order_column: str | None = None
 
 
 class PredictRequest(BaseModel):
     model_id: str
     features: dict[str, Any]
+
+
+class AssistantAskRequest(BaseModel):
+    dataset_id: str | None = None
+    data: list[dict[str, Any]] = Field(default_factory=list)
+    question: str = Field(..., min_length=1, max_length=4000)
+    top_n: int = Field(default=10, ge=1, le=50)
+    customer_id: str | None = None
+    product_id: str | None = None
 
 
 class DatasetCacheRequest(BaseModel):
@@ -5341,8 +5361,8 @@ def structured_training_failure(error: Exception, *, step: str, request: TrainRe
         content={
             'status': 'failed',
             'step': step,
-            'error': str(getattr(error, 'detail', None) or error) or 'Training failed.',
-            'detail': detail,
+            'error': f'{step} failed. Review the selected data and model configuration.',
+            'detail': 'Additional diagnostic details were recorded in the server log.',
         },
     )
 
@@ -5461,9 +5481,21 @@ def prepare_universal_training_data(
             )
 
     X = model_frame[request.feature_columns].copy().replace([np.inf, -np.inf], np.nan)
+    # For chronological validation, learn every data-dependent preprocessing
+    # choice from the earlier training window only. The later rows are encoded
+    # with those learned values for evaluation, preventing preprocessing and
+    # target-based feature-selection leakage.
+    fit_row_count = len(X)
+    if request.time_order_column:
+        holdout_rows = max(1, int(np.ceil(len(X) * float(request.test_size))))
+        fit_row_count = len(X) - holdout_rows
+        if fit_row_count < 2:
+            raise ValueError('Temporal supervised validation needs at least 2 earlier rows and 1 later row.')
+    X_fit_reference = X.iloc[:fit_row_count]
+    y_fit_reference = pd.Series(y, index=X.index).iloc[:fit_row_count]
     dropped: dict[str, str] = {}
     for column in list(X.columns):
-        series = X[column]
+        series = X_fit_reference[column]
         non_null = series.dropna()
         if non_null.nunique(dropna=True) <= 1:
             dropped[column] = 'Dropped because all values are identical.'
@@ -5490,41 +5522,51 @@ def prepare_universal_training_data(
 
     for column in numeric_features:
         numeric = pd.to_numeric(X[column], errors='coerce').replace([np.inf, -np.inf], np.nan)
-        median = float(numeric.median()) if numeric.notna().any() else 0.0
+        fit_numeric = pd.to_numeric(X_fit_reference[column], errors='coerce').replace([np.inf, -np.inf], np.nan)
+        median = float(fit_numeric.median()) if fit_numeric.notna().any() else 0.0
         X_imputed[column] = numeric.fillna(median)
         imputers['numeric'][column] = median
 
     for column in categorical_features:
         categorical = X[column].astype(object).where(pd.notna(X[column]), np.nan)
-        mode = categorical.dropna().astype(str).mode()
+        fit_categorical = X_fit_reference[column].astype(object).where(pd.notna(X_fit_reference[column]), np.nan)
+        mode = fit_categorical.dropna().astype(str).mode()
         fill_value = str(mode.iloc[0]) if not mode.empty else 'missing'
         filled = categorical.fillna(fill_value).astype(str)
         X_imputed[column] = filled
         imputers['categorical'][column] = fill_value
-        categories[column] = sorted(filled.unique().tolist())
+        categories[column] = sorted(X_imputed.loc[X_fit_reference.index, column].astype(str).unique().tolist())
 
     if X_imputed.isna().any().any():
         raise ValueError('Validation failed: missing values remain after imputation.')
 
     X_encoded = pd.get_dummies(X_imputed, columns=categorical_features, dummy_na=False, dtype=float)
+    fit_index = X_fit_reference.index
+    fit_encoded = X_encoded.loc[fit_index]
+    # Categories only seen in the validation window are intentionally ignored,
+    # matching inference behavior for an unseen category.
+    X_encoded = X_encoded.reindex(columns=fit_encoded.columns, fill_value=0.0)
+    fit_encoded = X_encoded.loc[fit_index]
     final_feature_names = X_encoded.columns.tolist()
     if not final_feature_names:
         raise ValueError('No usable encoded features are available for training.')
 
-    if len(final_feature_names) >= len(X_encoded):
-        y_for_corr = pd.Series(y, index=X_encoded.index).astype(float)
-        correlations = X_encoded.apply(lambda column: abs(float(column.corr(y_for_corr))) if column.nunique() > 1 else 0.0)
+    if len(final_feature_names) >= len(fit_encoded):
+        y_for_corr = y_fit_reference.astype(float)
+        correlations = fit_encoded.apply(lambda column: abs(float(column.corr(y_for_corr))) if column.nunique() > 1 else 0.0)
         correlations = correlations.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        keep_count = min(len(final_feature_names), max(1, len(X_encoded) - 1), max(3, len(X_encoded) // 3))
+        keep_count = min(len(final_feature_names), max(1, len(fit_encoded) - 1), max(3, len(fit_encoded) // 3))
         kept = correlations.sort_values(ascending=False).head(keep_count).index.tolist()
         warnings_list.append(
             f'Dataset has {len(X_encoded)} rows. Auto-selected top {len(kept)} features by correlation with target to prevent overfitting.'
         )
         X_encoded = X_encoded.loc[:, kept]
+        fit_encoded = X_encoded.loc[fit_index]
         final_feature_names = kept
 
     scaler = StandardScaler()
-    scaled = scaler.fit_transform(X_encoded.astype(float))
+    scaler.fit(fit_encoded.astype(float))
+    scaled = scaler.transform(X_encoded.astype(float))
     if np.isnan(scaled).any() or np.isinf(scaled).any():
         raise ValueError('Validation failed: NaN or Inf values remain after scaling.')
 
@@ -5545,7 +5587,16 @@ def prepare_universal_training_data(
 def transform_features_for_bundle(features: dict[str, Any], bundle: dict[str, Any]) -> np.ndarray:
     preprocessing = bundle.get('preprocessing') or {}
     raw_features = preprocessing.get('raw_feature_columns') or bundle.get('feature_columns') or []
-    missing = [feature for feature in raw_features if features.get(feature) in [None, '']]
+    def is_missing_scalar(value: Any) -> bool:
+        if value is None or (isinstance(value, str) and value == ''):
+            return True
+        try:
+            missing_value = pd.isna(value)
+            return bool(missing_value) if np.isscalar(missing_value) else False
+        except (TypeError, ValueError):
+            return False
+
+    missing = [feature for feature in raw_features if is_missing_scalar(features.get(feature))]
     if missing:
         raise ValueError(f'Missing features: {missing}')
 
@@ -5553,13 +5604,24 @@ def transform_features_for_bundle(features: dict[str, Any], bundle: dict[str, An
     pieces: dict[str, Any] = {}
     for column in preprocessing.get('numeric_features', []):
         value = pd.to_numeric(pd.Series([row.at[0, column]]), errors='coerce').replace([np.inf, -np.inf], np.nan).iloc[0]
-        if pd.isna(value):
-            value = preprocessing.get('imputers', {}).get('numeric', {}).get(column, 0.0)
-        pieces[column] = float(value)
+        try:
+            finite_value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            finite_value = float('nan')
+        if not np.isfinite(finite_value):
+            fitted = preprocessing.get('imputers', {}).get('numeric', {}).get(column, 0.0)
+            try:
+                fitted = float(fitted)
+            except (TypeError, ValueError, OverflowError):
+                fitted = 0.0
+            finite_value = fitted if np.isfinite(fitted) else 0.0
+        pieces[column] = finite_value
     for column in preprocessing.get('categorical_features', []):
         value = row.at[0, column]
-        if value in [None, ''] or pd.isna(value):
+        if is_missing_scalar(value):
             value = preprocessing.get('imputers', {}).get('categorical', {}).get(column, 'missing')
+        if is_missing_scalar(value):
+            value = 'missing'
         pieces[column] = str(value)
 
     encoded = pd.get_dummies(pd.DataFrame([pieces]), columns=preprocessing.get('categorical_features', []), dtype=float)
@@ -5570,10 +5632,31 @@ def transform_features_for_bundle(features: dict[str, Any], bundle: dict[str, An
     return scaler.transform(encoded.astype(float))
 
 
-def train_universal_model(request: TrainRequest, http_request: Request) -> dict[str, Any]:
-    selected_columns = [*request.feature_columns, request.target_column]
+def train_universal_model(request: TrainRequest, http_request: Request,
+                          *, source_frame: pd.DataFrame | None = None) -> dict[str, Any]:
+    selected_columns = list(dict.fromkeys([
+        *request.feature_columns, request.target_column,
+        *([request.time_order_column] if request.time_order_column else []),
+    ]))
     try:
-        data_frame = load_dataset_frame(request.dataset_id, request.data, selected_columns)
+        if source_frame is not None:
+            missing_columns = [column for column in selected_columns if column not in source_frame.columns]
+            if missing_columns:
+                raise ValueError(f'Missing selected columns: {missing_columns}')
+            data_frame = normalize_dataframe(source_frame.loc[:, selected_columns].copy())
+        else:
+            data_frame = load_dataset_frame(request.dataset_id, request.data, selected_columns)
+        if request.time_order_column:
+            if request.time_order_column not in data_frame.columns:
+                raise ValueError(f'Time-order column "{request.time_order_column}" was not found.')
+            parsed_order = pd.to_datetime(data_frame[request.time_order_column], errors='coerce', utc=True)
+            valid_order = parsed_order.notna()
+            data_frame = data_frame.loc[valid_order].copy()
+            parsed_order = parsed_order.loc[valid_order]
+            order = np.argsort(parsed_order.astype('int64').to_numpy(), kind='stable')
+            data_frame = data_frame.iloc[order]
+            if data_frame.empty:
+                raise ValueError(f'No valid rows remain after parsing time-order column "{request.time_order_column}".')
     except Exception as error:
         raise RuntimeError(f'Data Loading failed: {error}') from error
 
@@ -5587,13 +5670,32 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
     rows_available = int(len(y))
     profile = build_training_profile(rows_available, request.cv_folds, request.training_mode)
     single_model = _is_single_selected_model(request.model_type)
-    skip_cv = bool(profile['skip_cv_for_large_dataset']) or (
+    skip_cv = bool(request.time_order_column) or bool(profile['skip_cv_for_large_dataset']) or (
         rows_available >= LARGE_DATASET_ROW_THRESHOLD and single_model
     )
 
     train_sample_limit = int(profile.get('train_sample_limit') or 0)
     training_sampled = False
-    if train_sample_limit > 0 and rows_available > train_sample_limit:
+    if request.time_order_column:
+        test_rows = max(1, int(np.ceil(rows_available * float(request.test_size))))
+        split_index = rows_available - test_rows
+        if split_index < 2 or test_rows < 1:
+            raise RuntimeError('Temporal supervised validation needs at least 2 earlier rows and 1 later row.')
+        X_train, y_train = X[:split_index], y.iloc[:split_index]
+        X_test, y_test = X[split_index:], y.iloc[split_index:]
+        if train_sample_limit > 0 and len(y_train) > train_sample_limit:
+            # Keep the latest contiguous training window to preserve temporal order.
+            X_train, y_train = X_train[-train_sample_limit:], y_train.iloc[-train_sample_limit:]
+            training_sampled = True
+            warnings_list.append(
+                f'Temporal training used the latest {len(y_train):,} chronological training rows '
+                f'from {split_index:,}; the final {test_rows:,} later rows were held out for validation.'
+            )
+        else:
+            warnings_list.append(
+                f'Validation used the final {test_rows:,} rows in time order; earlier rows were used for training.'
+            )
+    elif train_sample_limit > 0 and rows_available > train_sample_limit:
         X, y = _sample_xy_arrays(
             X,
             y,
@@ -5605,6 +5707,11 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
         warnings_list.append(
             f'Training used a {len(y):,}-row sample of {rows_available:,} rows for faster model fitting.'
         )
+    if not request.time_order_column:
+        X_train = X
+        y_train = y
+        X_test = np.empty((0, X.shape[1]), dtype=float)
+        y_test = pd.Series(dtype=y.dtype)
 
     candidate_models = resolve_requested_training_candidates(
         request.problem_type,
@@ -5628,20 +5735,21 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
     fitted_predictions = np.array([])
 
     if skip_cv:
-        test_size = float(request.test_size)
-        stratify_values = y if request.problem_type == 'classification' and y.nunique() > 1 else None
-        try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X,
-                y,
-                test_size=test_size,
-                random_state=request.random_state,
-                stratify=stratify_values if stratify_values is not None and stratify_values.value_counts().min() >= 2 else None,
-            )
-        except ValueError:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=request.random_state
-            )
+        if not request.time_order_column:
+            test_size = float(request.test_size)
+            stratify_values = y if request.problem_type == 'classification' and y.nunique() > 1 else None
+            try:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X,
+                    y,
+                    test_size=test_size,
+                    random_state=request.random_state,
+                    stratify=stratify_values if stratify_values is not None and stratify_values.value_counts().min() >= 2 else None,
+                )
+            except ValueError:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size, random_state=request.random_state
+                )
         cv_rows_evaluated = int(len(y_test))
         cv_folds_used = 1
         for model_name, estimator in candidate_models:
@@ -5675,7 +5783,10 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
             except Exception as error:
                 model_failures.append(f'{model_name}: {error}')
                 logger.exception('Candidate model failed during fast training model=%s', model_name)
-        warnings_list.append('Cross-validation was skipped for faster training; holdout metrics are reported instead.')
+        if request.time_order_column:
+            warnings_list.append('Random cross-validation was skipped to preserve chronology; metrics use a chronological holdout.')
+        else:
+            warnings_list.append('Cross-validation was skipped for faster training; holdout metrics are reported instead.')
     else:
         cv = get_cv_strategy(len(y), int(profile.get('cv_folds') or request.cv_folds))
         cv_folds_used = int(getattr(cv, 'n_splits', request.cv_folds))
@@ -5736,28 +5847,29 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
     if best is None:
         raise RuntimeError('Training failed for all candidate models. ' + ' | '.join(model_failures))
 
+    final_X, final_y = (X_train, y_train) if request.time_order_column else (X, y)
     try:
         start_time = time.perf_counter()
-        best['estimator'].fit(X, y)
+        best['estimator'].fit(final_X, final_y)
         training_time = round(time.perf_counter() - start_time, 4)
     except Exception as error:
         raise RuntimeError(f'Training model failed: {error}') from error
 
     try:
-        fitted_predictions = best['estimator'].predict(X)
+        fitted_predictions = best['estimator'].predict(final_X)
         if request.problem_type == 'regression':
-            rmse = float(np.sqrt(mean_squared_error(y, fitted_predictions)))
+            rmse = float(np.sqrt(mean_squared_error(final_y, fitted_predictions)))
             metrics_primary = {
-                'R2': round(float(r2_score(y, fitted_predictions)), 6),
+                'R2': round(float(r2_score(final_y, fitted_predictions)), 6),
                 'RMSE': round(rmse, 6),
-                'MAE': round(float(mean_absolute_error(y, fitted_predictions)), 6),
+                'MAE': round(float(mean_absolute_error(final_y, fitted_predictions)), 6),
             }
         else:
             metrics_primary = {
-                'Accuracy': round(float(accuracy_score(y, fitted_predictions)), 6),
-                'Precision': round(float(precision_score(y, fitted_predictions, average='weighted', zero_division=0)), 6),
-                'Recall': round(float(recall_score(y, fitted_predictions, average='weighted', zero_division=0)), 6),
-                'F1 Score': round(float(f1_score(y, fitted_predictions, average='weighted', zero_division=0)), 6),
+                'Accuracy': round(float(accuracy_score(final_y, fitted_predictions)), 6),
+                'Precision': round(float(precision_score(final_y, fitted_predictions, average='weighted', zero_division=0)), 6),
+                'Recall': round(float(recall_score(final_y, fitted_predictions, average='weighted', zero_division=0)), 6),
+                'F1 Score': round(float(f1_score(final_y, fitted_predictions, average='weighted', zero_division=0)), 6),
             }
             rmse = None
     except Exception:
@@ -5800,8 +5912,13 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
         'cv_score_std': float(best['scores'][primary_metric]['std']),
         'cv_scores': best['scores'],
         'rmse': rmse,
+        'validation_rmse': (
+            float(best['scores']['rmse']['mean'])
+            if request.problem_type == 'regression' and best.get('scores', {}).get('rmse', {}).get('mean') is not None
+            else None
+        ),
         'trained_at': trained_at,
-        'n_rows': int(len(y)),
+            'n_rows': int(len(final_y)),
         'n_features': int(len(feature_names)),
         'file_format': Path(str((DATASET_CACHE.get(request.dataset_id or '') or {}).get('filename') or '')).suffix.lower(),
     }
@@ -5813,10 +5930,10 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
 
     if len(fitted_predictions):
         if request.problem_type == 'classification' and label_encoder is not None:
-            actual_values = label_encoder.inverse_transform(y.astype(int))
+            actual_values = label_encoder.inverse_transform(pd.Series(final_y).astype(int))
             predicted_values = label_encoder.inverse_transform(pd.Series(fitted_predictions).astype(int))
         else:
-            actual_values = y.tolist()
+            actual_values = pd.Series(final_y).tolist()
             predicted_values = pd.Series(fitted_predictions).tolist()
         sample_predictions = [
             {'actual': safe_serialize(actual_values[index]), 'predicted': safe_serialize(predicted_values[index])}
@@ -5861,13 +5978,14 @@ def train_universal_model(request: TrainRequest, http_request: Request) -> dict[
         'cv_gap': None,
         'optimization': {
             'training_rows_available': int(rows_available),
-            'training_rows_used': int(len(y)),
+            'training_rows_used': int(len(final_y)),
             'training_sampled': training_sampled,
             'cv_rows_evaluated': int(cv_rows_evaluated),
             'cv_folds_used': int(cv_folds_used or getattr(cv, 'n_splits', 0) or 0),
             'cv_sampled': cv_sampled,
             'cv_skipped': skip_cv,
             'training_mode': request.training_mode,
+            'time_order_column': request.time_order_column,
             'importance_rows_evaluated': int(len(y)),
             'importance_repeats': 0,
         },
@@ -6331,7 +6449,7 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
         best_name, best_metrics, reason = auto_select_ts_model(results)
         future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
         model_comparison_list = [{'model': k, 'smape': v.get('smape'), 'mae': v.get('mae'), 'status': v['status']} for k, v in results.items()]
-        insight = generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list)
+        insight = generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list, target_column=target_col)
         output_dir = get_ts_output_dir(dataset_id)
         try:
             write_ts_output_files(output_dir, frequency, freq_period, target_col, date_col, df, clean_df, train, test, stationarity, results, best_name, best_metrics, reason, future_forecast, insight)
@@ -7691,14 +7809,22 @@ def predict(request: PredictRequest, http_request: Request) -> JSONResponse:
             'cv_score_mean': safe_serialize(bundle.get('cv_score_mean')),
             'cv_score_std': safe_serialize(bundle.get('cv_score_std')),
         }
-        if bundle['problem_type'] == 'regression' and bundle.get('rmse') is not None:
-            interval = 1.96 * float(bundle['rmse'])
+        if bundle['problem_type'] == 'regression' and bundle.get('validation_rmse') is not None:
+            interval = 1.96 * float(bundle['validation_rmse'])
             numeric_prediction = float(raw_prediction)
-            payload['confidence_interval'] = {
+            error_band = {
                 'lower': round(numeric_prediction - interval, 6),
                 'upper': round(numeric_prediction + interval, 6),
                 'margin': round(interval, 6),
             }
+            payload['error_band'] = error_band
+            payload['error_band_note'] = (
+                'Approximate range based on validation RMSE; it is not a calibrated 95% prediction interval.'
+            )
+            # Keep the old field for API compatibility. New clients should use
+            # error_band and its explicit note instead of interpreting this as
+            # a statistical confidence interval.
+            payload['confidence_interval'] = error_band
 
         label_encoder: LabelEncoder | None = bundle.get('label_encoder')
         if bundle['problem_type'] == 'classification' and label_encoder is not None:
@@ -7728,16 +7854,353 @@ def predict(request: PredictRequest, http_request: Request) -> JSONResponse:
             },
         )
         return JSONResponse(content=safe_serialize(payload))
-    except Exception as error:
+    except Exception:
         logger.exception('Prediction failed model_id=%s', request.model_id)
         return JSONResponse(
             status_code=200,
             content={
                 'status': 'failed',
-                'error': f'Prediction failed: {error}',
-                'detail': ''.join(traceback.format_exception(type(error), error, error.__traceback__)),
+                'error': 'Prediction failed. Check the selected model and input values.',
+                'detail': 'Additional diagnostic details were recorded in the server log.',
             },
         )
+
+
+def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
+                              question: str, dataset_id: str | None,
+                              http_request: Request) -> dict[str, Any]:
+    """Execute a regression/classification ml_plan via train_universal_model.
+
+    Reuses the application's training service end to end (candidate models,
+    CV/holdout, persistence, feature importance). Optionally scores one input
+    row parsed from `col = value` pairs in the question.
+    """
+    from ml_execute import (
+        classification_probability_summary,
+        decode_class_label,
+        extract_feature_values,
+        safe_categorical_imputation,
+        safe_numeric_imputation,
+        select_features,
+        select_supervised_target,
+        summarize_supervised_result,
+    )
+    from nl_analytics import profile_dataset as _profile_for_assistant
+
+    base = dict(plan.get("ml_plan") or {})
+    intent = plan.get("intent", "regression")
+    profile = _profile_for_assistant(frame, dataset_id or "")
+    wanted = "classification" if intent == "classification" else "regression"
+    picked = select_supervised_target(frame, profile, question, wanted)
+    if "issue" in picked:
+        out = dict(plan)
+        out.update({"status": "unsupported", "message": picked["issue"], "answer": picked["issue"]})
+        return out
+    target, problem_type = picked["target"], picked["problem_type"]
+    feats = select_features(frame, profile, target)
+    if "issue" in feats and not feats.get("features"):
+        out = dict(plan)
+        out.update({"status": "unsupported", "message": feats["issue"], "answer": feats["issue"]})
+        return out
+    features = feats["features"]
+    # Bound in-memory assistant training for non-temporal data. When a date
+    # column exists, keep chronological order and let the training service use
+    # a chronological holdout instead of random row sampling.
+    train_frame = frame
+    temporal_order_column = next(iter(profile.get("datetime_columns", [])), None)
+    sampling_provenance = {
+        "original_rows": int(len(frame)),
+        "sampled_rows": int(len(frame)),
+        "sampled": False,
+        "method": "full dataset",
+        "random_state": None,
+        "time_order_column": temporal_order_column,
+    }
+    if len(frame) > 30000 and temporal_order_column is None:
+        train_frame = frame.sample(n=30000, random_state=42).sort_index()
+        sampling_provenance.update({
+            "sampled_rows": int(len(train_frame)), "sampled": True,
+            "method": "deterministic random row sample", "random_state": 42,
+        })
+    elif temporal_order_column:
+        sampling_provenance["method"] = "full data retained for chronological validation"
+    train_request = TrainRequest(
+        dataset_id=dataset_id, data=[],
+        target_column=target, feature_columns=features,
+        problem_type=problem_type, model_type='auto',
+        test_size=0.2, random_state=42, cv_folds=5, training_mode='fast',
+        time_order_column=temporal_order_column,
+    )
+    try:
+        trained = train_universal_model(train_request, http_request, source_frame=train_frame)
+    except Exception as error:
+        logger.exception("Assistant supervised model training failed")
+        out = dict(plan)
+        message = ("The model could not be trained with the selected data. Check that the target "
+                   "has enough valid values and the selected features are usable.")
+        out.update({"status": "failed", "message": message, "answer": message})
+        return out
+
+    single: dict[str, Any] | None = None
+    try:
+        bundle = load_model_bundle(trained["model_id"])
+        raw_features = list((bundle.get("preprocessing") or {}).get("raw_feature_columns")
+                            or bundle.get("feature_columns") or [])
+        parsed = extract_feature_values(question, frame, raw_features)
+        if raw_features and parsed["values"]:
+            imputers = (bundle.get("preprocessing") or {}).get("imputers", {}) or {}
+            row: dict[str, Any] = {}
+            defaulted: dict[str, Any] = {}
+            default_sources: dict[str, str] = {}
+            for feat in raw_features:
+                if feat in parsed["values"]:
+                    row[feat] = parsed["values"][feat]
+                    continue
+                series = frame[feat] if feat in frame.columns else None
+                if series is not None and pd.api.types.is_numeric_dtype(series):
+                    fill, source = safe_numeric_imputation(
+                        series, imputers.get("numeric", {}).get(feat))
+                    row[feat], defaulted[feat], default_sources[feat] = fill, fill, source
+                else:
+                    fill, source = safe_categorical_imputation(
+                        series, imputers.get("categorical", {}).get(feat))
+                    row[feat], defaulted[feat], default_sources[feat] = fill, fill, source
+            X_row = transform_features_for_bundle(row, bundle)
+            estimator = bundle.get("model") or bundle.get("pipeline")
+            pred_raw = estimator.predict(X_row)[0]
+            if problem_type == "regression":
+                single = {"inputs": row, "prediction": round(float(pred_raw), 4)}
+            else:
+                encoder = bundle.get("label_encoder")
+                label = decode_class_label(pred_raw, encoder)
+                single = {"inputs": row, "prediction": label, "top_class": label,
+                          "probabilities": None, "confidence": None, "ece": None}
+            if defaulted:
+                single["defaulted_inputs"] = defaulted
+                single["defaulted_input_sources"] = default_sources
+                single["default_note"] = "Missing inputs were filled as follows: " + "; ".join(
+                    f"{name}={value} ({default_sources[name]})"
+                    for name, value in defaulted.items()) + "."
+            if problem_type == "classification":
+                probability = classification_probability_summary(estimator, X_row, encoder)
+                single.update(probability)
+                single["ece"] = None
+                single["ece_note"] = (
+                    "Calibration (ECE) was not measured: leakage-safe held-out class probabilities "
+                    "are not available from the training result.")
+    except Exception as error:
+        logger.exception("Assistant single-row scoring failed")
+        single = {"status": "unavailable",
+                  "message": "The model trained, but the requested single-row prediction could not be produced."}
+
+    summary = summarize_supervised_result(trained, target, features, problem_type, single)
+    optimization = trained.get("optimization", {}) or {}
+    sampling_provenance["valid_rows_after_target_checks"] = int(
+        optimization.get("training_rows_available") or 0)
+    sampling_provenance["rows_used_to_fit"] = int(
+        optimization.get("training_rows_used") or 0)
+    summary["training_provenance"] = {"sampling": sampling_provenance}
+    if sampling_provenance["sampled"]:
+        note = (f"Assistant model training used a deterministic sample of "
+                f"{sampling_provenance['sampled_rows']:,} of {sampling_provenance['original_rows']:,} rows.")
+        summary.setdefault("warnings", []).append(note)
+        summary["answer"] += " " + note
+    if single and single.get("status") == "unavailable":
+        summary["single_prediction"] = None
+        summary["single_prediction_issue"] = single.get("message")
+        summary["answer"] += " " + str(single.get("message"))
+    out = dict(plan)
+    out.update(summary)
+    out["ml_plan"] = {**base, "target": target, "features": features,
+                      "task": problem_type, "selection_reason": picked.get("reason"),
+                      "excluded_features": feats.get("excluded", {}),
+                      "status": "executed"}
+    out["routing"] = plan.get("routing")
+    out["profile"] = plan.get("profile")
+    return out
+
+
+def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
+                            dataset_id: str | None, http_request: Request) -> dict[str, Any]:
+    """Execute a forecasting ml_plan via the existing 3-model TS pipeline."""
+    base = dict(plan.get("ml_plan") or {})
+    available = list(frame.columns)
+    column_info = build_column_info_from_frame(frame)
+    try:
+        date_col, target_col = resolve_sales_columns(
+            available, frame=frame,
+            column_info=[{"name": c["name"], "role": c["role"], "uniqueCount": c["uniqueCount"]}
+                         for c in column_info])
+    except ValueError as error:
+        out = dict(plan)
+        out.update({"status": "unsupported", "message": str(error), "answer": str(error)})
+        return out
+    try:
+        # prepare_sales_series aggregates to canonical period/sales columns.
+        series_frame, freq, period_label = prepare_sales_series(frame, date_col, target_col)
+        frequency, freq_period = normalize_ts_frequency(freq, period_label)
+        stationarity = check_stationarity(series_frame["sales"], frequency)
+        results, _y_train, _y_test, train, test, clean_df, _first = train_all_ts_models(
+            series_frame, "sales", "period", frequency, freq_period, 0.8, 3)
+    except (ValueError, HTTPException) as error:
+        detail = error.detail if isinstance(error, HTTPException) else str(error)
+        out = dict(plan)
+        out.update({"status": "unsupported", "message": str(detail), "answer": str(detail)})
+        return out
+    except Exception as error:
+        # Missing optional TS stack (statsmodels/prophet/pmdarima): fall back to the
+        # sklearn lag-regression forecaster instead of failing.
+        if isinstance(error, (ModuleNotFoundError, ImportError)) or "No module named" in str(error):
+            try:
+                from ml_execute import run_fallback_forecast
+                frequency, _ = normalize_ts_frequency(None, None)
+                fb = run_fallback_forecast(frame, date_col, target_col,
+                                           frequency=frequency, horizon=3)
+                if fb.get("status") == "success":
+                    fb["ml_plan"] = {**base, "target": target_col,
+                                     "date_column": date_col, "status": "executed_fallback"}
+                    fb["answer"] = (
+                        f"Forecast for '{target_col}' ({len(fb['future_forecast'])} {fb['frequency']} "
+                        f"step(s) ahead) using {fb['model']}: "
+                        + "; ".join(f"{p.get('period')}: {p.get('forecast')} "
+                                     f"(95% interval {p.get('lower')} to {p.get('upper')})"
+                                     for p in fb["future_forecast"])
+                        + f". Holdout SMAPE {fb['metrics']['SMAPE']}% "
+                          f"(reliability: {fb['reliability']}) vs seasonal-naive "
+                          f"{fb['baseline_smape']}%. {fb['fallback_note']}")
+                    return fb
+                out = dict(plan)
+                out.update({"status": fb.get("status", "unsupported"),
+                            "message": fb.get("message", "Forecast unavailable."),
+                            "answer": fb.get("message", "Forecast unavailable.")})
+                return out
+            except Exception as fallback_error:
+                logger.exception("Assistant fallback forecast failed")
+                out = dict(plan)
+                out.update({"status": "failed",
+                            "message": f"Forecast failed: {fallback_error}",
+                            "answer": f"Forecast failed: {fallback_error}."})
+                return out
+        logger.exception("Assistant forecast training failed")
+        out = dict(plan)
+        out.update({"status": "failed", "message": f"Forecast training failed: {error}",
+                    "answer": f"Forecast training failed: {error}."})
+        return out
+    try:
+        best_name, best_metrics, reason = auto_select_ts_model(results)
+        future = generate_ts_future_forecast(best_name, clean_df, "sales", "period",
+                                             frequency, freq_period, 3)
+        # Seasonal-naive baseline on the same walk-forward test slice.
+        baseline_smape = None
+        try:
+            y_test_vals = test["sales"].to_numpy(dtype=float) if "sales" in test.columns else np.array([])
+            if len(y_test_vals):
+                naive = np.concatenate([train["sales"].to_numpy(dtype=float)[-freq_period:],
+                                        y_test_vals])[:len(y_test_vals)]
+                if len(naive) == len(y_test_vals):
+                    denom = (np.abs(y_test_vals) + np.abs(naive))
+                    baseline_smape = round(float(np.mean(
+                        2 * np.abs(y_test_vals - naive) / np.where(denom == 0, 1e-8, denom)) * 100), 2)
+        except Exception:
+            logger.exception("Assistant naive baseline failed")
+        comparison = [{"model": k, "status": v.get("status"), "smape": v.get("smape"),
+                       "mae": v.get("mae")} for k, v in results.items()]
+        comparison.append({"model": "SeasonalNaive", "status": "completed",
+                           "smape": baseline_smape, "mae": None})
+        smape = best_metrics.get("smape") or 0
+        reliability = ("high" if smape < 15 else "medium" if smape < 30 else "low")
+        horizon_note = (f"{len(future)} {frequency} step(s) ahead from "
+                        f"{clean_df['period'].max() if 'period' in clean_df.columns else 'last observation'}")
+        answer = (f"Forecast for '{target_col}' ({horizon_note}) using {best_name}: "
+                  + "; ".join(f"{p.get('period')}: {p.get('forecast')} "
+                               f"(95% interval {p.get('lower')} to {p.get('upper')})" for p in future)
+                  + f". Validation SMAPE {smape}% (reliability: {reliability})"
+                  + (f" vs seasonal-naive {baseline_smape}%." if baseline_smape is not None else "."))
+        out = dict(plan)
+        out.update({"status": "success", "intent": "forecast",
+                    "model": best_name, "target": target_col, "date_column": date_col,
+                    "frequency": frequency, "metrics": {"SMAPE": smape, "MAE": best_metrics.get("mae"),
+                                                        "RMSE": best_metrics.get("rmse")},
+                    "model_comparison": comparison, "baseline_smape": baseline_smape,
+                    "future_forecast": future, "stationarity": stationarity,
+                    "selection_reason": reason, "reliability": reliability,
+                    "confidence": {"forecast_interval": "95% per-step intervals from the fitted "
+                                                        "model (widen with horizon).",
+                                   "reliability": reliability,
+                                   "evaluated_periods": len(test)},
+                    "ml_plan": {**base, "target": target_col, "date_column": date_col,
+                                "status": "executed"},
+                    "answer": answer})
+        return out
+    except Exception as error:
+        logger.exception("Assistant forecast finalization failed")
+        out = dict(plan)
+        out.update({"status": "failed", "message": f"Forecast failed: {error}",
+                    "answer": f"Forecast failed: {error}."})
+        return out
+
+
+@router.post('/assistant/ask')
+def assistant_ask(request: AssistantAskRequest, http_request: Request) -> JSONResponse:
+    """Universal dataset-aware Q&A: deterministic analytics, ML only when needed.
+
+    Uses the live cached dataset (refreshed per request so dataset replacement
+    can never leak stale results) and the reusable nl_analytics engine.
+    """
+    from nl_analytics import answer_question, dataset_signature, profile_dataset
+
+    try:
+        frame = load_full_dataset_frame(request.dataset_id, request.data)
+    except HTTPException as error:
+        raise error
+    except Exception as error:
+        logger.exception('Assistant dataset loading failed')
+        raise HTTPException(status_code=400, detail='Unable to load the selected dataset. Check the file and try again.') from error
+    try:
+        profile = profile_dataset(frame, request.dataset_id or "")
+        # Cache profile keyed by live signature; recompute on dataset replacement.
+        cache_key = f"profile::{request.dataset_id or 'inline'}"
+        cached = DATASET_CACHE.get(cache_key) if isinstance(DATASET_CACHE.get(cache_key), dict) else None
+        live_sig = dataset_signature(frame, request.dataset_id or "")
+        if not (isinstance(cached, dict) and cached.get("signature") == live_sig):
+            DATASET_CACHE[cache_key] = {"signature": live_sig, "profile": profile,
+                                        "columns": list(frame.columns), "rows": int(len(frame))}
+        result = answer_question(frame, request.question,
+                                 dataset_id=request.dataset_id or "", top_n=request.top_n,
+                                 context={'customer_id': request.customer_id,
+                                          'product_id': request.product_id})
+        # Execute plan-only ML intents through the existing services so a plan is
+        # never presented as a completed prediction.
+        if result.get("status") == "ml_required":
+            ml_intent = result.get("intent")
+            try:
+                if ml_intent == "forecast":
+                    result = _assistant_run_forecast(result, frame, request.dataset_id, http_request)
+                elif ml_intent in ("regression", "classification"):
+                    result = _assistant_run_supervised(result, frame, request.question,
+                                                       request.dataset_id, http_request)
+            except Exception as error:
+                logger.exception("Assistant ML execution failed")
+                result = dict(result)
+                result.update({"status": "failed",
+                               "message": "The requested model operation could not be completed. Check the selected data and try again.",
+                               "answer": "The requested model operation could not be completed. Check the selected data and try again."})
+        record_activity(
+            request=http_request,
+            action='assistant_ask',
+            status='success' if result.get("status") in ("success",) else 'completed_with_limits',
+            dataset_id=request.dataset_id,
+            detail=(result.get("answer") or result.get("message") or "Assistant answered.")[:500],
+            metadata={'intent': (result.get("routing") or {}).get("intent"),
+                      'result_status': result.get("status"),
+                      'profile_signature': live_sig},
+        )
+        return JSONResponse(content=safe_serialize(result))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception('Assistant ask failed')
+        raise HTTPException(status_code=500, detail='The assistant could not process this request.') from error
 
 
 @router.post('/upload-model')
