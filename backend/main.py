@@ -154,7 +154,7 @@ LOG_DIR.mkdir(exist_ok=True)
 os.environ.setdefault('TMP', str(RUNTIME_TEMP_DIR))
 os.environ.setdefault('TEMP', str(RUNTIME_TEMP_DIR))
 os.environ.setdefault('TMPDIR', str(RUNTIME_TEMP_DIR))
-ACTIVITY_DATABASE_URL = os.environ.get('ACTIVITY_DATABASE_URL') or os.environ.get('DATABASE_URL') or 'postgresql://postgres:postgres@localhost:5432/ai_eda_assistant'
+ACTIVITY_DATABASE_URL = os.environ.get('ACTIVITY_DATABASE_URL') or os.environ.get('DATABASE_URL')
 ACTIVITY_DB_REQUIRED = os.environ.get('ACTIVITY_DB_REQUIRED', 'false').strip().lower() == 'true'
 ACTIVITY_DB_CONNECT_TIMEOUT = int(os.environ.get('ACTIVITY_DB_CONNECT_TIMEOUT', '1'))
 TRAINING_N_JOBS = 1
@@ -511,6 +511,8 @@ def format_ist_date(value: Any = None) -> str:
 
 
 def get_activity_connection() -> psycopg.Connection:
+    if not ACTIVITY_DATABASE_URL:
+        raise RuntimeError('ACTIVITY_DATABASE_URL or DATABASE_URL must be configured for activity storage.')
     connection = psycopg.connect(
         ACTIVITY_DATABASE_URL,
         row_factory=dict_row,

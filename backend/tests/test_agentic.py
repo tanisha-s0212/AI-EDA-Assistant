@@ -12,7 +12,7 @@ import pytest
 
 ACTIVITY_DATABASE_URL = os.environ.setdefault(
     'ACTIVITY_DATABASE_URL',
-    'postgresql://postgres:postgres@localhost:5432/ai_eda_assistant',
+    'postgresql://localhost:5432/ai_eda_assistant',
 )
 os.environ['ACTIVITY_DB_CONNECT_TIMEOUT'] = '1'
 
@@ -44,6 +44,12 @@ else:
     TestClient = None
     main = None
     agentic_adapter = None
+
+
+pytestmark = pytest.mark.skipif(
+    DB_OFFLINE_REASON is not None,
+    reason=DB_OFFLINE_REASON or 'Activity PostgreSQL database is unavailable',
+)
 
 
 @pytest.fixture(scope='session')
@@ -258,8 +264,3 @@ def test_activities_route_still_works(run_id: str) -> None:
     body = response.json()
     assert body['dbAvailable'] is True
     assert isinstance(body['activities'], list)
-
-
-def test_zz_offline_suite_exits_cleanly() -> None:
-    if database_is_offline():
-        os._exit(0)

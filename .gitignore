@@ -26,6 +26,9 @@ backend/*.log
 .env.local
 backend/tmp/*
 backend/.pytest_cache/
+backend/storage/*.db
+backend/storage/*.sqlite
+backend/storage/*.sqlite3
 
 build-frontend.log
 
@@ -33,6 +36,10 @@ build-frontend.log
 
 __pycache__/
 
-# Ignore generated docs
-docs/
+# Generated documentation exports. Source documentation is tracked explicitly.
+docs/*
+!docs/README.md
+!docs/ARCHITECTURE.md
+!docs/DEVELOPMENT.md
+!docs/DEPLOYMENT.md
 

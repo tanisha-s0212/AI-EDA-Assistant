@@ -1,17 +1,23 @@
 # Intelligent Data Assistant
 
+AI EDA Assistant is a browser-based workspace for uploading tabular datasets,
+profiling and cleaning data, running exploratory analysis, training supervised
+models, and producing forecast and prediction results.
+
 This project is now split into two deployable layers:
 
 - `frontend/`: Next.js UI running on port `3000`
 - `backend/`: FastAPI + scikit-learn service running on port `3004`
 - `docker-compose.yml` and `infrastructure/nginx/nginx.conf`: root-level orchestration and routing
+- `agentic-layer/`: optional hosted-assistant workspace assets and provider integration
+- `samples/`: curated CSV, TSV, Excel, and Parquet examples
 
 ## Local Development
 
 1. Frontend
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -33,19 +39,9 @@ docker compose up --build
 ```
 
 Nginx serves as the public entrypoint on port `8888` by default, proxies `/` to the frontend, and proxies `/api/*` to the backend.
-pgAdmin is available on port `5050` by default with login `admin@example.com` / `admin123`.
-Its configuration is persisted in a Docker volume, so saved server definitions survive container recreation.
-On first startup, it also auto-registers the app PostgreSQL server from `infrastructure/pgadmin/servers.json`.
+The frontend, backend, and PostgreSQL services are internal to the Compose network. Named volumes preserve PostgreSQL data, uploaded datasets, trained models, and backend logs.
 
-If you want to customize host ports or Compose credentials, copy `.env.example` to `.env` at the repo root and adjust values like `PGADMIN_PORT`, `NGINX_PORT`, or `POSTGRES_PORT` before starting the stack.
-
-When pgAdmin runs from this Compose stack, add the PostgreSQL server with:
-
-- Host: `postgres`
-- Port: `5432`
-- Database: `ai_eda_assistant`
-- Username: `postgres`
-- Password: `postgres`
+If you want to customize the host port or Compose credentials, copy `.env.example` to `.env` at the repo root. Set a unique `POSTGRES_PASSWORD` before a non-local deployment.
 
 If you want the Next.js server itself to proxy API requests in a non-Docker environment, set `ENABLE_BACKEND_REWRITE=true` and optionally `BACKEND_ORIGIN=http://127.0.0.1:3004`.
 
@@ -85,6 +81,12 @@ Notes about the current workflow behavior:
   - `client_session_id`
   - `server_session_id`
   - `limit`
-- In Docker, the backend uses `postgresql://postgres:postgres@postgres:5432/ai_eda_assistant` by default.
-- For local development, set `ACTIVITY_DATABASE_URL`, for example: `postgresql://postgres:postgres@localhost:5432/ai_eda_assistant`.
+- In Docker, the backend uses the PostgreSQL service on the Compose network.
+- For local development, set `ACTIVITY_DATABASE_URL` with the local PostgreSQL credentials.
 - If PostgreSQL is optional in your local workflow, you can reduce backend wait time with `ACTIVITY_DB_CONNECT_TIMEOUT=1` in `.env` to fail fast when the database is offline.
+
+## Documentation and validation
+
+See [architecture](docs/ARCHITECTURE.md), [development](docs/DEVELOPMENT.md),
+and [deployment](docs/DEPLOYMENT.md) guidance for supported runtime boundaries,
+validation commands, security prerequisites, and deployment limitations.
