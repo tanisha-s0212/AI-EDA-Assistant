@@ -21,7 +21,6 @@ httpx
 pytest
 pytest-asyncio
 xgboost
-lightgbm
 optuna
 prophet
 statsmodels>=0.14.5,<0.15

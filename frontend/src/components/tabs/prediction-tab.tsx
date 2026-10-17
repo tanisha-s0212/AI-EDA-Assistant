@@ -9,8 +9,6 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { Calendar } from '@/components/ui/calendar';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Select,
   SelectContent,
@@ -18,14 +16,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import {
   Tooltip,
   TooltipContent,
@@ -49,11 +39,8 @@ import {
   Trash2,
   Download,
   Upload,
-  CalendarDays,
-  LineChart as LineChartIcon,
   History,
   Zap,
-  FileSpreadsheet,
   CircleDot,
   Activity,
   Bot,
@@ -70,12 +57,11 @@ import {
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
   Cell,
-  LineChart,
-  Line,
-  Legend,
-  ReferenceLine,
 } from 'recharts';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
+import { clearStaleModelState } from '@/lib/model-lifecycle';
+import { predictionInputs, downloadPredictionCsv, type PredictionSchema } from '@/lib/prediction-contract';
+import { PredictionBatch } from '@/components/prediction-batch';
 import { cn } from '@/lib/utils';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -85,7 +71,15 @@ interface PredictResponse {
   error?: string;
   detail?: string;
   prediction: number | string;
-  prediction_label?: string;
+  prediction_label?: string | number;
+  warnings?: string[];
+  probability_note?: string;
+  readiness?: PredictionSchema['readiness'];
+  model_id?: string;
+  dataset_version?: number;
+  dataset_fingerprint?: string;
+  inputs?: Record<string, string | number>;
+  scored_at?: string;
   probabilities?: Record<string, number>;
   confidence?: number;
   top_class?: string;
@@ -137,20 +131,6 @@ const itemVariants: Variants = {
   },
 };
 
-const scaleVariants: Variants = {
-  hidden: { opacity: 0, scale: 0.9 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    transition: { type: 'spring', stiffness: 220, damping: 24 },
-  },
-};
-
-const PREDICTION_CHART_COLORS = {
-  forecast: '#7c3aed',
-  grid: '#cbd5e1',
-} as const;
-
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function generateUUID(): string {
@@ -170,27 +150,10 @@ function formatTime(iso: string): string {
   }
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  } catch {
-    return iso;
-  }
-}
-
 function getModelDisplayName(modelName: string): string {
   return modelName
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatConfidence(value: number | undefined | null): string {
-  if (value == null) return 'N/A';
-  return `${(value * 100).toFixed(1)}%`;
 }
 
 function getConfidenceColor(value: number | undefined | null): string {
@@ -213,135 +176,10 @@ function stringifyFeatureValue(value: string | number | boolean | null | undefin
 }
 
 function getSuggestedFeatureValue(data: Record<string, string | number | boolean | null>[], featureName: string): string {
-  for (let index = data.length - 1; index >= 0; index--) {
-    const value = data[index]?.[featureName];
-    if (value !== null && value !== undefined && value !== '') {
-      return stringifyFeatureValue(value);
-    }
-  }
-  return '';
+  return stringifyFeatureValue(data[data.length - 1]?.[featureName]);
 }
 
 
-function findFeatureName(featureNames: string[], patterns: string[]): string | null {
-  const lowerNames = featureNames.map((name) => ({ original: name, lower: name.toLowerCase() }));
-  for (const pattern of patterns) {
-    const match = lowerNames.find((entry) => entry.lower.includes(pattern));
-    if (match) return match.original;
-  }
-  return null;
-}
-
-function formatDateInputValue(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function findMatchingFeatureNames(featureNames: string[], patterns: string[]): string[] {
-  const loweredPatterns = patterns.map((pattern) => pattern.toLowerCase());
-  return featureNames.filter((name) => {
-    const lowered = name.toLowerCase();
-    return loweredPatterns.some((pattern) => lowered.includes(pattern));
-  });
-}
-
-function getPredictionDateFieldNames(featureNames: string[]): string[] {
-  return findMatchingFeatureNames(featureNames, ['year_month', 'date', 'invoice_date', 'order_date', 'period', 'ds']);
-}
-
-function buildFeaturesFromInputs(featureInputs: FeatureInput[]): Record<string, string | number> {
-  const features: Record<string, string | number> = {};
-  for (const fi of featureInputs) {
-    if (fi.role === 'numeric') {
-      const num = parseFloat(fi.value);
-      features[fi.name] = Number.isNaN(num) ? 0 : num;
-    } else {
-      features[fi.name] = fi.value;
-    }
-  }
-  return features;
-}
-
-function applySelectedDateToFeatures(
-  features: Record<string, string | number>,
-  featureNames: string[],
-  selectedDate: Date,
-): Record<string, string | number> {
-  const next = { ...features };
-  const isoDate = formatDateInputValue(selectedDate);
-  const monthNumber = selectedDate.getMonth() + 1;
-  const dayOfWeek = selectedDate.getDay();
-  const quarter = Math.floor(selectedDate.getMonth() / 3) + 1;
-  const year = selectedDate.getFullYear();
-  const weekendFlag = [0, 6].includes(dayOfWeek) ? 1 : 0;
-
-  getPredictionDateFieldNames(featureNames).forEach((fieldName) => {
-    next[fieldName] = isoDate;
-  });
-
-  findMatchingFeatureNames(featureNames, ['month_number', 'year_month_month']).forEach((fieldName) => {
-    next[fieldName] = monthNumber;
-  });
-
-  findMatchingFeatureNames(featureNames, ['day_of_week', 'weekday']).forEach((fieldName) => {
-    next[fieldName] = dayOfWeek;
-  });
-
-  findMatchingFeatureNames(featureNames, ['quarter']).forEach((fieldName) => {
-    next[fieldName] = quarter;
-  });
-
-  findMatchingFeatureNames(featureNames, ['is_weekend', 'weekend']).forEach((fieldName) => {
-    next[fieldName] = weekendFlag;
-  });
-
-  findMatchingFeatureNames(featureNames, ['year_number', 'year']).forEach((fieldName) => {
-    next[fieldName] = year;
-  });
-
-  return next;
-}
-
-function applyForecastDerivations(
-  features: Record<string, string | number>,
-  featureNames: string[],
-  data: Record<string, string | number | boolean | null>[],
-  targetColumn: string | null,
-): Record<string, string | number> {
-  const next = { ...features };
-  const dateFieldName = findFeatureName(featureNames, ['year_month', 'date', 'invoice_date', 'order_date']);
-  const dateValue = dateFieldName ? next[dateFieldName] : null;
-  const parsedDate = typeof dateValue === 'string' || typeof dateValue === 'number' ? new Date(dateValue) : null;
-
-  if (parsedDate && !Number.isNaN(parsedDate.getTime())) {
-    const monthNumberName = findFeatureName(featureNames, ['month_number']);
-    const dayOfWeekName = findFeatureName(featureNames, ['day_of_week']);
-    const quarterName = findFeatureName(featureNames, ['quarter']);
-    const weekendName = findFeatureName(featureNames, ['is_weekend', 'weekend']);
-    const derivedMonthName = findFeatureName(featureNames, ['year_month_month']);
-
-    if (monthNumberName && (next[monthNumberName] === '' || next[monthNumberName] === undefined)) next[monthNumberName] = parsedDate.getMonth() + 1;
-    if (derivedMonthName && (next[derivedMonthName] === '' || next[derivedMonthName] === undefined)) next[derivedMonthName] = parsedDate.getMonth() + 1;
-    if (dayOfWeekName && (next[dayOfWeekName] === '' || next[dayOfWeekName] === undefined)) next[dayOfWeekName] = parsedDate.getDay();
-    if (quarterName && (next[quarterName] === '' || next[quarterName] === undefined)) next[quarterName] = Math.floor(parsedDate.getMonth() / 3) + 1;
-    if (weekendName && (next[weekendName] === '' || next[weekendName] === undefined)) next[weekendName] = [0, 6].includes(parsedDate.getDay()) ? 1 : 0;
-  }
-
-  const previousMonthField = findFeatureName(featureNames, ['previous_month', 'prev_month']);
-  if (previousMonthField && (next[previousMonthField] === '' || next[previousMonthField] === undefined) && targetColumn) {
-    for (let index = data.length - 1; index >= 0; index--) {
-      const value = data[index]?.[targetColumn];
-      if (typeof value === 'number' && !Number.isNaN(value)) {
-        next[previousMonthField] = value;
-        break;
-      }
-    }
-  }
-
-  return next;
-}
 
 function buildPredictionExplanation(
   predictionValue: string | number,
@@ -355,7 +193,7 @@ function buildPredictionExplanation(
   lines.push(`The model predicts ${predictionValue} for ${targetColumn ?? 'the selected target'}.`);
 
   if (confidence != null) {
-    lines.push(`The confidence score is ${(confidence * 100).toFixed(1)}%, which indicates how strongly the model favors this output.`);
+    lines.push(`The model assigns ${(confidence * 100).toFixed(1)}% probability to its top outcome. Calibration has not been measured; this score does not guarantee correctness.`);
   }
 
   const topFeatures = (featureImportance ?? []).slice(0, 3);
@@ -366,7 +204,7 @@ function buildPredictionExplanation(
         return value !== undefined ? `${item.name}=${value}` : item.name;
       })
       .join(', ');
-    lines.push(`Top influential features in this model include ${summary}.`);
+    lines.push(`Global feature importance includes ${summary}. These are model-wide associations and do not explain the cause of this individual prediction.`);
   }
 
   const dateFeature = Object.entries(processedFeatures).find(([name]) => name.toLowerCase().includes('year_month') || name.toLowerCase().includes('date'));
@@ -463,7 +301,7 @@ function UploadModelCard({
             <div>
               <p className="text-sm font-medium">Upload a trained model</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Import a `.joblib`, `.pkl`, or `.pickle` sklearn model to predict without retraining in this app.
+                Import a trusted `.joblib`, `.pkl`, or `.pickle` sklearn model with named inputs. Only use files from a trusted source: Python model files can execute code when loaded.
               </p>
             </div>
           </div>
@@ -486,7 +324,7 @@ function UploadModelCard({
   );
 }
 
-function ModelStatusCard() {
+function ModelStatusCard({ schema }: { schema: PredictionSchema | null }) {
   const { uploadedModel, modelMetrics, modelTrained, setActiveTab } = useAppStore();
 
   if (!uploadedModel) {
@@ -516,8 +354,9 @@ function ModelStatusCard() {
     );
   }
 
-  const primaryMetric = uploadedModel.problem === 'regression' ? 'R²' : 'Accuracy';
-  const metricValue = modelMetrics?.[primaryMetric] ?? modelMetrics?.['R2'] ?? modelMetrics?.['r2'] ?? null;
+  const primaryMetric = uploadedModel.problem === 'regression' ? 'R2' : 'Accuracy';
+  const metricValue = schema?.readiness.metrics?.[primaryMetric] ?? modelMetrics?.[primaryMetric] ?? null;
+  const rawFeatures = schema?.fields.map(field => field.name) ?? [];
 
   return (
     <motion.div variants={itemVariants}>
@@ -536,7 +375,7 @@ function ModelStatusCard() {
                   </h3>
                   <Badge className="border-primary/20 bg-primary/10 text-primary hover:bg-primary/15">
                     <CheckCircle2 className="mr-1 h-3 w-3" />
-                    Model Ready
+                    Model Loaded
                   </Badge>
                 </div>
                 <div className="flex items-center gap-3 mt-1 flex-wrap">
@@ -561,9 +400,9 @@ function ModelStatusCard() {
               <div className={cn('flex items-center gap-2 px-4 py-2 rounded-xl border', getConfidenceBg(metricValue))}>
                 <Gauge className={cn('h-4 w-4', getConfidenceColor(metricValue))} />
                 <div>
-                  <p className="text-xs text-muted-foreground">{primaryMetric}</p>
+                  <p className="text-xs text-muted-foreground">Validation {primaryMetric}</p>
                   <p className={cn('text-lg font-bold leading-tight', getConfidenceColor(metricValue))}>
-                    {metricValue >= 1 ? metricValue.toFixed(2) : (metricValue * 100).toFixed(1) + '%'}
+                    {uploadedModel.problem === 'regression' ? metricValue.toFixed(4) : `${(metricValue * 100).toFixed(1)}%`}
                   </p>
                 </div>
               </div>
@@ -571,23 +410,23 @@ function ModelStatusCard() {
           </div>
 
           {/* Features Summary */}
-          {uploadedModel.features && uploadedModel.features.length > 0 && (
+          {rawFeatures.length > 0 && (
             <div className="mt-3 pt-3 border-t border-border/50">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <Layers className="h-3.5 w-3.5 text-primary" />
                 <span className="text-xs font-medium text-muted-foreground">
-                  {uploadedModel.features.length} Feature{uploadedModel.features.length !== 1 ? 's' : ''}
+                  {rawFeatures.length} Feature{rawFeatures.length !== 1 ? 's' : ''}
                 </span>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {uploadedModel.features.slice(0, 8).map((f) => (
+                {rawFeatures.slice(0, 8).map((f) => (
                   <Badge key={f} variant="outline" className="text-[10px] px-1.5 py-0">
                     {f}
                   </Badge>
                 ))}
-                {uploadedModel.features.length > 8 && (
+                {rawFeatures.length > 8 && (
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                    +{uploadedModel.features.length - 8} more
+                    +{rawFeatures.length - 8} more
                   </Badge>
                 )}
               </div>
@@ -615,6 +454,7 @@ function PredictionForm({
   isPredicting: boolean;
 }) {
   const handleInputChange = (idx: number, value: string) => {
+    useAppStore.setState({ predictionResult: null, predictionAnalysis: null, predictionProbabilities: null });
     setFeatureInputs((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], value };
@@ -632,7 +472,7 @@ function PredictionForm({
             </div>
             <div>
               <CardTitle className="text-base">Prediction Input</CardTitle>
-              <CardDescription>Inputs are auto-filled from the latest available dataset row. Adjust any values before predicting.</CardDescription>
+              <CardDescription>Inputs start with the last dataset row. Review the values and fill any missing fields before predicting.</CardDescription>
             </div>
           </div>
         </CardHeader>
@@ -663,6 +503,7 @@ function PredictionForm({
                     {fi.role === 'numeric' ? (
                       <Input
                         type="number"
+                        disabled={isPredicting}
                         step="any"
                         placeholder={`e.g. ${fi.mean != null ? fi.mean.toFixed(1) : '0'}`}
                         value={fi.value}
@@ -670,7 +511,7 @@ function PredictionForm({
                         className="h-9 text-sm"
                       />
                     ) : fi.uniqueValues.length > 0 ? (
-                      <Select value={fi.value} onValueChange={(v) => handleInputChange(idx, v)}>
+                      <Select value={fi.value} onValueChange={(v) => handleInputChange(idx, v)} disabled={isPredicting}>
                         <SelectTrigger className="h-9 text-sm">
                           <SelectValue placeholder="Select..." />
                         </SelectTrigger>
@@ -685,6 +526,7 @@ function PredictionForm({
                     ) : (
                       <Input
                         type="text"
+                        disabled={isPredicting}
                         placeholder="Enter value"
                         value={fi.value}
                         onChange={(e) => handleInputChange(idx, e.target.value)}
@@ -694,7 +536,7 @@ function PredictionForm({
                     {fi.role === 'numeric' && fi.min != null && fi.max != null && (
                       <p className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <BarChart3 className="h-2.5 w-2.5" />
-                        Range: {fi.min} — {fi.max} {fi.mean != null && `| Avg: ${fi.mean.toFixed(1)}`}
+                        Training range: {fi.min} — {fi.max} {fi.mean != null && `| Preview avg: ${fi.mean.toFixed(1)}`}
                       </p>
                     )}
                     {fi.role !== 'numeric' && fi.uniqueValues.length > 0 && (
@@ -810,7 +652,7 @@ function PredictionResult({
               <div className="relative text-center">
                 <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-background/70 px-3 py-1 text-[11px] font-medium text-primary">
                   <Sparkles className="h-3.5 w-3.5" />
-                  Prediction Ready
+                  Prediction result
                 </div>
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Predicted Result</p>
                 <motion.p
@@ -827,7 +669,7 @@ function PredictionResult({
             <CardContent className="space-y-5 p-6">
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className={cn('rounded-xl border p-4', getConfidenceBg(maxProb))}>
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Confidence</p>
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Model probability (uncalibrated)</p>
                   <div className="mt-2 flex items-center gap-2">
                     <Gauge className={cn('h-4 w-4', getConfidenceColor(maxProb))} />
                     <p className={cn('text-xl font-bold', getConfidenceColor(maxProb))}>
@@ -920,408 +762,6 @@ function PredictionResult({
   );
 }
 
-function FuturePrediction({
-  featureInputs,
-  setFeatureInputs,
-  isPredicting,
-}: {
-  featureInputs: FeatureInput[];
-  setFeatureInputs: React.Dispatch<React.SetStateAction<FeatureInput[]>>;
-  isPredicting: boolean;
-}) {
-  const { toast } = useToast();
-  const store = useAppStore();
-  const data = store.cleanedData || store.rawData;
-  const columns = store.columns;
-  const modelId = store.modelId;
-  const [numPeriods, setNumPeriods] = useState(5);
-  const [forecastData, setForecastData] = useState<{ date: string; predicted: number | string; confidence: number | null }[]>([]);
-  const [isForecasting, setIsForecasting] = useState(false);
-
-  // Detect if dataset has a date column
-  const dateColumn = useMemo(() => {
-    return columns.find((c) => c.role === 'datetime');
-  }, [columns]);
-
-  const handleForecast = useCallback(async () => {
-    if (!modelId || !data) return;
-    setIsForecasting(true);
-    setForecastData([]);
-
-    try {
-      const now = new Date();
-      const results: { date: string; predicted: number | string; confidence: number | null }[] = [];
-
-      for (let i = 1; i <= numPeriods; i++) {
-        const futureDate = new Date(now);
-        futureDate.setDate(futureDate.getDate() + i * 30);
-
-        // Use rolling averages for numeric features, mode for categorical
-        const features: Record<string, string | number> = {};
-        for (const fi of featureInputs) {
-          if (fi.role === 'numeric') {
-            const numericValues = data
-              .map((r) => r[fi.name])
-              .filter((v): v is number => typeof v === 'number' && !isNaN(v));
-            const avg = numericValues.length > 0
-              ? numericValues.reduce((a, b) => a + b, 0) / numericValues.length
-              : parseFloat(fi.value) || 0;
-            features[fi.name] = parseFloat(avg.toFixed(4));
-          } else {
-            const stringValues = data.map((r) => String(r[fi.name] ?? ''));
-            const freq: Record<string, number> = {};
-            for (const sv of stringValues) {
-              freq[sv] = (freq[sv] || 0) + 1;
-            }
-            const mode = Object.entries(freq).sort(([, a], [, b]) => b - a)[0]?.[0] || fi.value;
-            features[fi.name] = mode;
-          }
-        }
-
-        try {
-          const response = await apiClient.post('/predict', { model_id: modelId, features });
-          const pred: PredictResponse = response.data;
-          results.push({
-            date: futureDate.toISOString().split('T')[0],
-            predicted: pred.prediction_label ?? pred.prediction,
-            confidence: pred.confidence ?? null,
-          });
-        } catch {
-          // Skip failed predictions
-        }
-      }
-
-      setForecastData(results);
-      toast({ title: 'Forecast Complete', description: `Generated ${results.length} period predictions.` });
-    } catch (error) {
-      const msg = getApiErrorMessage(error, 'Forecast failed');
-      toast({ title: 'Forecast Error', description: msg, variant: 'destructive' });
-    } finally {
-      setIsForecasting(false);
-    }
-  }, [modelId, data, featureInputs, numPeriods, toast]);
-
-  // Chart data
-  const chartData = forecastData.map((item) => ({
-    date: item.date,
-    predicted: typeof item.predicted === 'number' ? item.predicted : null,
-    label: typeof item.predicted === 'string' ? item.predicted : null,
-  }));
-
-  if (!dateColumn) return null;
-
-  return (
-    <motion.div variants={itemVariants}>
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-secondary text-secondary-foreground">
-              <LineChartIcon className="h-4 w-4 text-primary" />
-            </div>
-            <div>
-              <CardTitle className="text-base">Predict Future</CardTitle>
-              <CardDescription>Project future values using rolling averages from historical data</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Controls */}
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="space-y-1.5">
-              <Label className="text-xs">Number of Periods</Label>
-              <Select value={String(numPeriods)} onValueChange={(v) => setNumPeriods(parseInt(v, 10))}>
-                <SelectTrigger className="w-32 h-9 text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {[3, 5, 10, 15, 20].map((n) => (
-                    <SelectItem key={n} value={String(n)}>{n} periods</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Button
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
-              onClick={handleForecast}
-              disabled={isForecasting || !modelId}
-            >
-              {isForecasting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="mr-2 h-4 w-4" />
-              )}
-              Generate Forecast
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <CalendarDays className="h-3.5 w-3.5" />
-            <span>Date column detected: <strong>{dateColumn.name}</strong></span>
-            <span className="text-muted-foreground/40">|</span>
-            <span>Each period ≈ 1 month from today</span>
-          </div>
-
-          {/* Chart (Regression) */}
-          {store.problemType === 'regression' && chartData.length > 0 && (
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid stroke={PREDICTION_CHART_COLORS.grid} strokeDasharray="3 3" opacity={0.3} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} />
-                  <RechartsTooltip
-                    contentStyle={{
-                      borderRadius: '8px',
-                      border: '1px solid rgba(148, 163, 184, 0.25)',
-                      backgroundColor: 'rgba(255,255,255,0.96)',
-                      boxShadow: '0 18px 45px rgba(15, 23, 42, 0.12)',
-                      fontSize: '12px',
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="predicted"
-                    stroke={PREDICTION_CHART_COLORS.forecast}
-                    strokeWidth={3}
-                    dot={{ fill: '#ffffff', stroke: PREDICTION_CHART_COLORS.forecast, strokeWidth: 2.5, r: 4 }}
-                    activeDot={{ r: 6, fill: PREDICTION_CHART_COLORS.forecast, stroke: '#ffffff', strokeWidth: 2 }}
-                    name="Predicted"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Forecast Table */}
-          {forecastData.length > 0 && (
-            <div className="max-h-64 overflow-y-auto rounded-lg border custom-scrollbar">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead className="text-xs font-semibold">Date</TableHead>
-                    <TableHead className="text-xs font-semibold">Predicted Value</TableHead>
-                    <TableHead className="text-xs font-semibold">Confidence</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {forecastData.map((item, idx) => (
-                    <TableRow key={idx}>
-                      <TableCell className="text-xs font-medium">{item.date}</TableCell>
-                      <TableCell className="text-xs font-semibold text-primary">
-                        {typeof item.predicted === 'number'
-                          ? item.predicted.toLocaleString(undefined, { maximumFractionDigits: 4 })
-                          : item.predicted}
-                      </TableCell>
-                      <TableCell>
-                        {item.confidence != null ? (
-                          <Badge
-                            variant="outline"
-                            className={cn(
-                              'text-[10px]',
-                              item.confidence >= 0.8
-                                ? 'border-primary/20 text-primary'
-                                : item.confidence >= 0.6
-                                ? 'border-amber-500/30 text-amber-600 dark:text-amber-400'
-                                : 'border-rose-500/30 text-rose-600 dark:text-rose-400',
-                            )}
-                          >
-                            {(item.confidence * 100).toFixed(1)}%
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-
-          {forecastData.length === 0 && !isForecasting && (
-            <div className="text-center py-6 text-sm text-muted-foreground">
-              Click "Generate Forecast" to predict future periods.
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </motion.div>
-  );
-}
-
-// ─── Batch Prediction (Section 5) ──────────────────────────────────────────────
-
-function BatchPrediction() {
-  const { toast } = useToast();
-  const store = useAppStore();
-  const modelId = store.modelId;
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [batchResults, setBatchResults] = useState<
-    { row: number; features: Record<string, string | number>; predicted: number | string; confidence: number | null }[]
-  >([]);
-  const [isBatching, setIsBatching] = useState(false);
-
-  const handleFileUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      setIsBatching(true);
-      setBatchResults([]);
-
-      try {
-        const text = await file.text();
-        const lines = text.trim().split('\n');
-        if (lines.length < 2) {
-          toast({ title: 'Invalid CSV', description: 'CSV must have a header row and at least one data row.', variant: 'destructive' });
-          return;
-        }
-
-        const headers = lines[0].split(',').map((h) => h.trim());
-        const results: typeof batchResults = [];
-
-        for (let i = 1; i < lines.length; i++) {
-          const values = lines[i].split(',').map((v) => v.trim());
-          const features: Record<string, string | number> = {};
-          headers.forEach((h, j) => {
-            const val = values[j] ?? '';
-            const num = parseFloat(val);
-            features[h] = isNaN(num) || val === '' ? val : num;
-          });
-
-          try {
-            const response = await apiClient.post('/predict', { model_id: modelId, features });
-            const pred: PredictResponse = response.data;
-            results.push({
-              row: i,
-              features,
-              predicted: pred.prediction_label ?? pred.prediction,
-              confidence: pred.confidence ?? null,
-            });
-          } catch {
-            // skip failed rows
-          }
-        }
-
-        setBatchResults(results);
-        toast({ title: 'Batch Complete', description: `Processed ${results.length} of ${lines.length - 1} rows.` });
-      } catch (error) {
-        const msg = getApiErrorMessage(error, 'Batch prediction failed');
-        toast({ title: 'Batch Error', description: msg, variant: 'destructive' });
-      } finally {
-        setIsBatching(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-    },
-    [modelId, toast],
-  );
-
-  return (
-    <motion.div variants={itemVariants}>
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <FileSpreadsheet className="h-4 w-4 text-primary" />
-            </div>
-            <div>
-              <CardTitle className="text-base">Batch Prediction</CardTitle>
-              <CardDescription>Upload a CSV file with feature columns for bulk predictions</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv"
-              className="hidden"
-              onChange={handleFileUpload}
-            />
-            <Button
-              variant="outline"
-              className="border-primary/20 text-primary hover:bg-primary/5"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isBatching || !modelId}
-            >
-              {isBatching ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Upload className="mr-2 h-4 w-4" />
-              )}
-              Upload Features CSV
-            </Button>
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            CSV must have column headers matching the model&apos;s feature names. Each row will be predicted individually.
-          </p>
-
-          {/* Results Table */}
-          {batchResults.length > 0 && (
-            <div className="max-h-64 overflow-y-auto rounded-lg border custom-scrollbar">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead className="text-xs font-semibold w-16">Row</TableHead>
-                    <TableHead className="text-xs font-semibold">Features</TableHead>
-                    <TableHead className="text-xs font-semibold">Predicted</TableHead>
-                    <TableHead className="text-xs font-semibold w-24">Confidence</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {batchResults.map((item, idx) => (
-                    <TableRow key={idx}>
-                      <TableCell className="text-xs font-medium">#{item.row}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground max-w-xs truncate">
-                        {Object.entries(item.features)
-                          .map(([k, v]) => `${k}=${v}`)
-                          .join(', ')}
-                      </TableCell>
-                      <TableCell className="text-xs font-semibold text-primary">
-                        {typeof item.predicted === 'number'
-                          ? item.predicted.toLocaleString(undefined, { maximumFractionDigits: 4 })
-                          : String(item.predicted)}
-                      </TableCell>
-                      <TableCell>
-                        {item.confidence != null ? (
-                          <Badge
-                            variant="outline"
-                            className={cn(
-                              'text-[10px]',
-                              item.confidence >= 0.8
-                                ? 'border-primary/20 text-primary'
-                                : item.confidence >= 0.6
-                                ? 'border-amber-500/30 text-amber-600 dark:text-amber-400'
-                                : 'border-rose-500/30 text-rose-600 dark:text-rose-400',
-                            )}
-                          >
-                            {(item.confidence * 100).toFixed(1)}%
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-
-          {batchResults.length === 0 && !isBatching && (
-            <div className="text-center py-4 text-sm text-muted-foreground">
-              No batch predictions yet. Upload a CSV to get started.
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </motion.div>
-  );
-}
-
-// ─── Prediction History (Section 6) ────────────────────────────────────────────
 
 function PredictionHistory() {
   const { toast } = useToast();
@@ -1341,7 +781,7 @@ function PredictionHistory() {
   const exportCSV = useCallback(() => {
     if (history.length === 0) return;
 
-    const headers = ['Timestamp', 'Prediction', 'Confidence', 'Features'];
+    const headers = ['Timestamp', 'Prediction', 'Model probability (uncalibrated)', 'Features', 'Model ID', 'Dataset version', 'Dataset fingerprint', 'Warnings', 'Approximate error range', 'Validation status'];
     const rows = history.map((h) => [
       h.timestamp,
       String(h.prediction),
@@ -1349,16 +789,15 @@ function PredictionHistory() {
       Object.entries(h.features)
         .map(([k, v]) => `${k}=${v}`)
         .join('; '),
+      h.audit?.modelId ?? '',
+      h.audit?.datasetVersion ?? '',
+      h.audit?.datasetFingerprint ?? '',
+      [...(h.audit?.warnings ?? []), ...(h.audit?.readiness?.reasons ?? []), h.audit?.probabilityNote ?? ''].join(' '),
+      h.audit?.errorBand ? `${h.audit.errorBand.lower} to ${h.audit.errorBand.upper}` : '',
+      h.audit?.readiness?.status ?? 'unverified',
     ]);
 
-    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${v}"`).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `predictions_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadPredictionCsv(`predictions_${new Date().toISOString().split('T')[0]}.csv`, [headers, ...rows]);
 
     toast({ title: 'Exported', description: `${history.length} predictions exported as CSV.` });
   }, [history, toast]);
@@ -1473,6 +912,7 @@ function PredictionHistory() {
                         .join(', ')}
                       {Object.keys(item.features).length > 5 && ` +${Object.keys(item.features).length - 5}`}
                     </p>
+                    {item.audit && <p className="text-[10px] text-muted-foreground">Model: {item.audit.modelId} · Dataset version: {item.audit.datasetVersion ?? 'Unverified'}{item.audit.warnings.length > 0 ? ' · Review warnings in export' : ''}</p>}
                   </div>
                   <span className="text-[10px] text-muted-foreground shrink-0 mt-0.5">
                     {formatTime(item.timestamp)}
@@ -1507,22 +947,45 @@ export default function PredictionTab() {
   const [isUploadingModel, setIsUploadingModel] = useState(false);
   const [featureInputs, setFeatureInputs] = useState<FeatureInput[]>([]);
   const [processedPreview, setProcessedPreview] = useState<Record<string, string | number> | null>(null);
+  const [schema, setSchema] = useState<PredictionSchema | null>(null);
+  const [schemaError, setSchemaError] = useState('');
+  const [predictionWarnings, setPredictionWarnings] = useState<string[]>([]);
+  const contextRef = useRef('');
+  contextRef.current = `${modelId}:${store.datasetId}`;
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setSchema(null); setSchemaError(''); setProcessedPreview(null);
+    useAppStore.setState({ predictionResult: null, predictionAnalysis: null, predictionProbabilities: null });
+    if (modelId) {
+      apiClient.get(`/prediction/schema/${encodeURIComponent(modelId)}`, { params: { dataset_id: store.datasetId ?? undefined } })
+        .then(response => { if (active) setSchema(response.data); })
+        .catch(error => {
+          if (active) {
+            clearStaleModelState(error);
+            setSchemaError(getApiErrorMessage(error, 'Unable to verify the model input schema.'));
+          }
+        });
+    }
+    return () => { active = false; };
+  }, [modelId, store.datasetId]);
 
   // ─── Build feature inputs from model ─────────────────────────────────────
   const autoFillFeatureInputs = useCallback(() => {
-    if (!uploadedModel?.features || uploadedModel.features.length === 0) {
+    if (!schema?.fields.length) {
       setFeatureInputs([]);
       return;
     }
 
     const dataset = data ?? [];
-    const inputs: FeatureInput[] = uploadedModel.features.map((featName) => {
+    const inputs: FeatureInput[] = schema.fields.map((field) => {
+      const featName = field.name;
       const col = columns.find((c) => c.name === featName);
       const values = dataset.map((r) => r[featName]).filter((v) => v != null);
       const numericValues = values.filter((v): v is number => typeof v === 'number' && !isNaN(v));
       const inferredNumeric = !col && numericValues.length > 0;
-      const role = col?.role || (inferredNumeric ? 'numeric' : 'categorical');
+      const role = field.type === 'numeric' || field.type === 'boolean' ? 'numeric' : field.type === 'unknown' ? (col?.role || (inferredNumeric ? 'numeric' : 'categorical')) : 'categorical';
       const dtype = col?.dtype || (inferredNumeric ? 'number' : 'string');
 
       let min: number | undefined;
@@ -1538,23 +1001,25 @@ export default function PredictionTab() {
         }
       } else {
         const uniqueSet = new Set(values.map((v) => String(v)));
-        uniqueValues.push(...Array.from(uniqueSet).sort());
+        uniqueValues.push(...(field.categories.length ? field.categories : Array.from(uniqueSet).filter(Boolean).sort()));
       }
 
       return {
         name: featName,
         role,
         dtype,
-        value: dataset.length > 0 ? getSuggestedFeatureValue(dataset, featName) : '',
+        value: field.type === 'boolean' && dataset.length > 0
+          ? ({ true: '1', false: '0' }[getSuggestedFeatureValue(dataset, featName)] ?? getSuggestedFeatureValue(dataset, featName))
+          : dataset.length > 0 ? getSuggestedFeatureValue(dataset, featName) : '',
         uniqueValues,
-        min,
-        max,
+        min: field.range?.min,
+        max: field.range?.max,
         mean,
       };
     });
 
     setFeatureInputs(inputs);
-  }, [uploadedModel?.features, data, columns]);
+  }, [schema, data, columns]);
 
   useEffect(() => {
     autoFillFeatureInputs();
@@ -1616,10 +1081,11 @@ export default function PredictionTab() {
   }, []);
 
   const handlePredict = useCallback(async () => {
-    if (!modelId) {
+    useAppStore.setState({ predictionResult: null, predictionAnalysis: null, predictionProbabilities: null });
+    if (!modelId || !schema || featureInputs.length === 0) {
       toast({
-        title: 'No Model ID',
-        description: 'Model ID is missing. Please retrain the model in the ML tab.',
+        title: 'Model inputs unavailable',
+        description: 'Wait for the model schema check or review the readiness message above.',
         variant: 'destructive',
       });
       return;
@@ -1637,29 +1103,21 @@ export default function PredictionTab() {
     }
 
     // Build features object
-    const features: Record<string, string | number> = {};
-    for (const fi of featureInputs) {
-      if (fi.role === 'numeric') {
-        const num = parseFloat(fi.value);
-        features[fi.name] = Number.isNaN(num) ? 0 : num;
-      } else {
-        features[fi.name] = fi.value;
-      }
+    let processedFeatures: Record<string, string | number>;
+    try { processedFeatures = predictionInputs(featureInputs); }
+    catch (error) {
+      toast({ title: 'Invalid input', description: (error as Error).message, variant: 'destructive' });
+      return;
     }
-
-    const processedFeatures = applyForecastDerivations(
-      features,
-      featureInputs.map((fi) => fi.name),
-      data ?? [],
-      targetColumn,
-    );
+    const requestContext = contextRef.current;
     setProcessedPreview(processedFeatures);
 
     setIsPredicting(true);
 
     try {
-      const response = await apiClient.post('/predict', { model_id: modelId, features: processedFeatures });
+      const response = await apiClient.post('/predict', { model_id: modelId, dataset_id: store.datasetId, features: processedFeatures });
       const result: PredictResponse = response.data;
+      if (contextRef.current !== requestContext) return;
       if (result.status === 'failed') {
         toast({
           title: 'Prediction Error',
@@ -1670,6 +1128,7 @@ export default function PredictionTab() {
       }
 
       const predictionValue = result.prediction_label ?? result.prediction;
+      setPredictionWarnings([...(result.warnings ?? []), ...(result.readiness?.reasons ?? [])]);
       let analysis = buildPredictionExplanation(
         predictionValue,
         result.confidence,
@@ -1683,8 +1142,9 @@ export default function PredictionTab() {
         analysis += ` Approximate validation error band: ${errorBand.lower.toLocaleString()} to ${errorBand.upper.toLocaleString()} (plus/minus ${errorBand.margin.toLocaleString()}). ${result.error_band_note || 'This range is not a calibrated 95% prediction interval.'}`;
       }
       if (result.cv_score_mean != null) {
-        analysis += ` Cross-validation reliability: mean ${Number(result.cv_score_mean).toFixed(4)}${result.cv_score_std != null ? `, std ${Number(result.cv_score_std).toFixed(4)}` : ''}.`;
+        analysis += ` Validation score: mean ${Number(result.cv_score_mean).toFixed(4)}${result.cv_score_std != null ? `, std ${Number(result.cv_score_std).toFixed(4)}` : ''}.`;
       }
+      analysis += ` ${[...(result.warnings ?? []), ...(result.readiness?.reasons ?? []), result.probability_note ?? ''].join(' ')}`;
 
       // Update store
       const existing = useAppStore.getState().predictionHistory;
@@ -1701,6 +1161,9 @@ export default function PredictionTab() {
             probabilities: result.probabilities,
             features: processedFeatures,
             timestamp: new Date().toISOString(),
+            audit: { modelId, datasetVersion: result.dataset_version, datasetFingerprint: result.dataset_fingerprint,
+              warnings: result.warnings ?? [], errorBand: result.error_band, readiness: result.readiness,
+              scoredAt: result.scored_at, probabilityNote: result.probability_note },
           },
         ],
       });
@@ -1710,12 +1173,17 @@ export default function PredictionTab() {
         description: `Result: ${predictionValue}`,
       });
     } catch (error) {
+      if (contextRef.current !== requestContext) return;
+      if (clearStaleModelState(error)) {
+        toast({ title: 'Model expired', description: 'The dataset changed. Train the model again before predicting.', variant: 'destructive' });
+        return;
+      }
       const msg = getApiErrorMessage(error, 'Prediction failed');
       toast({ title: 'Prediction Error', description: msg, variant: 'destructive' });
     } finally {
       setIsPredicting(false);
     }
-  }, [modelId, featureInputs, toast, data, targetColumn, featureImportance, store.problemType]);
+  }, [modelId, schema, featureInputs, toast, targetColumn, featureImportance, store.problemType, store.datasetId]);
 
   // ─── Early return if no model ────────────────────────────────────────────
   if (!modelTrained) {
@@ -1795,7 +1263,21 @@ export default function PredictionTab() {
         <UploadModelCard onUploadClick={openModelUpload} isUploading={isUploadingModel} />
 
         {/* Section 1: Model Status Card */}
-        <ModelStatusCard />
+        <ModelStatusCard schema={schema} />
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">Prediction readiness</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {schemaError ? <p role="alert" className="text-destructive">{schemaError}</p> : !schema ? <p>Checking the saved model and required inputs…</p> : <>
+              <p>{schema.readiness.status === 'available' ? 'Validation evidence available' : 'Review required before using results'}</p>
+              <p>Target: {schema.target}. Trained: {schema.trained_at || 'Unavailable'}. Dataset version: {schema.dataset_version ?? 'Unverified'}.</p>
+              {schema.readiness.method && <p>Validation: {schema.readiness.method}, {schema.readiness.rows} evaluated rows.</p>}
+              {schema.readiness.metrics && <p>{Object.entries(schema.readiness.metrics).map(([name, value]) => `${name}: ${typeof value === 'number' && Number.isFinite(value) ? value.toFixed(4) : 'unavailable'}`).join(' · ')}</p>}
+              {schema.readiness.reasons.map((reason, index) => <p key={index} className="text-amber-700 dark:text-amber-400">{reason}</p>)}
+              <p className="text-muted-foreground">Review all auto-filled inputs. Values outside the training range and new categories receive warnings. Regression ranges are approximate; class probabilities are uncalibrated.</p>
+            </>}
+          </CardContent>
+        </Card>
 
         {processedPreview && (
           <motion.div variants={itemVariants}>
@@ -1807,7 +1289,7 @@ export default function PredictionTab() {
                   </div>
                   <div>
                     <CardTitle className="text-base">Processed Input Data</CardTitle>
-                    <CardDescription>Final values sent to the prediction engine after auto-fill and date derivations.</CardDescription>
+                    <CardDescription>The input values submitted to the model.</CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -1826,13 +1308,17 @@ export default function PredictionTab() {
         )}
 
         {/* Section 2 & 3: Input Form + Result (side by side on large screens) */}
+        {store.predictionResult !== null && predictionWarnings.length > 0 && <Card className="border-amber-500/40">
+          <CardHeader><CardTitle className="text-base">Review this prediction</CardTitle></CardHeader>
+          <CardContent role="status" className="space-y-2 text-sm">{predictionWarnings.map((warning, index) => <p key={index}>{warning}</p>)}</CardContent>
+        </Card>}
         <div className="grid gap-6 lg:grid-cols-2">
           <PredictionForm
             featureInputs={featureInputs}
             setFeatureInputs={setFeatureInputs}
             onPredict={handlePredict}
             onAutoFill={autoFillFeatureInputs}
-            isPredicting={isPredicting}
+            isPredicting={isPredicting || !schema}
           />
           <PredictionResult
             result={store.predictionResult}
@@ -1843,6 +1329,10 @@ export default function PredictionTab() {
         </div>
 
         <Separator />
+
+        {modelId && schema && <PredictionBatch key={`${modelId}:${store.datasetId}`} modelId={modelId} datasetId={store.datasetId} />}
+
+        <Card><CardContent className="pt-6 text-sm">For forecasts over future dates, use Sales Forecast Using Time Series Analysis or Sales Forecast Using Machine Learning. Those tabs validate time order and generate future features.</CardContent></Card>
 
         <PredictionHistory />
       </motion.div>

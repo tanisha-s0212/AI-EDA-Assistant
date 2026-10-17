@@ -329,6 +329,7 @@ function buildFreshDatasetState(
     lossForecast: null,
     lossIllustrativeAssumptions: false,
     profitIllustrativeAssumptions: false,
+    profitValidationReport: null,
     profitForecast: null,
     lossSegments: null,
     lossSummary: null,

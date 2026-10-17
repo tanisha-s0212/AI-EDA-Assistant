@@ -62,6 +62,61 @@ def _rows(df: pd.DataFrame) -> list[dict]:
     return out.to_dict(orient="records")
 
 
+def test_ml_forecast_rejects_removed_lightgbm_model(client: TestClient):
+    response = client.post("/api/forecast/ml/run", json={
+        "date_column": "year_month",
+        "target_column": "net_sales",
+        "model_type": "lightgbm",
+    })
+    assert response.status_code == 422
+    assert "gradient_boosting, xgboost, or prophet" in response.json()["error"]
+
+
+def test_ml_forecast_reports_same_window_baseline_and_forecast_range(client: TestClient):
+    periods = 48
+    frame = pd.DataFrame({
+        'month': pd.date_range('2021-01-01', periods=periods, freq='MS'),
+        'sales': 200.0 + np.arange(periods) * 3.0 + 20.0 * np.sin(np.arange(periods) * 2 * np.pi / 12),
+        # A target-derived source column must not enter the forecast feature set.
+        'gross_profit': 80.0 + np.arange(periods),
+    })
+    response = client.post('/api/forecast/ml/run', json={
+        'data': _rows(frame), 'date_column': 'month', 'target_column': 'sales',
+        'model_type': 'gradient_boosting', 'forecast_periods': 3,
+        'test_percentage': 25, 'lag_periods': 2, 'feature_groups': ['trend', 'lags'],
+    })
+    assert response.status_code == 200, response.json()
+    body = response.json()
+    assert body['training_summary']['test_percentage'] == 25
+    assert body['naive_baseline']['model_name'] == 'seasonal-naive (12-period)'
+    assert body['naive_baseline']['metrics']['mae'] >= 0
+    assert body['validation_report']['evaluation_method'].startswith('Chronological recursive holdout')
+    assert len(body['future_forecast']) == 3
+    assert all(point['lower'] <= point['predicted'] <= point['upper'] for point in body['future_forecast'])
+    assert 'gross_profit' not in body['generated_features']
+
+
+def test_time_series_forecast_returns_an_honest_fallback_when_optional_models_are_unavailable(client: TestClient):
+    periods = 48
+    frame = pd.DataFrame({
+        'month': pd.date_range('2021-01-01', periods=periods, freq='MS'),
+        'sales': 300.0 + np.arange(periods) * 2.0 + 25.0 * np.sin(np.arange(periods) * 2 * np.pi / 12),
+    })
+    response = client.post('/api/forecast/ts/run', json={
+        'data': _rows(frame), 'date_column': 'month', 'target_column': 'sales',
+        'forecast_periods': 3, 'test_percentage': 25,
+    })
+    assert response.status_code == 200, response.json()
+    body = response.json()
+    assert body['training_summary']['test_percentage'] == 25.0
+    assert body['naive_baseline']['model_name'] == 'Seasonal-naive (12-period) baseline'
+    assert body['validation_report']['evaluation_method'].startswith('Chronological walk-forward')
+    assert len(body['future_forecast']) == 3
+    assert all(point['lower'] <= point['predicted'] <= point['upper'] for point in body['future_forecast'])
+    widths = [point['upper'] - point['lower'] for point in body['future_forecast']]
+    assert widths == sorted(widths)
+
+
 # --- Registry -------------------------------------------------------------------
 
 def test_registry_covers_every_classified_intent(synth):
@@ -154,6 +209,105 @@ def test_temporal_preprocessing_fits_only_on_earlier_rows():
     assert preprocessing["imputers"]["numeric"]["signal"] == 3.5
 
 
+def test_random_holdout_preprocessing_excludes_validation_rows(client, monkeypatch, tmp_path):
+    import main
+
+    rows = 80
+    signal = np.linspace(-20.0, 60.0, rows)
+    frame = pd.DataFrame({"signal": signal, "target": signal * 4 + np.cos(signal)})
+    fitted_partitions = []
+    original = main.prepare_universal_training_data
+
+    def track_fit(partition, request, **kwargs):
+        result = original(partition, request, **kwargs)
+        fit_indices = kwargs.get("fit_indices")
+        if fit_indices is not None:
+            fit_mean = float(partition["signal"].iloc[np.asarray(fit_indices, dtype=int)].mean())
+            fitted_partitions.append((fit_mean, float(result[2]["scaler"].mean_[0])))
+        return result
+
+    monkeypatch.setattr(main, "prepare_universal_training_data", track_fit)
+    monkeypatch.setattr(main, "MODEL_DIR", tmp_path)
+    response = client.post("/api/train", headers={"X-Client-Session-Id": "holdout-leak-test"}, json={
+        "data": _rows(frame), "target_column": "target", "feature_columns": ["signal"],
+        "problem_type": "regression", "model_type": "ridge_regression", "training_mode": "fast",
+        "test_size": 0.25, "random_state": 7,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "success"
+    assert len(fitted_partitions) == 1
+    assert fitted_partitions[0][1] == pytest.approx(fitted_partitions[0][0])
+    main.MODEL_CACHE.pop(response.json()["model_id"], None)
+
+
+def test_cross_validation_preprocessing_is_refit_inside_each_training_fold(client, monkeypatch, tmp_path):
+    import main
+
+    rows = 80
+    signal = np.linspace(-4.0, 9.0, rows)
+    frame = pd.DataFrame({"signal": signal, "target": 2.5 * signal + np.sin(signal)})
+    observed = []
+    original = main.prepare_universal_training_data
+
+    def track_fold_fit(partition, request):
+        result = original(partition, request)
+        if len(partition) < rows:
+            observed.append((len(partition), float(result[2]["scaler"].mean_[0]), float(partition["signal"].mean())))
+        return result
+
+    monkeypatch.setattr(main, "prepare_universal_training_data", track_fold_fit)
+    monkeypatch.setattr(main, "MODEL_DIR", tmp_path)
+    response = client.post("/api/train", headers={"X-Client-Session-Id": "fold-leak-test"}, json={
+        "data": _rows(frame), "target_column": "target", "feature_columns": ["signal"],
+        "problem_type": "regression", "model_type": "ridge_regression",
+        "training_mode": "balanced", "cv_folds": 5,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "success"
+    assert len(observed) == 5
+    assert all(size < rows and fitted_mean == pytest.approx(fold_mean)
+               for size, fitted_mean, fold_mean in observed)
+    main.MODEL_CACHE.pop(body["model_id"], None)
+
+
+def test_fold_target_feature_selection_uses_only_fold_training_rows(client, monkeypatch, tmp_path):
+    import main
+
+    rng = np.random.RandomState(19)
+    rows, feature_count = 12, 12
+    frame = pd.DataFrame(rng.normal(size=(rows, feature_count)),
+                         columns=[f"signal_{index}" for index in range(feature_count)])
+    frame["target"] = 3.0 * frame["signal_0"] - 2.0 * frame["signal_1"] + 0.2 * rng.normal(size=rows)
+    observed = []
+    original = main.prepare_universal_training_data
+
+    def track_fold_selection(partition, request, **kwargs):
+        result = original(partition, request, **kwargs)
+        if len(partition) < rows:
+            correlations = partition[request.feature_columns].apply(
+                lambda column: abs(float(column.corr(partition[request.target_column])))
+                if column.nunique() > 1 else 0.0
+            )
+            expected = correlations.replace([np.inf, -np.inf], np.nan).fillna(0.0).sort_values(ascending=False).head(3).index.tolist()
+            observed.append((set(result[3]), set(expected)))
+        return result
+
+    monkeypatch.setattr(main, "prepare_universal_training_data", track_fold_selection)
+    monkeypatch.setattr(main, "MODEL_DIR", tmp_path)
+    response = client.post("/api/train", headers={"X-Client-Session-Id": "fold-feature-leak-test"}, json={
+        "data": _rows(frame), "target_column": "target",
+        "feature_columns": [f"signal_{index}" for index in range(feature_count)],
+        "problem_type": "regression", "model_type": "ridge_regression",
+        "training_mode": "balanced", "cv_folds": 5,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "success"
+    assert len(observed) == rows
+    assert all(selected == expected for selected, expected in observed)
+    main.MODEL_CACHE.pop(response.json()["model_id"], None)
+
+
 def test_prediction_api_uses_validation_error_band_not_training_rmse(client, monkeypatch):
     import main
 
@@ -163,6 +317,7 @@ def test_prediction_api_uses_validation_error_band_not_training_rmse(client, mon
 
     bundle = {
         "model": FixedRegressor(), "problem_type": "regression",
+        "owner_session_id": "prediction-test",
         "feature_columns": ["signal"], "rmse": 0.01, "validation_rmse": 10.0,
         "preprocessing": {
             "raw_feature_columns": ["signal"], "numeric_features": ["signal"],
@@ -171,12 +326,110 @@ def test_prediction_api_uses_validation_error_band_not_training_rmse(client, mon
         },
     }
     monkeypatch.setattr(main, "load_model_bundle", lambda _model_id: bundle)
-    response = client.post("/api/predict", json={"model_id": "m", "features": {"signal": 1}})
+    response = client.post("/api/predict", headers={"X-Client-Session-Id": "prediction-test"},
+                           json={"model_id": "m", "features": {"signal": 1}})
     assert response.status_code == 200
     body = response.json()
     assert body["error_band"]["margin"] == pytest.approx(19.6)
     assert body["confidence_interval"] == body["error_band"]  # legacy response key
     assert "not a calibrated 95%" in body["error_band_note"]
+
+
+def test_ml_training_reports_validation_metrics_and_real_health_status(client, monkeypatch, tmp_path):
+    """The user-facing metrics and health status must come from held-out evidence."""
+    import main
+
+    rng = np.random.RandomState(31)
+    frame = pd.DataFrame({
+        "signal": rng.normal(size=100),
+        "noise": rng.normal(size=100),
+        "target": rng.normal(size=100),
+    })
+    monkeypatch.setattr(main, "MODEL_DIR", tmp_path)
+    response = client.post("/api/train", headers={"X-Client-Session-Id": "health-test"}, json={
+        "data": _rows(frame), "target_column": "target", "feature_columns": ["signal", "noise"],
+        "problem_type": "regression", "model_type": "random_forest", "training_mode": "fast",
+        "test_size": 0.25, "random_state": 7,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["metrics"]["RMSE"] == pytest.approx(body["scores"]["rmse"]["mean"])
+    assert body["full_metrics"]["training"]["RMSE"] < body["metrics"]["RMSE"]
+    assert body["overfitting_status"] in {"watch", "detected"}
+    assert body["generalization_gap"] > 0
+    main.MODEL_CACHE.pop(body["model_id"], None)
+
+
+def test_classification_validation_includes_balanced_accuracy(client, monkeypatch, tmp_path):
+    import main
+
+    rng = np.random.RandomState(43)
+    frame = pd.DataFrame({"signal": rng.normal(size=80)})
+    frame["target"] = np.where(frame["signal"] > 1.1, "rare", "common")
+    monkeypatch.setattr(main, "MODEL_DIR", tmp_path)
+    response = client.post("/api/train", headers={"X-Client-Session-Id": "class-health-test"}, json={
+        "data": _rows(frame), "target_column": "target", "feature_columns": ["signal"],
+        "problem_type": "classification", "model_type": "logistic_regression", "training_mode": "balanced",
+        "cv_folds": 3, "random_state": 11,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "Balanced Accuracy" in body["metrics"]
+    assert "balanced_accuracy" in body["scores"]
+    main.MODEL_CACHE.pop(body["model_id"], None)
+
+
+def test_direct_prediction_rejects_wrong_dataset_and_stale_artifact(client, monkeypatch, tmp_path):
+    import main
+
+    monkeypatch.setattr(main, "DATASET_DIR", tmp_path / "datasets")
+    monkeypatch.setattr(main, "DATASET_CACHE_INDEX_PATH", tmp_path / "datasets" / "dataset_cache_index.json")
+    monkeypatch.setattr(main, "MODEL_DIR", tmp_path / "models")
+    main.DATASET_DIR.mkdir(parents=True)
+    main.MODEL_DIR.mkdir(parents=True)
+    owner = "artifact-owner"
+    frame = pd.DataFrame({"signal": np.linspace(0, 20, 40), "target": np.linspace(3, 43, 40)})
+    cache_response = client.post("/api/cache-dataset", headers={"X-Client-Session-Id": owner}, json={
+        "file_name": "artifact.csv", "data": _rows(frame),
+    })
+    assert cache_response.status_code == 200, cache_response.text
+    dataset_id = cache_response.json()["datasetId"]
+    profile_response = client.post("/api/assistant/ask", headers={"X-Client-Session-Id": owner}, json={
+        "dataset_id": dataset_id, "question": "What is the average target?", "data": [],
+    })
+    assert profile_response.status_code == 200
+    assert profile_response.json()["status"] == "success"
+    train_response = client.post("/api/train", headers={"X-Client-Session-Id": owner}, json={
+        "dataset_id": dataset_id, "target_column": "target", "feature_columns": ["signal"],
+        "problem_type": "regression", "model_type": "ridge_regression",
+        "training_mode": "fast",
+    })
+    assert train_response.status_code == 200, train_response.text
+    model_id = train_response.json()["model_id"]
+
+    payload = {"model_id": model_id, "dataset_id": dataset_id, "features": {"signal": 5.0}}
+    assert client.post("/api/predict", json=payload).status_code == 403
+    assert client.post("/api/predict", headers={"X-Client-Session-Id": "other-owner"},
+                       json=payload).status_code == 403
+    prediction = client.post("/api/predict", headers={"X-Client-Session-Id": owner}, json=payload)
+    assert prediction.status_code == 200 and prediction.json()["status"] == "success"
+
+    replaced = client.post("/api/clean-dataset", headers={"X-Client-Session-Id": owner}, json={
+        "dataset_id": dataset_id, "remove_duplicates": True, "handle_missing": False,
+        "convert_dates": False, "standardize_names": False, "infer_dtypes": False,
+    })
+    assert replaced.status_code == 200, replaced.text
+    stale = client.post("/api/predict", headers={"X-Client-Session-Id": owner}, json=payload)
+    assert stale.status_code == 409
+    assert "stale" in stale.json()["error"].lower()
+    assert client.get(f"/api/prediction/schema/{model_id}", headers={"X-Client-Session-Id": owner},
+                      params={"dataset_id": dataset_id}).status_code == 409
+    assert client.post("/api/predict/batch", headers={"X-Client-Session-Id": owner},
+                       data={"model_id": model_id, "dataset_id": dataset_id},
+                       files={"file": ("inputs.csv", b"signal\n5.0\n", "text/csv")}).status_code == 409
+
+    main.DATASET_CACHE.pop(dataset_id, None)
+    main.MODEL_CACHE.pop(model_id, None)
 
 
 def test_unhandled_api_errors_do_not_return_exception_text():

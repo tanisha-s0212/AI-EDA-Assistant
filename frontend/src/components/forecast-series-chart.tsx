@@ -103,11 +103,13 @@ function ForecastSeriesTooltip({
   payload,
   label,
   showConfidence,
+  confidenceLabel = '95%',
 }: {
   active?: boolean;
   payload?: Array<{ payload?: ForecastSeriesPoint }>;
   label?: string;
   showConfidence?: boolean;
+  confidenceLabel?: string;
 }) {
   if (!active || !payload?.length) return null;
   const point = payload[0]?.payload;
@@ -118,8 +120,8 @@ function ForecastSeriesTooltip({
     { label: 'Forecast', value: point.forecast },
     ...(showConfidence
       ? [
-          { label: 'Lower 95%', value: point.lower },
-          { label: 'Upper 95%', value: point.upper },
+          { label: `Lower ${confidenceLabel}`, value: point.lower },
+          { label: `Upper ${confidenceLabel}`, value: point.upper },
         ]
       : []),
   ].filter((item) => item.value != null);
@@ -141,6 +143,7 @@ function ForecastSeriesTooltip({
 type ForecastSeriesChartProps = {
   data: ForecastSeriesPoint[];
   showConfidence?: boolean;
+  confidenceLabel?: string;
   heightClassName?: string;
   yTickFormatter?: (value: number) => string;
 };
@@ -148,6 +151,7 @@ type ForecastSeriesChartProps = {
 export default function ForecastSeriesChart({
   data,
   showConfidence = false,
+  confidenceLabel = '95%',
   heightClassName = 'h-80',
   yTickFormatter,
 }: ForecastSeriesChartProps) {
@@ -177,14 +181,14 @@ export default function ForecastSeriesChart({
             tick={{ fill: '#64748b', fontSize: 12 }}
             tickFormatter={(value) => (yTickFormatter ? yTickFormatter(Number(value)) : formatChartValue(Number(value)))}
           />
-          <RechartsTooltip content={<ForecastSeriesTooltip showConfidence={showConfidence} />} />
+          <RechartsTooltip content={<ForecastSeriesTooltip showConfidence={showConfidence} confidenceLabel={confidenceLabel} />} />
           <Legend />
           {showConfidence ? (
             <>
               <Area
                 type="monotone"
                 dataKey="lowerBand"
-                name="Lower 95%"
+                name={`Lower ${confidenceLabel}`}
                 stackId="confidence"
                 stroke="transparent"
                 fill={FORECAST_SERIES_CHART_COLORS.bandBase}
@@ -194,7 +198,7 @@ export default function ForecastSeriesChart({
               <Area
                 type="monotone"
                 dataKey="confidenceRange"
-                name="95% Confidence Band"
+                name={`${confidenceLabel} Forecast Range`}
                 stackId="confidence"
                 stroke="transparent"
                 fill={FORECAST_SERIES_CHART_COLORS.band}

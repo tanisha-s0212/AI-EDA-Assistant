@@ -120,3 +120,72 @@ def test_mapped_revenue_loss_still_uses_historical_mean(client: TestClient):
         assert row0['revenue_loss'] >= 40.0
     finally:
         DATASET_CACHE.pop(session_id, None)
+
+
+def test_explicit_driver_mapping_and_range_metadata_are_returned(client: TestClient):
+    """A user mapping must override name matching and ranges must state their basis."""
+    session_id = 'loss_explicit_mapping_and_range'
+    n = 20
+    frame = pd.DataFrame({
+        'order_date': pd.date_range('2018-01-01', periods=n, freq='D'),
+        'sales': [200.0] * n,
+        'unlabelled_loss': [35.0] * n,
+    })
+    try:
+        _seed(session_id, frame, [200.0] * 3)
+        response = client.post('/api/loss-forecast/run', json={
+            'session_id': session_id,
+            'forecast_periods': 3,
+            'confirmed_assumptions': True,
+            'column_mapping': {'revenue_loss': 'unlabelled_loss'},
+        })
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload['loss_forecast'][0]['revenue_loss'] >= 35.0
+        assert payload['loss_forecast'][0]['lower_bound'] < payload['loss_forecast'][0]['total_loss']
+        assert payload['loss_forecast'][0]['upper_bound'] > payload['loss_forecast'][0]['total_loss']
+        assert 'Historical loss-rate variability' in payload['summary']['range_method']
+        assert payload['summary']['available_periods'] == 3
+    finally:
+        DATASET_CACHE.pop(session_id, None)
+
+
+def test_profit_forecast_uses_mapped_costs_and_cumulative_breakeven(client: TestClient):
+    session_id = 'profit_mapped_financials'
+    frame = pd.DataFrame({
+        'order_date': pd.date_range('2018-01-01', periods=20, freq='D'),
+        'sales': [200.0] * 20,
+        'ledger_direct_charge': [140.0] * 20,
+        'ledger_overhead': [20.0] * 20,
+    })
+    try:
+        _seed(session_id, frame, [200.0] * 3)
+        loss_response = client.post('/api/loss-forecast/run', json={
+            'session_id': session_id, 'forecast_periods': 3, 'confirmed_assumptions': True,
+        })
+        assert loss_response.status_code == 200, loss_response.text
+        response = client.post('/api/profit-forecast/run', json={
+            'session_id': session_id,
+            'forecast_periods': 3,
+            'confirmed_assumptions': True,
+            'column_mapping': {
+                'cogs': 'ledger_direct_charge',
+                'operating_expense': 'ledger_overhead',
+            },
+            'scenario_parameters': {
+                'optimistic': {'revenue': 1, 'cogs': 1, 'loss': 1},
+                'baseline': {'revenue': 1, 'cogs': 1, 'loss': 1},
+                'pessimistic': {'revenue': 1, 'cogs': 1, 'loss': 1},
+            },
+        })
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        row = payload['scenarios']['baseline'][0]
+        assert row['forecasted_cogs'] == 140.0
+        assert row['operating_expenses'] == 20.0
+        assert payload['validation_report']['mapped_columns']['cogs'] == 'ledger_direct_charge'
+        assert payload['validation_report']['mapped_columns']['operating_expense'] == 'ledger_overhead'
+        assert 'Revenue − COGS' in payload['validation_report']['reconciliation']
+        assert 'first_profitable_period' in payload['breakeven']
+    finally:
+        DATASET_CACHE.pop(session_id, None)

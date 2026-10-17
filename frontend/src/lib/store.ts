@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { apiClient, getApiErrorMessage } from '@/lib/api';
 import type { CurrencyCode } from '@/lib/currency-format';
-import type { LossForecastResult, LossForecastSummary, ProfitForecastResult, ScenarioComparison, SegmentBreakdown } from '@/types/forecast';
+import type { LossForecastResult, LossForecastSummary, ProfitForecastResult, ProfitForecastValidation, ScenarioComparison, SegmentBreakdown } from '@/types/forecast';
 
 export type TabId = 'upload' | 'understanding' | 'cleaning' | 'eda' | 'forecast_ts' | 'forecast_ml' | 'loss_forecast' | 'profit_forecast' | 'ml' | 'prediction' | 'report';
 
@@ -174,6 +174,13 @@ export interface TimeSeriesForecastResult {
   model_comparison?: ForecastModelComparison[];
   naive_baseline?: ForecastNaiveBaseline;
   validation_warnings?: string[];
+  validation_report?: {
+    status: 'ready' | 'caution';
+    model_beats_baseline: boolean;
+    evaluation_method: string;
+    forecast_interval: string;
+    reasons: string[];
+  };
   assumptions_audit?: string[];
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };
@@ -209,6 +216,13 @@ export interface MlForecastResult {
   model_comparison?: ForecastModelComparison[];
   naive_baseline?: ForecastNaiveBaseline;
   validation_warnings?: string[];
+  validation_report?: {
+    status: 'ready' | 'caution';
+    model_beats_baseline: boolean;
+    evaluation_method: string;
+    forecast_interval: string;
+    reasons: string[];
+  };
   assumptions_audit?: string[];
   recommended_models?: { model_type: string; model_name: string; recommendation_reason: string; recommended?: boolean }[];
   model_details?: { model_type: string; model_name: string; rationale?: string };
@@ -216,6 +230,7 @@ export interface MlForecastResult {
 }
 
 export interface ModelInfo {
+  datasetId?: string | null;
   name: string;
   type: string;
   target: string;
@@ -251,12 +266,16 @@ export interface DatasetWorkspaceState {
   predictionResult: number | string | null;
   predictionAnalysis: string | null;
   predictionProbabilities: Record<string, number> | null;
-  predictionHistory: { id: string; prediction: number | string; confidence?: number; probabilities?: Record<string, number>; features: Record<string, string | number>; timestamp: string }[];
+  predictionHistory: { id: string; prediction: number | string; confidence?: number; probabilities?: Record<string, number>; features: Record<string, string | number>; timestamp: string;
+    audit?: { modelId: string; datasetVersion?: number; datasetFingerprint?: string; warnings: string[];
+      errorBand?: { lower: number; upper: number; margin: number }; readiness?: { status: string; reasons: string[] };
+      scoredAt?: string; probabilityNote?: string } }[];
   timeSeriesForecastResult: TimeSeriesForecastResult | null;
   mlForecastResult: MlForecastResult | null;
   lossForecast: LossForecastResult[] | null;
   lossIllustrativeAssumptions: boolean;
   profitIllustrativeAssumptions: boolean;
+  profitValidationReport: ProfitForecastValidation | null;
   profitForecast: ProfitForecastResult[] | null;
   lossSegments: SegmentBreakdown[] | null;
   lossSummary: LossForecastSummary | null;
@@ -331,8 +350,8 @@ export interface AppState extends DatasetWorkspaceState {
   selectDataset: (key: string) => void;
   setReportGenerated: (v: boolean) => void;
   setReportUrl: (v: string | null) => void;
-  runLossForecast: (sessionId: string, periods: number, options?: { confirmedAssumptions?: boolean }) => Promise<void>;
-  runProfitForecast: (sessionId: string, periods: number, options?: { confirmedAssumptions?: boolean; scenarioParameters?: Record<string, Record<string, number>>; scenarios?: Record<string, number> }) => Promise<void>;
+  runLossForecast: (sessionId: string, periods: number, options?: { confirmedAssumptions?: boolean; columnMapping?: Record<string, string> }) => Promise<void>;
+  runProfitForecast: (sessionId: string, periods: number, options?: { confirmedAssumptions?: boolean; columnMapping?: Record<string, string>; scenarioParameters?: Record<string, Record<string, number>>; scenarios?: Record<string, number> }) => Promise<void>;
   fetchLossSegments: (sessionId: string) => Promise<void>;
   fetchBreakeven: (sessionId: string) => Promise<void>;
   resetForecasts: () => void;
@@ -399,6 +418,7 @@ function createEmptyDatasetState(): DatasetWorkspaceState {
     lossForecast: null,
     lossIllustrativeAssumptions: false,
     profitIllustrativeAssumptions: false,
+    profitValidationReport: null,
     profitForecast: null,
     lossSegments: null,
     lossSummary: null,
@@ -460,6 +480,7 @@ const datasetStateKeys: Array<keyof DatasetWorkspaceState> = [
   'lossForecast',
   'lossIllustrativeAssumptions',
   'profitIllustrativeAssumptions',
+  'profitValidationReport',
   'profitForecast',
   'lossSegments',
   'lossSummary',
@@ -622,6 +643,7 @@ const store = create<AppState>()(
             session_id: sessionId,
             forecast_periods: periods,
             confirmed_assumptions: Boolean(options?.confirmedAssumptions),
+            column_mapping: options?.columnMapping ?? {},
           });
           set({
             lossForecast: response.data.loss_forecast ?? [],
@@ -655,6 +677,7 @@ const store = create<AppState>()(
             forecast_periods: periods,
             confirmed_assumptions: Boolean(options?.confirmedAssumptions),
             scenario_parameters: options?.scenarioParameters ?? scalarScenarioParameters,
+            column_mapping: options?.columnMapping ?? {},
           });
           const scenarios = response.data.scenarios as ScenarioComparison;
           set({
@@ -663,6 +686,7 @@ const store = create<AppState>()(
             breakevenPeriod: response.data.breakeven?.breakeven_period ?? null,
             periodsToBreakeven: response.data.breakeven?.periods_to_breakeven ?? null,
             profitIllustrativeAssumptions: Boolean(response.data.illustrative_assumptions),
+            profitValidationReport: response.data.validation_report ?? null,
             profitLoading: false,
             profitError: null,
           });
@@ -692,6 +716,7 @@ const store = create<AppState>()(
         periodsToBreakeven: null,
         lossIllustrativeAssumptions: false,
         profitIllustrativeAssumptions: false,
+        profitValidationReport: null,
         lossLoading: false,
         profitLoading: false,
         lossError: null,

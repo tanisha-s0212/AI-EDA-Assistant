@@ -515,6 +515,7 @@ export default function MlTab() {
   const columns = useAppStore((state) => state.columns);
   const datasetId = useAppStore((state) => state.datasetId);
   const savedModelId = useAppStore((state) => state.modelId);
+  const savedModelDatasetId = useAppStore((state) => state.uploadedModel?.datasetId);
   const appProblemType = useAppStore((state) => state.problemType);
   const mlWorkflowStep = useAppStore((state) => state.mlWorkflowStep);
   const setMlWorkflowStep = useAppStore((state) => state.setMlWorkflowStep);
@@ -540,6 +541,7 @@ export default function MlTab() {
   const [cvFolds, setCvFolds] = useState(3);
   const [trainingMode, setTrainingMode] = useState<TrainingMode>('fast');
   const [randomState, setRandomState] = useState(42);
+  const [timeOrderColumn, setTimeOrderColumn] = useState<string>('');
 
   // Step 4 state
   const [isTraining, setIsTraining] = useState(false);
@@ -627,7 +629,7 @@ export default function MlTab() {
 
     if (isNewDataset) {
       const previousData = datasetSignatureRef.current.data;
-      const hasDifferentSavedModel = Boolean(savedModelId && datasetId && savedModelId !== datasetId);
+      const hasDifferentSavedModel = Boolean(savedModelDatasetId && datasetId && savedModelDatasetId !== datasetId);
       const dataWasReplacedInSession = previousData !== null && previousData !== data;
       datasetSignatureRef.current = { signature: datasetSignature, data };
       userOverrodeTargetRef.current = false;
@@ -706,7 +708,7 @@ export default function MlTab() {
     }
 
     if (!hasUpdates) return;
-  }, [data, columns, datasetId, savedModelId, selectedTarget, recommendationReason, selectedFeatures, targetProblemType, detectedType, confidence, setMlWorkflowStep]);
+  }, [data, columns, datasetId, savedModelId, savedModelDatasetId, selectedTarget, recommendationReason, selectedFeatures, targetProblemType, detectedType, confidence, setMlWorkflowStep]);
 
   // ─── Update when target changes ───────────────────────────────────────────
 
@@ -789,6 +791,7 @@ export default function MlTab() {
       random_state: randomState,
       cv_folds: cvFolds,
       training_mode: trainingMode,
+      time_order_column: timeOrderColumn || null,
     };
 
     try {
@@ -810,7 +813,7 @@ export default function MlTab() {
       (err as Error & { detail?: string }).detail = getApiErrorDetail(error) ?? undefined;
       throw err;
     }
-  }, [data, datasetId, selectedTarget, selectedFeatures, targetProblemType, testSize, randomState, cvFolds, trainingMode, toast]);
+  }, [data, datasetId, selectedTarget, selectedFeatures, targetProblemType, testSize, randomState, cvFolds, trainingMode, timeOrderColumn, toast]);
 
   // ─── Train selected model (Step 4) ───────────────────────────────────────
 
@@ -871,6 +874,7 @@ export default function MlTab() {
           modelTrained: true,
           featureImportance: result.feature_importance || [],
           uploadedModel: {
+            datasetId,
             name: modelToTrain,
             type: modelToTrain,
             target: selectedTarget,
@@ -901,7 +905,7 @@ export default function MlTab() {
     } finally {
       setTimeout(() => setIsTraining(false), 500);
     }
-  }, [selectedModel, recommendedModel, trainModel, selectedTarget, targetProblemType, selectedFeatures, toast]);
+  }, [datasetId, selectedModel, recommendedModel, trainModel, selectedTarget, targetProblemType, selectedFeatures, toast]);
 
   const handleTrainAndGoPredict = useCallback(async () => {
     updateMlStep(4);
@@ -949,6 +953,7 @@ export default function MlTab() {
       modelTrained: true,
       featureImportance: result.featureImportance,
       uploadedModel: {
+        datasetId,
         name: result.modelId,
         type: result.modelId,
         target: selectedTarget,
@@ -958,7 +963,7 @@ export default function MlTab() {
         features: selectedFeatures,
       },
     });
-  }, [selectedFeatures, selectedTarget, targetProblemType]);
+  }, [datasetId, selectedFeatures, selectedTarget, targetProblemType]);
 
   const handleCompare = useCallback(async () => {
     const modelsToCompare = recommendedCandidates.map(m => m.id);
@@ -1265,7 +1270,7 @@ export default function MlTab() {
 
   const primaryMetrics = targetProblemType === 'regression'
     ? { 'R2': trainResults?.metrics?.['R2'] ?? trainResults?.metrics?.['r2'] ?? null, 'RMSE': trainResults?.metrics?.['RMSE'] ?? null, 'MAE': trainResults?.metrics?.['MAE'] ?? null }
-    : { 'Accuracy': trainResults?.metrics?.['Accuracy'] ?? null, 'Precision': trainResults?.metrics?.['Precision'] ?? null, 'Recall': trainResults?.metrics?.['Recall'] ?? null, 'F1': trainResults?.metrics?.['F1'] ?? trainResults?.metrics?.['F1 Score'] ?? null };
+    : { 'Accuracy': trainResults?.metrics?.['Accuracy'] ?? null, 'Balanced Accuracy': trainResults?.metrics?.['Balanced Accuracy'] ?? null, 'Precision': trainResults?.metrics?.['Precision'] ?? null, 'Recall': trainResults?.metrics?.['Recall'] ?? null, 'F1': trainResults?.metrics?.['F1'] ?? trainResults?.metrics?.['F1 Score'] ?? null };
   const modelResultsExplanation = useMemo(() => buildModelResultsExplanation({
     selectedTarget,
     targetProblemType,
@@ -1279,7 +1284,7 @@ export default function MlTab() {
 
   const metricIcons: Record<string, React.ElementType> = {
     'R2': TrendingUp, 'RMSE': Activity, 'MAE': BarChart3,
-    'Accuracy': Target, 'Precision': Gauge, 'Recall': Eye, 'F1': Shield,
+    'Accuracy': Target, 'Balanced Accuracy': Target, 'Precision': Gauge, 'Recall': Eye, 'F1': Shield,
   };
 
 
@@ -2123,6 +2128,27 @@ export default function MlTab() {
                             <p className="text-xs text-muted-foreground">folds</p>
                           </motion.button>
                         ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-medium">Validation order</p>
+                        <p className="text-xs text-muted-foreground">Choose a date or sequence column when later records must remain unseen during validation.</p>
+                      </div>
+                      <Select value={timeOrderColumn || '__random__'} onValueChange={(value) => setTimeOrderColumn(value === '__random__' ? '' : value)}>
+                        <SelectTrigger className="w-full md:w-72"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__random__">Random / independent records</SelectItem>
+                          {columns.filter((column) => column.role === 'datetime').map((column) => (
+                            <SelectItem key={column.name} value={column.name}>Chronological: {column.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="rounded-lg border bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+                        {timeOrderColumn
+                          ? `The final ${testSize}% of valid ${timeOrderColumn} records will be held out. Preprocessing is fitted only on earlier records.`
+                          : 'Use random validation only when records are independent. For time-based data, choose the date column above.'}
                       </div>
                     </div>
 

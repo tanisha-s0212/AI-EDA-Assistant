@@ -79,12 +79,6 @@ function buildModelRecommendations(featureCount: number) {
       recommendation_reason: 'Strong tree boosting candidate when engineered lag and calendar features interact.',
     },
     {
-      model_type: 'lightgbm',
-      model_name: 'LightGBM',
-      recommended: false,
-      recommendation_reason: 'Fast gradient boosting candidate; import failures are surfaced in the comparison table.',
-    },
-    {
       model_type: 'prophet',
       model_name: 'Prophet',
       recommended: false,
@@ -287,7 +281,7 @@ export default function MlForecastTab() {
               </div>
               <h2 className="mt-3 text-2xl font-bold tracking-tight">Sales Forecast Using Machine Learning</h2>
               <p className="mt-2 text-sm text-muted-foreground">
-                Time is treated as just another input here, so feature engineering drives forecast quality, explainability, and the shape of the final projection.
+                The forecast uses time markers and prior observed sales only. It validates the model on a later period and compares it with a simple baseline before showing a business forecast.
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary">{dateColumn || 'Pick a date column'}</Badge>
@@ -341,7 +335,7 @@ export default function MlForecastTab() {
               <Card>
                 <CardHeader>
                   <CardTitle>Step 1: Target And Feature Engineering</CardTitle>
-                  <CardDescription>Choose the forecasting columns and explicitly tell the model which time-derived features to generate.</CardDescription>
+                  <CardDescription>Choose the forecasting columns and the forecast-time-safe features to generate. Other dataset columns are excluded because they may not exist for future periods.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -491,10 +485,15 @@ export default function MlForecastTab() {
 
                     <Card>
                       <CardHeader>
-                        <CardTitle>Production Validation</CardTitle>
-                        <CardDescription>Auto-selection, data quality gate, naive baseline, and assumptions audit.</CardDescription>
+                    <CardTitle>Forecast Validation</CardTitle>
+                    <CardDescription>Data quality, same-window baseline comparison, and the method used to validate this forecast.</CardDescription>
                       </CardHeader>
                       <CardContent className="grid gap-4 lg:grid-cols-3">
+                        <div className="rounded-xl border p-4">
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Decision Support Status</p>
+                          <p className={`mt-2 text-2xl font-bold ${result.validation_report?.status === 'ready' ? 'text-emerald-600' : 'text-amber-600'}`}>{result.validation_report?.status === 'ready' ? 'Ready' : 'Use caution'}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{result.validation_report?.model_beats_baseline ? 'Model beat the same-window baseline.' : 'Model did not beat the baseline.'}</p>
+                        </div>
                         <div className="rounded-xl border p-4">
                           <p className="text-xs uppercase tracking-wide text-muted-foreground">Data Quality</p>
                           <p className="mt-2 text-2xl font-bold">{result.data_quality?.score ?? 'N/A'}</p>
@@ -506,8 +505,8 @@ export default function MlForecastTab() {
                           <p className="mt-1 text-sm text-muted-foreground">{result.naive_baseline?.mae_improvement_pct ?? 0}% MAE improvement</p>
                         </div>
                         <div className="rounded-xl border p-4">
-                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Audit Trail</p>
-                          <p className="mt-2 text-sm text-muted-foreground">{result.assumptions_audit?.slice(0, 2).join(' ') ?? 'No assumptions captured.'}</p>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Evaluation</p>
+                          <p className="mt-2 text-sm text-muted-foreground">{result.validation_report?.evaluation_method ?? result.assumptions_audit?.slice(0, 2).join(' ') ?? 'No assumptions captured.'}</p>
                         </div>
                       </CardContent>
                     </Card>
@@ -516,7 +515,7 @@ export default function MlForecastTab() {
                       <Card>
                         <CardHeader>
                           <CardTitle>Model Comparison</CardTitle>
-                          <CardDescription>Walk-forward validation across Gradient Boosting, Prophet, XGBoost, and LightGBM candidates.</CardDescription>
+                          <CardDescription>Walk-forward validation across Gradient Boosting, Prophet, and XGBoost candidates.</CardDescription>
                         </CardHeader>
                         <CardContent>
                           {result.validation_warnings?.length ? (
@@ -551,7 +550,7 @@ export default function MlForecastTab() {
                           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                             <div>
                               <CardTitle>Forecast Line</CardTitle>
-                              <CardDescription>Historical actuals, backtest predictions, and future ML forecast. Confidence intervals are intentionally excluded here.</CardDescription>
+                              <CardDescription>Historical actuals, recursive backtest predictions, future ML forecast, and a 90% empirical forecast range.</CardDescription>
                             </div>
                             <div className="flex flex-wrap gap-2">
                               <Badge variant="outline" className="border-primary/20 bg-primary/5 text-primary">Actuals + Backtest + Future</Badge>
@@ -584,6 +583,8 @@ export default function MlForecastTab() {
                           <div className="h-[500px] w-full rounded-2xl border bg-gradient-to-br from-muted/20 via-background to-primary/5 p-5 dark:border-slate-800 dark:from-slate-950 dark:via-slate-950 dark:to-primary/10">
                             <ForecastSeriesChart
                               data={chartData}
+                              showConfidence
+                              confidenceLabel="90%"
                               heightClassName="h-full"
                               yTickFormatter={(value) => formatNumber(value)}
                             />
@@ -686,6 +687,7 @@ export default function MlForecastTab() {
                                   <TableRow>
                                     <TableHead>Period</TableHead>
                                     <TableHead className="text-right">Forecast</TableHead>
+                                    <TableHead className="text-right">90% Range</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
@@ -693,6 +695,7 @@ export default function MlForecastTab() {
                                     <TableRow key={point.period}>
                                       <TableCell className="font-medium">{point.period}</TableCell>
                                       <TableCell className="text-right">{formatNumber(point.predicted)}</TableCell>
+                                      <TableCell className="text-right text-muted-foreground">{point.lower == null || point.upper == null ? 'N/A' : `${formatNumber(point.lower)} – ${formatNumber(point.upper)}`}</TableCell>
                                     </TableRow>
                                   ))}
                                 </TableBody>

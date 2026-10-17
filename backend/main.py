@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
 import traceback
 import uuid
@@ -42,6 +43,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 from reportlab.lib import colors
@@ -61,13 +63,14 @@ from sklearn.ensemble import (
 from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
-from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, r2_score, recall_score
-from sklearn.model_selection import KFold, LeaveOneOut, StratifiedKFold, cross_val_score, cross_validate, train_test_split
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, r2_score, recall_score
+from sklearn.model_selection import KFold, LeaveOneOut, StratifiedKFold, train_test_split
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from prediction_validation import prediction_schema, validate_prediction_inputs, read_prediction_table
 
 try:
     from xgboost import XGBRegressor
@@ -78,11 +81,6 @@ try:
     from xgboost import XGBClassifier
 except Exception:  # pragma: no cover - optional production dependency
     XGBClassifier = None
-
-try:
-    from lightgbm import LGBMRegressor
-except Exception:  # pragma: no cover - optional production dependency
-    LGBMRegressor = None
 
 try:
     from prophet import Prophet
@@ -212,6 +210,8 @@ app.add_middleware(
 router = APIRouter(prefix='/api')
 MODEL_CACHE: dict[str, dict[str, Any]] = {}
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
+MODEL_CACHE_LOCK = threading.RLock()
+DATASET_CACHE_LOCK = threading.RLock()
 SESSION_STATE: dict[str, dict[str, Any]] = {}
 DATASET_CACHE_INDEX_PATH = DATASET_DIR / 'dataset_cache_index.json'
 
@@ -219,6 +219,8 @@ DATASET_CACHE_INDEX_PATH = DATASET_DIR / 'dataset_cache_index.json'
 def _json_safe_cache_entry(entry: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in entry.items():
+        if str(key).startswith('_'):
+            continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             safe[key] = value
         elif isinstance(value, Path):
@@ -256,6 +258,13 @@ def load_dataset_cache_index() -> None:
             path_keys = ('frame_path', 'parquet_path', 'csv_path', 'excel_path')
             if not any(entry.get(key) and Path(str(entry[key])).exists() for key in path_keys):
                 continue
+            previous_fingerprint = entry.get('dataset_fingerprint')
+            actual_fingerprint, storage_signature = dataset_entry_fingerprint(entry)
+            if previous_fingerprint and previous_fingerprint != actual_fingerprint:
+                entry['dataset_version'] = int(entry.get('dataset_version') or 0) + 1
+            entry['dataset_version'] = max(1, int(entry.get('dataset_version') or 1))
+            entry['dataset_fingerprint'] = actual_fingerprint
+            entry['_storage_signature'] = storage_signature
             DATASET_CACHE[str(dataset_id)] = entry
             restored += 1
         logger.info('Restored %s dataset cache entries from disk index.', restored)
@@ -263,9 +272,113 @@ def load_dataset_cache_index() -> None:
         logger.exception('Failed to load dataset cache index')
 
 
-def set_dataset_cache_entry(dataset_id: str, entry: dict[str, Any]) -> None:
-    DATASET_CACHE[dataset_id] = entry
-    persist_dataset_cache_index()
+def dataset_entry_fingerprint(entry: dict[str, Any]) -> tuple[str, tuple[str, int, int] | None]:
+    """Fingerprint the persisted dataset snapshot and retain a cheap mutation check."""
+    path = next((Path(str(entry[key])) for key in ('parquet_path', 'frame_path', 'csv_path', 'excel_path')
+                 if entry.get(key) and Path(str(entry[key])).is_file()), None)
+    if path is None:
+        payload = json.dumps({key: entry.get(key) for key in ('filename', 'row_count', 'column_count', 'columns')},
+                             sort_keys=True, default=str).encode('utf-8')
+        return hashlib.sha256(payload).hexdigest(), None
+    stat = path.stat()
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest(), (str(path.resolve()), int(stat.st_size), int(stat.st_mtime_ns))
+
+
+def set_dataset_cache_entry(dataset_id: str, entry: dict[str, Any], *, owner_session_id: str | None = None) -> None:
+    with DATASET_CACHE_LOCK:
+        previous = DATASET_CACHE.get(dataset_id) or {}
+        updated = dict(entry)
+        updated['dataset_version'] = int(previous.get('dataset_version') or 0) + 1
+        updated['owner_session_id'] = owner_session_id or previous.get('owner_session_id') or entry.get('owner_session_id')
+        fingerprint, signature = dataset_entry_fingerprint(updated)
+        updated['dataset_fingerprint'] = fingerprint
+        updated['_storage_signature'] = signature
+        DATASET_CACHE[dataset_id] = updated
+        persist_dataset_cache_index()
+
+
+def dataset_artifact_context(dataset_id: str | None, request: Request | None) -> dict[str, Any]:
+    """Capture an authorized, versioned dataset snapshot for a trained artifact."""
+    if not dataset_id:
+        return {'dataset_id': None, 'dataset_version': None, 'dataset_fingerprint': None,
+                'owner_session_id': get_client_session_id(request)}
+    with DATASET_CACHE_LOCK:
+        entry = DATASET_CACHE.get(dataset_id)
+        if entry is None:
+            raise HTTPException(status_code=409, detail='The training dataset is no longer available.')
+        owner = entry.get('owner_session_id')
+        caller = get_client_session_id(request)
+        if owner and (not caller or not secrets.compare_digest(str(owner), str(caller))):
+            raise HTTPException(status_code=403, detail='You are not authorized to use this dataset.')
+        assert_dataset_storage_current(dataset_id, entry)
+        return {
+            'dataset_id': dataset_id,
+            'dataset_version': int(entry.get('dataset_version') or 1),
+            'dataset_fingerprint': str(entry.get('dataset_fingerprint') or ''),
+            'owner_session_id': owner or caller,
+        }
+
+
+def assert_dataset_storage_current(dataset_id: str, entry: dict[str, Any]) -> None:
+    expected = entry.get('_storage_signature')
+    if expected is None:
+        actual_fingerprint, _ = dataset_entry_fingerprint(entry)
+        if actual_fingerprint != entry.get('dataset_fingerprint'):
+            raise HTTPException(status_code=409, detail='The cached dataset changed; reload it before using this model.')
+        return
+    path_text, expected_size, expected_mtime = expected
+    try:
+        stat = Path(path_text).stat()
+    except OSError as error:
+        raise HTTPException(status_code=409, detail='The cached dataset storage is unavailable.') from error
+    if int(stat.st_size) != int(expected_size) or int(stat.st_mtime_ns) != int(expected_mtime):
+        raise HTTPException(status_code=409, detail='The cached dataset changed; reload it before using this model.')
+
+
+def validate_model_bundle_access(
+    bundle: dict[str, Any], *, dataset_id: str | None, request: Request | None,
+    allow_unowned_internal: bool = False,
+) -> None:
+    """Authorize inference and reject a model trained against a stale snapshot."""
+    owner = bundle.get('owner_session_id')
+    caller = get_client_session_id(request)
+    if owner:
+        if not caller or not secrets.compare_digest(str(owner), str(caller)):
+            raise HTTPException(status_code=403, detail='You are not authorized to use this model.')
+    elif not allow_unowned_internal:
+        raise HTTPException(status_code=403, detail='This model has no verifiable owner; upload or train it again.')
+
+    trained_dataset_id = bundle.get('dataset_id')
+    if not trained_dataset_id:
+        if dataset_id:
+            with DATASET_CACHE_LOCK:
+                entry = DATASET_CACHE.get(dataset_id)
+                if entry is None:
+                    raise HTTPException(status_code=409, detail='The selected dataset is no longer available.')
+                assert_dataset_storage_current(dataset_id, entry)
+                if owner and entry.get('owner_session_id') and entry.get('owner_session_id') != owner:
+                    raise HTTPException(status_code=403, detail='The selected dataset belongs to another session.')
+                missing = [name for name in bundle.get('feature_columns', []) if name not in entry.get('columns', [])]
+                if missing:
+                    raise HTTPException(status_code=409, detail=f'Model features are incompatible with the selected dataset: {missing}.')
+        return
+    if dataset_id != trained_dataset_id:
+        raise HTTPException(status_code=403, detail='This model is authorized only for its training dataset.')
+    with DATASET_CACHE_LOCK:
+        entry = DATASET_CACHE.get(str(trained_dataset_id))
+        if entry is None:
+            raise HTTPException(status_code=409, detail='The model training dataset is no longer available.')
+        assert_dataset_storage_current(str(trained_dataset_id), entry)
+        if owner and entry.get('owner_session_id') and entry.get('owner_session_id') != owner:
+            raise HTTPException(status_code=403, detail='The model owner no longer matches the dataset owner.')
+        if (int(entry.get('dataset_version') or 1) != int(bundle.get('dataset_version') or 0)
+                or not secrets.compare_digest(str(entry.get('dataset_fingerprint') or ''),
+                                              str(bundle.get('dataset_fingerprint') or ''))):
+            raise HTTPException(status_code=409, detail='This model is stale because its dataset has been replaced. Train a new model before predicting.')
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -648,7 +761,10 @@ def sanitize_metadata(metadata: dict[str, Any] | None) -> str | None:
 def get_client_session_id(request: Request | None) -> str | None:
     if request is None:
         return None
-    return request.headers.get('x-client-session-id') or None
+    headers = getattr(request, 'headers', None)
+    if headers is None:
+        return None
+    return headers.get('x-client-session-id') or None
 
 
 # ── TS Forecast helper utilities ──────────────────────────────
@@ -1687,7 +1803,13 @@ def dataset_file_path(dataset_id: str, suffix: str = '.parquet') -> Path:
 
 def write_dataset_file(dataset_id: str, content: bytes, suffix: str = '.parquet') -> Path:
     target = dataset_file_path(dataset_id, suffix)
-    target.write_bytes(content)
+    with DATASET_CACHE_LOCK:
+        temporary = target.with_name(f'.{target.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            temporary.write_bytes(content)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
     return target
 
 
@@ -1717,7 +1839,13 @@ async def write_uploaded_file(upload_file: UploadFile, dataset_id: str, suffix: 
 def write_cached_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
     """Legacy joblib writer (upload/restore edges only). Cleaning persists Parquet instead."""
     target = dataset_file_path(dataset_id, '.joblib')
-    joblib.dump(frame, target)
+    with DATASET_CACHE_LOCK:
+        temporary = target.with_name(f'.{target.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            joblib.dump(frame, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
     return target
 
 
@@ -1735,7 +1863,13 @@ def write_cached_parquet_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
                 serializable[column] = series.astype(object).where(series.notna(), None)
             except Exception:
                 pass
-    serializable.to_parquet(target, index=False)
+    with DATASET_CACHE_LOCK:
+        temporary = target.with_name(f'.{target.stem}.{uuid.uuid4().hex}.tmp.parquet')
+        try:
+            serializable.to_parquet(temporary, index=False)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
     return target
 
 
@@ -2645,6 +2779,7 @@ class TrainRequest(BaseModel):
 
 class PredictRequest(BaseModel):
     model_id: str
+    dataset_id: str | None = None
     features: dict[str, Any]
 
 
@@ -4615,8 +4750,17 @@ def naive_forecast_step(history: list[float]) -> float:
     return max(0.0, float(history[-1]) if history else 0.0)
 
 
-def append_interval(point: dict[str, Any], residual_std: float) -> dict[str, Any]:
-    lower, upper = build_confidence_bounds(float(point.get('predicted') or 0), residual_std)
+def seasonal_naive_forecast_step(history: list[float], season_length: int) -> float:
+    if season_length > 1 and len(history) >= season_length:
+        return max(0.0, float(history[-season_length]))
+    return naive_forecast_step(history)
+
+
+def append_interval(point: dict[str, Any], residual_std: float, step: int = 1) -> dict[str, Any]:
+    """Add a residual interval that expands with the forecast horizon."""
+    lower, upper = build_confidence_bounds(
+        float(point.get('predicted') or 0), residual_std * sqrt(max(1, step))
+    )
     return {**point, 'lower': lower, 'upper': upper}
 
 
@@ -4796,15 +4940,6 @@ def build_forecast_regressor(model_type: str):
             random_state=42,
             n_jobs=TRAINING_N_JOBS,
         )
-    if model_type == 'lightgbm' and LGBMRegressor is not None:
-        return LGBMRegressor(
-            n_estimators=160,
-            learning_rate=0.05,
-            max_depth=3,
-            random_state=42,
-            n_jobs=TRAINING_N_JOBS,
-            verbose=-1,
-        )
     if model_type == 'random_forest':
         return RandomForestRegressor(n_estimators=160, random_state=42, min_samples_leaf=2, n_jobs=TRAINING_N_JOBS)
     if model_type == 'ridge_regression':
@@ -4855,13 +4990,15 @@ def production_model_name(model_type: str) -> str:
         'arima': 'ARIMA',
         'prophet': 'Prophet',
         'sarima': 'SARIMA',
+        'seasonal_naive': 'Seasonal Naive',
         'gradient_boosting': 'Gradient Boosting',
         'xgboost': 'XGBoost',
-        'lightgbm': 'LightGBM',
     }.get(model_type, model_type.replace('_', ' ').title())
 
 
 def model_availability_note(model_type: str) -> str:
+    if model_type == 'seasonal_naive':
+        return 'Dependency-free baseline candidate available.'
     if model_type == 'prophet':
         return 'Prophet package available.' if Prophet is not None else 'Prophet package unavailable; candidate skipped.'
     if model_type == 'arima':
@@ -4874,8 +5011,6 @@ def model_availability_note(model_type: str) -> str:
         return 'pmdarima.auto_arima available for SARIMA order selection.' if auto_arima is not None else 'pmdarima.auto_arima unavailable; simplified SARIMA fallback will be attempted.'
     if model_type == 'xgboost' and XGBRegressor is None:
         return 'XGBoost package unavailable; candidate skipped.'
-    if model_type == 'lightgbm' and LGBMRegressor is None:
-        return 'LightGBM unavailable after install; candidate failed. Rebuild the backend image or check native LightGBM dependencies.'
     return 'Candidate available.'
 
 
@@ -5021,6 +5156,46 @@ def evaluate_statistical_candidate(
     }
 
 
+def evaluate_seasonal_naive_candidate(
+    series_frame: pd.DataFrame,
+    requested_test_periods: int,
+    freq: str,
+    period_label: str,
+) -> dict[str, Any]:
+    """Evaluate a transparent fallback with the same chronological folds as models."""
+    values = series_frame['sales'].astype(float).tolist()
+    periods = series_frame['period'].tolist()
+    season_length = seasonal_period_for_label(period_label)
+    use_seasonal = season_length > 1 and len(values) >= 2 * season_length
+    actuals: list[float] = []
+    predictions: list[float] = []
+    test_rows: list[dict[str, Any]] = []
+    for train_end, fold_periods in walk_forward_splits(len(values), requested_test_periods, 1):
+        history = values[:train_end]
+        current_period = pd.Timestamp(periods[train_end])
+        for offset in range(fold_periods):
+            prediction = seasonal_naive_forecast_step(history, season_length) if use_seasonal else naive_forecast_step(history)
+            actual = float(values[train_end + offset])
+            actuals.append(actual)
+            predictions.append(prediction)
+            test_rows.append({
+                'period': format_forecast_period(current_period, period_label),
+                'actual': round(actual, 2), 'predicted': round(prediction, 2),
+            })
+            history.append(actual)
+            current_period += pd.tseries.frequencies.to_offset(freq)
+    residuals = [actual - prediction for actual, prediction in zip(actuals, predictions)]
+    name = 'Seasonal Naive' if use_seasonal else 'Last Observation'
+    return {
+        'model_type': 'seasonal_naive', 'model_name': name, 'status': 'completed',
+        'metrics': calculate_forecast_metrics(actuals, predictions),
+        'residual_std': float(np.std(residuals)) if residuals else 0.0,
+        'test_forecast': test_rows[-requested_test_periods:],
+        'availability_note': 'Transparent dependency-free fallback evaluated with the same chronological folds.',
+        'tuning': {'enabled': False, 'note': 'Uses the prior matching seasonal period when sufficient history exists.'},
+    }
+
+
 def evaluate_ml_candidate(
     series_frame: pd.DataFrame,
     model_type: str,
@@ -5032,9 +5207,6 @@ def evaluate_ml_candidate(
 ) -> dict[str, Any]:
     if model_type == 'xgboost' and XGBRegressor is None:
         return {'model_type': model_type, 'model_name': 'XGBoost', 'status': 'skipped', 'skip_reason': model_availability_note(model_type)}
-    if model_type == 'lightgbm' and LGBMRegressor is None:
-        return {'model_type': model_type, 'model_name': 'LightGBM', 'status': 'failed', 'skip_reason': model_availability_note(model_type)}
-
     values = series_frame['sales'].astype(float).tolist()
     periods = series_frame['period'].tolist()
     actuals: list[float] = []
@@ -5102,6 +5274,19 @@ def build_future_for_selected_model(
     model_type = selected['model_type']
     residual_std = float(selected.get('residual_std') or 0.0)
     current_period = pd.Timestamp(series_frame.iloc[-1]['period']) + pd.tseries.frequencies.to_offset(freq)
+    if model_type == 'seasonal_naive':
+        history = series_frame['sales'].astype(float).tolist()
+        season_length = seasonal_period_for_label(period_label)
+        rows = []
+        for step in range(1, forecast_periods + 1):
+            prediction = seasonal_naive_forecast_step(history, season_length)
+            rows.append(append_interval({
+                'period': format_forecast_period(current_period, period_label),
+                'predicted': round(prediction, 2),
+            }, residual_std, step))
+            history.append(prediction)
+            current_period += pd.tseries.frequencies.to_offset(freq)
+        return rows
     if model_type in {'prophet', 'arima', 'sarima'}:
         season_length = infer_season_length(period_label, len(series_frame))
         history = series_frame['sales'].astype(float).tolist()
@@ -5128,8 +5313,8 @@ def build_future_for_selected_model(
                 predictions, tuning_details = fit_sarima_forecast(history, forecast_periods, period_label)
                 selected['tuning'] = tuning_details
                 rows = []
-                for prediction in predictions:
-                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std))
+                for step, prediction in enumerate(predictions, start=1):
+                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std, step))
                     current_period = current_period + pd.tseries.frequencies.to_offset(freq)
                 return rows
             except Exception as error:
@@ -5139,8 +5324,8 @@ def build_future_for_selected_model(
                 predictions, tuning_details = fit_arima_forecast(history, forecast_periods, period_label)
                 selected['tuning'] = tuning_details
                 rows = []
-                for prediction in predictions:
-                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std))
+                for step, prediction in enumerate(predictions, start=1):
+                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std, step))
                     current_period = current_period + pd.tseries.frequencies.to_offset(freq)
                 return rows
             except Exception as error:
@@ -5153,7 +5338,7 @@ def build_future_for_selected_model(
         raise RuntimeError(f'Only {non_zero_feature_count} generated features have non-zero variance; at least 3 are required for ML forecasting.')
     model = build_forecast_regressor(model_type)
     model.fit(full_X, full_y)
-    return [append_interval(point, residual_std) for point in recursive_ml_forecast(
+    return [append_interval(point, residual_std, step) for step, point in enumerate(recursive_ml_forecast(
         model,
         series_frame['sales'].astype(float).tolist(),
         current_period,
@@ -5162,7 +5347,7 @@ def build_future_for_selected_model(
         feature_groups,
         freq,
         period_label,
-    )]
+    ), start=1)]
 
 
 def auto_select_forecast_model(
@@ -5175,13 +5360,15 @@ def auto_select_forecast_model(
     period_label: str,
     candidates: list[str] | None = None,
 ) -> dict[str, Any]:
-    candidates = candidates or ['sarima', 'arima', 'prophet']
+    candidates = candidates or ['sarima', 'arima', 'prophet', 'seasonal_naive']
     comparison: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(4, len(candidates))) as executor:
         futures = {}
         for candidate in [item for item in candidates if item in {'prophet', 'arima', 'sarima'}]:
             futures[executor.submit(evaluate_statistical_candidate, series_frame, candidate, requested_test_periods, freq, period_label)] = candidate
-        for candidate in [item for item in candidates if item not in {'prophet', 'arima', 'sarima'}]:
+        for candidate in [item for item in candidates if item == 'seasonal_naive']:
+            futures[executor.submit(evaluate_seasonal_naive_candidate, series_frame, requested_test_periods, freq, period_label)] = candidate
+        for candidate in [item for item in candidates if item not in {'prophet', 'arima', 'sarima', 'seasonal_naive'}]:
             futures[executor.submit(evaluate_ml_candidate, series_frame, candidate, requested_test_periods, lag_periods, feature_groups, freq, period_label)] = candidate
         for future in as_completed(futures):
             try:
@@ -5214,11 +5401,16 @@ def auto_select_forecast_model(
     naive_actuals: list[float] = []
     naive_predictions: list[float] = []
     values = series_frame['sales'].astype(float).tolist()
+    season_length = seasonal_period_for_label(period_label)
+    use_seasonal_baseline = season_length > 1 and len(values) >= (2 * season_length)
     for train_end, fold_periods in walk_forward_splits(len(values), requested_test_periods, 1):
         history = values[:train_end]
         for offset in range(fold_periods):
             naive_actuals.append(float(values[train_end + offset]))
-            naive_predictions.append(naive_forecast_step(history))
+            naive_predictions.append(
+                seasonal_naive_forecast_step(history, season_length)
+                if use_seasonal_baseline else naive_forecast_step(history)
+            )
             history.append(float(values[train_end + offset]))
     naive_metrics = calculate_forecast_metrics(naive_actuals, naive_predictions)
     selected_mae = float(selected['metrics'].get('mae') or 0)
@@ -5234,7 +5426,7 @@ def auto_select_forecast_model(
         'test_forecast': test_forecast,
         'model_comparison': sorted(comparison, key=lambda item: (item.get('metrics') or {}).get('mae', np.inf) if item.get('status') == 'completed' else np.inf),
         'naive_baseline': {
-            'model_name': 'Naive last-observation baseline',
+            'model_name': f'Seasonal-naive ({season_length}-period) baseline' if use_seasonal_baseline else 'Naive last-observation baseline',
             'metrics': naive_metrics,
             'mae_improvement_pct': round(((naive_mae - selected_mae) / naive_mae) * 100, 2) if naive_mae else 0.0,
         },
@@ -5283,12 +5475,6 @@ def build_ml_model_recommendations(feature_names: list[str]) -> list[dict[str, A
             'recommendation_reason': 'Strong tree boosting candidate when engineered lag and calendar features interact.',
         },
         {
-            'model_type': 'lightgbm',
-            'model_name': 'LightGBM',
-            'recommended': False,
-            'recommendation_reason': 'Fast gradient boosting candidate; import failures are surfaced in the comparison table.',
-        },
-        {
             'model_type': 'prophet',
             'model_name': 'Prophet',
             'recommended': False,
@@ -5319,22 +5505,44 @@ def make_analysis(problem_type: ProblemType, model_name: str, metrics: dict[str,
 
 
 def save_model_bundle(model_id: str, bundle: dict[str, Any]) -> None:
-    joblib.dump(bundle, MODEL_DIR / f'{model_id}.joblib')
-    MODEL_CACHE[model_id] = bundle
+    model_path = MODEL_DIR / f'{model_id}.joblib'
+    with MODEL_CACHE_LOCK:
+        if model_path.exists():
+            try:
+                previous = MODEL_CACHE.get(model_id) or joblib.load(model_path)
+                if previous.get('trained_at') != bundle.get('trained_at'):
+                    previous_token = hashlib.sha256(
+                        f"{previous.get('dataset_fingerprint', '')}:{previous.get('trained_at', '')}".encode('utf-8')
+                    ).hexdigest()[:16]
+                    history_path = MODEL_DIR / f'{model_id}_history_{previous_token}.joblib'
+                    if not history_path.exists():
+                        joblib.dump(previous, history_path)
+            except Exception:
+                logger.exception('Unable to preserve previous model artifact model_id=%s', model_id)
+        temporary_path = model_path.with_name(f'.{model_path.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            joblib.dump(bundle, temporary_path)
+            temporary_path.replace(model_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        MODEL_CACHE[model_id] = bundle
 
 
 def load_model_bundle(model_id: str) -> dict[str, Any]:
-    if model_id in MODEL_CACHE:
-        return MODEL_CACHE[model_id]
-    model_path = MODEL_DIR / f'{model_id}.joblib'
-    bundle_path = MODEL_DIR / f'{model_id}_model_bundle.joblib'
-    if not model_path.exists() and bundle_path.exists():
-        model_path = bundle_path
-    if not model_path.exists():
-        raise HTTPException(status_code=404, detail=f"Model '{model_id}' was not found.")
-    bundle = joblib.load(model_path)
-    MODEL_CACHE[model_id] = bundle
-    return bundle
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', str(model_id or '')):
+        raise HTTPException(status_code=404, detail='The requested model was not found.')
+    with MODEL_CACHE_LOCK:
+        if model_id in MODEL_CACHE:
+            return MODEL_CACHE[model_id]
+        model_path = MODEL_DIR / f'{model_id}.joblib'
+        bundle_path = MODEL_DIR / f'{model_id}_model_bundle.joblib'
+        if not model_path.exists() and bundle_path.exists():
+            model_path = bundle_path
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' was not found.")
+        bundle = joblib.load(model_path)
+        MODEL_CACHE[model_id] = bundle
+        return bundle
 
 
 def structured_training_failure(error: Exception, *, step: str, request: TrainRequest | None = None) -> JSONResponse:
@@ -5367,7 +5575,18 @@ def structured_training_failure(error: Exception, *, step: str, request: TrainRe
     )
 
 
-def get_cv_strategy(n_rows: int, cv_folds: int | None = None):
+def get_cv_strategy(
+    n_rows: int, cv_folds: int | None = None, *, problem_type: ProblemType | None = None,
+    target: pd.Series | None = None,
+):
+    """Choose a validation splitter that preserves class proportions when possible."""
+    requested_folds = min(max(2, int(cv_folds or 5)), 10)
+    if problem_type == 'classification' and target is not None:
+        class_counts = pd.Series(target).value_counts()
+        max_stratified_folds = int(class_counts.min()) if not class_counts.empty else 0
+        if max_stratified_folds >= 2:
+            folds = min(requested_folds, max_stratified_folds, n_rows)
+            return StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
     if n_rows < 30:
         return LeaveOneOut()
     if n_rows < 100:
@@ -5446,6 +5665,8 @@ def is_datetime_feature(series: pd.Series) -> bool:
 def prepare_universal_training_data(
     frame: pd.DataFrame,
     request: TrainRequest,
+    *,
+    fit_indices: np.ndarray | None = None,
 ) -> tuple[np.ndarray, pd.Series, dict[str, Any], list[str], list[str], LabelEncoder | None]:
     warnings_list: list[str] = []
     target_column = request.target_column
@@ -5467,6 +5688,14 @@ def prepare_universal_training_data(
         y = pd.Series(label_encoder.fit_transform(y_raw.astype(str)), index=model_frame.index)
         if y.nunique() < 2:
             raise ValueError('Classification requires at least two target classes.')
+        class_counts = y.value_counts()
+        if int(class_counts.min()) < 2:
+            raise ValueError('Classification requires at least two examples of every target class for validation.')
+        minority_share = float(class_counts.min() / len(y))
+        if minority_share < 0.10:
+            warnings_list.append(
+                f'The smallest target class represents {minority_share:.1%} of usable rows. Review balanced accuracy and recall; overall accuracy can be misleading.'
+            )
     else:
         y = pd.to_numeric(y_raw, errors='coerce').replace([np.inf, -np.inf], np.nan)
         valid = y.notna()
@@ -5485,14 +5714,20 @@ def prepare_universal_training_data(
     # choice from the earlier training window only. The later rows are encoded
     # with those learned values for evaluation, preventing preprocessing and
     # target-based feature-selection leakage.
-    fit_row_count = len(X)
-    if request.time_order_column:
+    if fit_indices is not None:
+        positions = np.asarray(fit_indices, dtype=int)
+        if len(positions) < 2 or np.any(positions < 0) or np.any(positions >= len(X)):
+            raise ValueError('Preprocessing fit indices must select at least two valid training rows.')
+        X_fit_reference = X.iloc[positions]
+    elif request.time_order_column:
         holdout_rows = max(1, int(np.ceil(len(X) * float(request.test_size))))
         fit_row_count = len(X) - holdout_rows
         if fit_row_count < 2:
             raise ValueError('Temporal supervised validation needs at least 2 earlier rows and 1 later row.')
-    X_fit_reference = X.iloc[:fit_row_count]
-    y_fit_reference = pd.Series(y, index=X.index).iloc[:fit_row_count]
+        X_fit_reference = X.iloc[:fit_row_count]
+    else:
+        X_fit_reference = X
+    y_fit_reference = pd.Series(y, index=X.index).loc[X_fit_reference.index]
     dropped: dict[str, str] = {}
     for column in list(X.columns):
         series = X_fit_reference[column]
@@ -5572,6 +5807,14 @@ def prepare_universal_training_data(
 
     preprocessing = {
         'raw_feature_columns': list(X.columns),
+        'feature_types': {column: 'boolean' if pd.api.types.is_bool_dtype(X_fit_reference[column]) else 'numeric'
+                          for column in numeric_features},
+        'numeric_ranges': {
+            column: {'min': float(pd.to_numeric(X_fit_reference[column], errors='coerce').min()),
+                     'max': float(pd.to_numeric(X_fit_reference[column], errors='coerce').max())}
+            for column in numeric_features
+            if pd.to_numeric(X_fit_reference[column], errors='coerce').notna().any()
+        },
         'numeric_features': numeric_features,
         'categorical_features': categorical_features,
         'imputers': imputers,
@@ -5582,6 +5825,70 @@ def prepare_universal_training_data(
         'warnings': warnings_list,
     }
     return scaled, y.reset_index(drop=True), preprocessing, final_feature_names, warnings_list, label_encoder
+
+
+def transform_feature_frame(frame: pd.DataFrame, preprocessing: dict[str, Any]) -> np.ndarray:
+    """Transform raw feature rows with preprocessing learned from a training partition."""
+    raw_columns = list(preprocessing.get('raw_feature_columns') or [])
+    missing = [column for column in raw_columns if column not in frame.columns]
+    if missing:
+        raise ValueError(f'Missing selected feature columns: {missing}')
+
+    pieces: dict[str, pd.Series] = {}
+    imputers = preprocessing.get('imputers') or {}
+    for column in preprocessing.get('numeric_features') or []:
+        values = pd.to_numeric(frame[column], errors='coerce').replace([np.inf, -np.inf], np.nan)
+        median = imputers.get('numeric', {}).get(column, 0.0)
+        pieces[column] = values.fillna(median).astype(float)
+    for column in preprocessing.get('categorical_features') or []:
+        fill_value = imputers.get('categorical', {}).get(column, 'missing')
+        pieces[column] = frame[column].astype(object).where(pd.notna(frame[column]), fill_value).astype(str)
+
+    transformed = pd.DataFrame(pieces, index=frame.index)
+    categorical = list(preprocessing.get('categorical_features') or [])
+    if categorical:
+        transformed = pd.get_dummies(transformed, columns=categorical, dummy_na=False, dtype=float)
+    transformed = transformed.reindex(columns=preprocessing.get('encoded_feature_names') or [], fill_value=0.0)
+    scaler = preprocessing.get('scaler')
+    values = transformed.astype(float)
+    return scaler.transform(values) if scaler is not None else values.to_numpy(dtype=float)
+
+
+def validated_training_target(
+    frame: pd.DataFrame, request: TrainRequest,
+) -> tuple[pd.Series, LabelEncoder | None, list[str]]:
+    """Validate and encode targets without fitting any feature preprocessing."""
+    if request.target_column not in frame.columns:
+        raise ValueError(f'Target column "{request.target_column}" was not found in the dataset.')
+    target = frame[request.target_column]
+    if request.problem_type == 'classification':
+        target = target.loc[target.notna()]
+        encoder = LabelEncoder()
+        encoded = pd.Series(encoder.fit_transform(target.astype(str)), index=target.index)
+        if encoded.nunique() < 2:
+            raise ValueError('Classification requires at least two target classes.')
+        class_counts = encoded.value_counts()
+        if int(class_counts.min()) < 2:
+            raise ValueError('Classification requires at least two examples of every target class for validation.')
+        warnings_list = []
+        minority_share = float(class_counts.min() / len(encoded))
+        if minority_share < 0.10:
+            warnings_list.append(
+                f'The smallest target class represents {minority_share:.1%} of usable rows. Review balanced accuracy and recall; overall accuracy can be misleading.'
+            )
+        return encoded.reset_index(drop=True), encoder, warnings_list
+
+    numeric = pd.to_numeric(target, errors='coerce').replace([np.inf, -np.inf], np.nan)
+    numeric = numeric.loc[numeric.notna()].astype(float)
+    if len(numeric) < 3:
+        raise ValueError('Regression requires at least 3 numeric target rows.')
+    warnings_list = []
+    zero_pct = float((numeric == 0).mean() * 100)
+    if zero_pct > 5:
+        warnings_list.append(
+            f'Target column contains {zero_pct:.1f}% zero values which may affect accuracy. These have been kept as-is. If zeros represent missing data, clean them in the Data Cleaning tab first.'
+        )
+    return numeric.reset_index(drop=True), None, warnings_list
 
 
 def transform_features_for_bundle(features: dict[str, Any], bundle: dict[str, Any]) -> np.ndarray:
@@ -5638,7 +5945,9 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         *request.feature_columns, request.target_column,
         *([request.time_order_column] if request.time_order_column else []),
     ]))
+    dataset_context: dict[str, Any] = {}
     try:
+        dataset_context = dataset_artifact_context(request.dataset_id, http_request)
         if source_frame is not None:
             missing_columns = [column for column in selected_columns if column not in source_frame.columns]
             if missing_columns:
@@ -5657,16 +5966,24 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             data_frame = data_frame.iloc[order]
             if data_frame.empty:
                 raise ValueError(f'No valid rows remain after parsing time-order column "{request.time_order_column}".')
+    except HTTPException:
+        raise
     except Exception as error:
         raise RuntimeError(f'Data Loading failed: {error}') from error
 
     try:
-        X, y, preprocessing, feature_names, warnings_list, label_encoder = prepare_universal_training_data(data_frame, request)
+        if request.time_order_column:
+            X, y, preprocessing, feature_names, warnings_list, label_encoder = prepare_universal_training_data(data_frame, request)
+            y = pd.Series(y).reset_index(drop=True)
+            X = np.asarray(X, dtype=float)
+        else:
+            y, label_encoder, warnings_list = validated_training_target(data_frame, request)
+            preprocessing = None
+            feature_names = list(request.feature_columns)
+            X = None
     except Exception as error:
         raise RuntimeError(f'Validation failed: {error}') from error
 
-    y = pd.Series(y).reset_index(drop=True)
-    X = np.asarray(X, dtype=float)
     rows_available = int(len(y))
     profile = build_training_profile(rows_available, request.cv_folds, request.training_mode)
     single_model = _is_single_selected_model(request.model_type)
@@ -5695,35 +6012,21 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             warnings_list.append(
                 f'Validation used the final {test_rows:,} rows in time order; earlier rows were used for training.'
             )
-    elif train_sample_limit > 0 and rows_available > train_sample_limit:
-        X, y = _sample_xy_arrays(
-            X,
-            y,
-            train_sample_limit,
-            request.random_state,
-            stratify=request.problem_type == 'classification',
-        )
-        training_sampled = True
-        warnings_list.append(
-            f'Training used a {len(y):,}-row sample of {rows_available:,} rows for faster model fitting.'
-        )
     if not request.time_order_column:
-        X_train = X
-        y_train = y
-        X_test = np.empty((0, X.shape[1]), dtype=float)
-        y_test = pd.Series(dtype=y.dtype)
+        X_train = X_test = np.empty((0, 0), dtype=float)
+        y_train = y_test = pd.Series(dtype=y.dtype)
 
     candidate_models = resolve_requested_training_candidates(
         request.problem_type,
         request.model_type,
         len(y),
-        len(feature_names),
+        len(request.feature_columns),
         request.random_state,
     )
     scoring_keys = (
-        ('rmse', 'r2')
+        ('rmse', 'mae', 'r2')
         if request.problem_type == 'regression'
-        else ('accuracy', 'f1_weighted')
+        else ('accuracy', 'balanced_accuracy', 'precision_weighted', 'recall_weighted', 'f1_weighted')
     )
     primary_metric = 'rmse' if request.problem_type == 'regression' else 'accuracy'
     model_failures: list[str] = []
@@ -5739,16 +6042,32 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             test_size = float(request.test_size)
             stratify_values = y if request.problem_type == 'classification' and y.nunique() > 1 else None
             try:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X,
-                    y,
+                train_indices, test_indices = train_test_split(
+                    np.arange(len(y)),
                     test_size=test_size,
                     random_state=request.random_state,
                     stratify=stratify_values if stratify_values is not None and stratify_values.value_counts().min() >= 2 else None,
                 )
             except ValueError:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=test_size, random_state=request.random_state
+                train_indices, test_indices = train_test_split(
+                    np.arange(len(y)), test_size=test_size, random_state=request.random_state
+                )
+            evaluation_X, evaluation_y, _, _, _, _ = prepare_universal_training_data(
+                data_frame, request, fit_indices=np.asarray(train_indices, dtype=int)
+            )
+            X_train = evaluation_X[np.asarray(train_indices, dtype=int)]
+            X_test = evaluation_X[np.asarray(test_indices, dtype=int)]
+            y_train = y.iloc[np.asarray(train_indices, dtype=int)].reset_index(drop=True)
+            y_test = y.iloc[np.asarray(test_indices, dtype=int)].reset_index(drop=True)
+            if train_sample_limit > 0 and len(y_train) > train_sample_limit:
+                X_train, y_train = _sample_xy_arrays(
+                    X_train, y_train, train_sample_limit, request.random_state,
+                    stratify=request.problem_type == 'classification',
+                )
+                training_sampled = True
+                warnings_list.append(
+                    f'Holdout model selection used {len(y_train):,} training rows from the raw training split; '
+                    f'{len(y_test):,} later rows remained held out for validation.'
                 )
         cv_rows_evaluated = int(len(y_test))
         cv_folds_used = 1
@@ -5762,6 +6081,7 @@ def train_universal_model(request: TrainRequest, http_request: Request,
                     r2_holdout = float(r2_score(y_test, preds))
                     summary = {
                         'rmse': {'mean': rmse_holdout, 'std': 0.0},
+                        'mae': {'mean': float(mean_absolute_error(y_test, preds)), 'std': 0.0},
                         'r2': {'mean': r2_holdout, 'std': 0.0},
                     }
                     ranking_score = -rmse_holdout
@@ -5770,6 +6090,9 @@ def train_universal_model(request: TrainRequest, http_request: Request,
                     f1 = float(f1_score(y_test, preds, average='weighted', zero_division=0))
                     summary = {
                         'accuracy': {'mean': acc, 'std': 0.0},
+                        'balanced_accuracy': {'mean': float(balanced_accuracy_score(y_test, preds)), 'std': 0.0},
+                        'precision_weighted': {'mean': float(precision_score(y_test, preds, average='weighted', zero_division=0)), 'std': 0.0},
+                        'recall_weighted': {'mean': float(recall_score(y_test, preds, average='weighted', zero_division=0)), 'std': 0.0},
                         'f1_weighted': {'mean': f1, 'std': 0.0},
                     }
                     ranking_score = acc
@@ -5779,6 +6102,7 @@ def train_universal_model(request: TrainRequest, http_request: Request,
                         'estimator': clone(estimator),
                         'scores': summary,
                         'ranking_score': ranking_score,
+                        'fold_primary_scores': [rmse_holdout if request.problem_type == 'regression' else acc],
                     }
             except Exception as error:
                 model_failures.append(f'{model_name}: {error}')
@@ -5788,18 +6112,32 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         else:
             warnings_list.append('Cross-validation was skipped for faster training; holdout metrics are reported instead.')
     else:
-        cv = get_cv_strategy(len(y), int(profile.get('cv_folds') or request.cv_folds))
+        cv = get_cv_strategy(
+            len(y), int(profile.get('cv_folds') or request.cv_folds),
+            problem_type=request.problem_type, target=y,
+        )
         cv_folds_used = int(getattr(cv, 'n_splits', request.cv_folds))
-        X_cv, y_cv = X, y
+        raw_cv_frame = data_frame[[*request.feature_columns, request.target_column]].copy()
+        raw_cv_target = raw_cv_frame[request.target_column]
+        raw_cv_valid = raw_cv_target.notna()
+        if request.problem_type == 'regression':
+            raw_cv_target = pd.to_numeric(raw_cv_target, errors='coerce').replace([np.inf, -np.inf], np.nan)
+            raw_cv_valid &= raw_cv_target.notna()
+        raw_cv_frame = raw_cv_frame.loc[raw_cv_valid].reset_index(drop=True)
+        if len(raw_cv_frame) != len(y):
+            raise RuntimeError('Training rows no longer align with raw features for cross-validation.')
+        y_cv = y.reset_index(drop=True)
         cv_sample_limit = int(profile.get('cv_sample_limit') or 0)
         if cv_sample_limit > 0 and len(y) > cv_sample_limit:
-            X_cv, y_cv = _sample_xy_arrays(
-                X,
-                y,
-                cv_sample_limit,
-                request.random_state,
-                stratify=request.problem_type == 'classification',
+            stratify_values = y_cv if request.problem_type == 'classification' and y_cv.nunique() > 1 and y_cv.value_counts().min() >= 2 else None
+            sampled_positions, _ = train_test_split(
+                np.arange(len(y_cv)),
+                train_size=cv_sample_limit / len(y_cv),
+                random_state=request.random_state,
+                stratify=stratify_values,
             )
+            raw_cv_frame = raw_cv_frame.iloc[np.asarray(sampled_positions, dtype=int)].reset_index(drop=True)
+            y_cv = y_cv.iloc[np.asarray(sampled_positions, dtype=int)].reset_index(drop=True)
             cv_sampled = True
             cv_rows_evaluated = int(len(y_cv))
             warnings_list.append(
@@ -5808,30 +6146,40 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         else:
             cv_rows_evaluated = int(len(y_cv))
 
-        scoring = (
-            {'rmse': 'neg_root_mean_squared_error', 'r2': 'r2'}
-            if request.problem_type == 'regression'
-            else {'accuracy': 'accuracy', 'f1_weighted': 'f1_weighted'}
-        )
         for model_name, estimator in candidate_models:
             try:
-                scores = cross_validate(
-                    clone(estimator),
-                    X_cv,
-                    y_cv,
-                    cv=cv,
-                    scoring=scoring,
-                    n_jobs=TRAINING_N_JOBS,
-                    error_score='raise',
-                )
-                primary_values = scores[f'test_{primary_metric}']
-                ranking_score = float(np.mean(primary_values))
+                fold_values: dict[str, list[float]] = {metric: [] for metric in scoring_keys}
+                for fold_train_idx, fold_valid_idx in cv.split(raw_cv_frame, y_cv):
+                    fold_train = raw_cv_frame.iloc[fold_train_idx].copy()
+                    fold_valid = raw_cv_frame.iloc[fold_valid_idx].copy()
+                    fold_request = request.model_copy(update={'time_order_column': None})
+                    fold_X_train, fold_y_train, fold_prep, _, _, fold_encoder = prepare_universal_training_data(
+                        fold_train, fold_request
+                    )
+                    if request.problem_type == 'classification' and label_encoder is not None and fold_encoder is not None:
+                        fold_labels = fold_encoder.inverse_transform(pd.Series(fold_y_train).astype(int))
+                        fold_y_train = pd.Series(label_encoder.transform(fold_labels))
+                    fold_X_valid = transform_feature_frame(
+                        fold_valid[request.feature_columns], fold_prep
+                    )
+                    fold_y_valid = y_cv.iloc[fold_valid_idx]
+                    fitted = clone(estimator)
+                    fitted.fit(fold_X_train, fold_y_train)
+                    predictions = fitted.predict(fold_X_valid)
+                    if request.problem_type == 'regression':
+                        fold_values['rmse'].append(float(np.sqrt(mean_squared_error(fold_y_valid, predictions))))
+                        fold_values['mae'].append(float(mean_absolute_error(fold_y_valid, predictions)))
+                        fold_values['r2'].append(float(r2_score(fold_y_valid, predictions)))
+                    else:
+                        fold_values['accuracy'].append(float(accuracy_score(fold_y_valid, predictions)))
+                        fold_values['balanced_accuracy'].append(float(balanced_accuracy_score(fold_y_valid, predictions)))
+                        fold_values['precision_weighted'].append(float(precision_score(fold_y_valid, predictions, average='weighted', zero_division=0)))
+                        fold_values['recall_weighted'].append(float(recall_score(fold_y_valid, predictions, average='weighted', zero_division=0)))
+                        fold_values['f1_weighted'].append(float(f1_score(fold_y_valid, predictions, average='weighted', zero_division=0)))
+                ranking_score = -float(np.mean(fold_values['rmse'])) if request.problem_type == 'regression' else float(np.mean(fold_values['accuracy']))
                 summary = {
-                    metric: {
-                        'mean': float(np.mean(values if metric != 'rmse' else -values)),
-                        'std': float(np.std(values if metric != 'rmse' else -values)),
-                    }
-                    for metric, values in ((key, scores[f'test_{key}']) for key in scoring_keys)
+                    metric: {'mean': float(np.mean(values)), 'std': float(np.std(values))}
+                    for metric, values in fold_values.items()
                 }
                 if best is None or ranking_score > best['ranking_score']:
                     best = {
@@ -5839,6 +6187,7 @@ def train_universal_model(request: TrainRequest, http_request: Request,
                         'estimator': clone(estimator),
                         'scores': summary,
                         'ranking_score': ranking_score,
+                        'fold_primary_scores': list(fold_values[primary_metric]),
                     }
             except Exception as error:
                 model_failures.append(f'{model_name}: {error}')
@@ -5846,6 +6195,26 @@ def train_universal_model(request: TrainRequest, http_request: Request,
 
     if best is None:
         raise RuntimeError('Training failed for all candidate models. ' + ' | '.join(model_failures))
+
+    if not request.time_order_column:
+        try:
+            X, y, preprocessing, feature_names, final_prep_warnings, label_encoder = prepare_universal_training_data(
+                data_frame, request
+            )
+            X = np.asarray(X, dtype=float)
+            y = pd.Series(y).reset_index(drop=True)
+            warnings_list.extend(final_prep_warnings)
+        except Exception as error:
+            raise RuntimeError(f'Final preprocessing failed: {error}') from error
+        if train_sample_limit > 0 and len(y) > train_sample_limit:
+            X, y = _sample_xy_arrays(
+                X, y, train_sample_limit, request.random_state,
+                stratify=request.problem_type == 'classification',
+            )
+            training_sampled = True
+            warnings_list.append(
+                f'Final model training used a {len(y):,}-row sample of {rows_available:,} rows for faster fitting.'
+            )
 
     final_X, final_y = (X_train, y_train) if request.time_order_column else (X, y)
     try:
@@ -5858,25 +6227,68 @@ def train_universal_model(request: TrainRequest, http_request: Request,
     try:
         fitted_predictions = best['estimator'].predict(final_X)
         if request.problem_type == 'regression':
-            rmse = float(np.sqrt(mean_squared_error(final_y, fitted_predictions)))
-            metrics_primary = {
+            training_rmse = float(np.sqrt(mean_squared_error(final_y, fitted_predictions)))
+            training_metrics = {
                 'R2': round(float(r2_score(final_y, fitted_predictions)), 6),
-                'RMSE': round(rmse, 6),
+                'RMSE': round(training_rmse, 6),
                 'MAE': round(float(mean_absolute_error(final_y, fitted_predictions)), 6),
             }
         else:
-            metrics_primary = {
+            training_metrics = {
                 'Accuracy': round(float(accuracy_score(final_y, fitted_predictions)), 6),
+                'Balanced Accuracy': round(float(balanced_accuracy_score(final_y, fitted_predictions)), 6),
                 'Precision': round(float(precision_score(final_y, fitted_predictions, average='weighted', zero_division=0)), 6),
                 'Recall': round(float(recall_score(final_y, fitted_predictions, average='weighted', zero_division=0)), 6),
                 'F1 Score': round(float(f1_score(final_y, fitted_predictions, average='weighted', zero_division=0)), 6),
             }
-            rmse = None
+            training_rmse = None
     except Exception:
-        logger.exception('Failed to compute fitted metrics; returning CV metrics only.')
-        metrics_primary = {}
-        rmse = None
+        logger.exception('Failed to compute fitted metrics; validation metrics remain available.')
+        training_metrics = {}
+        training_rmse = None
         fitted_predictions = np.array([])
+
+    validation_scores = best['scores']
+    if request.problem_type == 'regression':
+        metrics_primary = {
+            'R2': round(float(validation_scores['r2']['mean']), 6),
+            'RMSE': round(float(validation_scores['rmse']['mean']), 6),
+            'MAE': round(float(validation_scores['mae']['mean']), 6),
+        }
+        train_quality = float(training_metrics.get('RMSE', np.nan))
+        validation_quality = float(metrics_primary['RMSE'])
+        generalization_gap = ((validation_quality - train_quality) / max(validation_quality, 1e-9)
+                              if np.isfinite(train_quality) else None)
+    else:
+        metrics_primary = {
+            'Accuracy': round(float(validation_scores['accuracy']['mean']), 6),
+            'Balanced Accuracy': round(float(validation_scores['balanced_accuracy']['mean']), 6),
+            'Precision': round(float(validation_scores['precision_weighted']['mean']), 6),
+            'Recall': round(float(validation_scores['recall_weighted']['mean']), 6),
+            'F1 Score': round(float(validation_scores['f1_weighted']['mean']), 6),
+        }
+        train_quality = float(training_metrics.get('Accuracy', np.nan))
+        validation_quality = float(metrics_primary['Accuracy'])
+        generalization_gap = (train_quality - validation_quality if np.isfinite(train_quality) else None)
+
+    validation_std = float(validation_scores[primary_metric]['std'])
+    small_validation = int(cv_rows_evaluated) < 10
+    gap = max(0.0, float(generalization_gap or 0.0))
+    if gap >= 0.15:
+        overfitting_status = 'detected'
+    elif gap >= 0.05 or small_validation or validation_std > 0.10:
+        overfitting_status = 'watch'
+    else:
+        overfitting_status = 'healthy'
+    overfitting_detected = overfitting_status == 'detected'
+    method_label = 'chronological holdout' if request.time_order_column else ('holdout' if skip_cv else f'{cv_folds_used}-fold cross-validation')
+    overfitting_explanation = (
+        f'Validation uses {method_label} on {cv_rows_evaluated:,} row(s). '
+        f'Training-to-validation gap is {gap:.3f}; validation score variability is {validation_std:.3f}. '
+        + ('The gap is large enough to indicate likely overfitting.' if overfitting_status == 'detected'
+           else 'Review this result before using it for decisions.' if overfitting_status == 'watch'
+           else 'No material gap was detected in this validation run.')
+    )
 
     feature_importance = []
     importances = getattr(best['estimator'], 'feature_importances_', None)
@@ -5891,7 +6303,9 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         feature_importance.append({'name': feature_name, 'importance': round(float(values[index]) if index < len(values) else 0.0, 6)})
     feature_importance.sort(key=lambda item: item['importance'], reverse=True)
 
-    model_id = request.dataset_id or str(uuid.uuid4())[:8]
+    # Each training run is a distinct artifact. Reusing the dataset id makes
+    # model comparison selections accidentally serve the last trained model.
+    model_id = uuid.uuid4().hex
     trained_at = utc_now_iso()
     bundle = {
         'model': best['estimator'],
@@ -5911,20 +6325,35 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         'cv_score_mean': float(best['scores'][primary_metric]['mean']),
         'cv_score_std': float(best['scores'][primary_metric]['std']),
         'cv_scores': best['scores'],
-        'rmse': rmse,
+        'rmse': training_rmse,
         'validation_rmse': (
             float(best['scores']['rmse']['mean'])
             if request.problem_type == 'regression' and best.get('scores', {}).get('rmse', {}).get('mean') is not None
             else None
         ),
+        'prediction_validation': {
+            'method': method_label,
+            'rows': int(cv_rows_evaluated),
+            'metrics': metrics_primary,
+            'reasons': list(dict.fromkeys(warnings_list + (
+                [overfitting_explanation] if overfitting_status != 'healthy' else []
+            ))),
+            'probability_calibration': 'not_measured',
+        },
         'trained_at': trained_at,
             'n_rows': int(len(final_y)),
         'n_features': int(len(feature_names)),
         'file_format': Path(str((DATASET_CACHE.get(request.dataset_id or '') or {}).get('filename') or '')).suffix.lower(),
+        **dataset_context,
     }
     try:
-        save_model_bundle(model_id, bundle)
-        joblib.dump(bundle, MODEL_DIR / f'{model_id}_model_bundle.joblib')
+        with DATASET_CACHE_LOCK:
+            current_context = dataset_artifact_context(request.dataset_id, http_request)
+            if current_context != dataset_context:
+                raise HTTPException(status_code=409, detail='The dataset changed while the model was training. Train again on the current dataset.')
+            save_model_bundle(model_id, bundle)
+    except HTTPException:
+        raise
     except Exception as error:
         raise RuntimeError(f'Saving failed: {error}') from error
 
@@ -5944,9 +6373,10 @@ def train_universal_model(request: TrainRequest, http_request: Request,
 
     full_metrics = {
         'primary': metrics_primary,
-        'cv_scores': [round(float(best['scores'][primary_metric]['mean']), 6)],
-        'cv_mean': round(float(best['scores'][primary_metric]['mean']), 6),
-        'cv_std': round(float(best['scores'][primary_metric]['std']), 6),
+        'training': training_metrics,
+        'cv_scores': [round(float(score), 6) for score in best.get('fold_primary_scores', [])],
+        'cv_mean': round(float(validation_scores[primary_metric]['mean']), 6),
+        'cv_std': round(validation_std, 6),
         'cv_folds_used': int(cv_folds_used or getattr(cv, 'n_splits', 0) or 0),
         'cv_rows_evaluated': int(cv_rows_evaluated),
     }
@@ -5966,16 +6396,12 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         'analysis': make_analysis(request.problem_type, best['name'], full_metrics, feature_importance),
         'training_time': training_time,
         'trained_at': trained_at,
-        'cv_scores': [round(float(best['scores'][primary_metric]['mean']), 6)],
-        'overfitting_detected': False,
-        'overfitting_status': 'healthy',
-        'overfitting_explanation': (
-            'Model quality is reported from a holdout split (CV skipped for speed).'
-            if skip_cv
-            else 'Model quality is reported from cross-validation mean and standard deviation.'
-        ),
-        'generalization_gap': 0,
-        'cv_gap': None,
+        'cv_scores': [round(float(score), 6) for score in best.get('fold_primary_scores', [])],
+        'overfitting_detected': overfitting_detected,
+        'overfitting_status': overfitting_status,
+        'overfitting_explanation': overfitting_explanation,
+        'generalization_gap': round(float(generalization_gap), 6) if generalization_gap is not None else None,
+        'cv_gap': round(float(generalization_gap), 6) if generalization_gap is not None else None,
         'optimization': {
             'training_rows_available': int(rows_available),
             'training_rows_used': int(len(final_y)),
@@ -6038,6 +6464,8 @@ def normalize_uploaded_bundle(raw_bundle: Any, filename: str) -> dict[str, Any]:
     if not model_type:
         model_type = model_name.lower().replace(' ', '_')
     return {
+        **({key: raw_bundle[key] for key in ('preprocessing', 'validation_rmse', 'prediction_validation', 'cv_score_mean', 'cv_score_std')
+            if key in raw_bundle} if isinstance(raw_bundle, dict) else {}),
         'pipeline': pipeline,
         'feature_columns': list(feature_columns),
         'target_column': target_column,
@@ -6063,6 +6491,8 @@ def train_model(request: TrainRequest, http_request: Request) -> JSONResponse:
         response = train_universal_model(request, http_request)
         logger.info('Train request completed successfully model_id=%s model_name=%s', response.get('model_id'), response.get('model_name'))
         return JSONResponse(status_code=200, content=safe_serialize(response))
+    except HTTPException:
+        raise
     except Exception as error:
         message = str(error)
         failed_step = 'Training'
@@ -6230,7 +6660,7 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
     allowed_time_series_models = {'auto', 'sarima', 'arima', 'prophet'}
     if requested_model_type not in allowed_time_series_models:
         raise HTTPException(status_code=400, detail='Time-series model_type must be auto, sarima, arima, or prophet.')
-    time_series_candidates = ['sarima', 'arima', 'prophet'] if requested_model_type == 'auto' else [requested_model_type]
+    time_series_candidates = ['sarima', 'arima', 'prophet', 'seasonal_naive'] if requested_model_type == 'auto' else [requested_model_type]
     auto_result = auto_select_forecast_model(
         series_frame,
         request.forecast_periods,
@@ -6250,12 +6680,21 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
     history = [{'period': format_forecast_period(pd.Timestamp(row['period']), period_label), 'actual': round(float(row['sales']), 2)} for _, row in series_frame.iterrows()]
     metrics = selected['metrics']
     profile = build_dataset_profile(series_frame, period_label)
+    baseline = auto_result['naive_baseline']
+    model_beats_baseline = float(metrics.get('mae') or 0) < float((baseline.get('metrics') or {}).get('mae') or 0)
+    validation_reasons = list(data_quality.get('issues') or [])
+    if not model_beats_baseline:
+        validation_reasons.append('The selected model did not beat the same-window baseline; use this forecast as a planning scenario, not a committed target.')
+    if request.forecast_periods > max(3, total_periods // 3):
+        validation_reasons.append('The requested forecast horizon is long relative to the available history; forecast uncertainty increases with each period.')
+    validation_status = 'ready' if data_quality.get('status') == 'pass' and model_beats_baseline else 'caution'
     session_id = get_session_id(request.dataset_id, request.session_id)
     session_state = ensure_session_state(session_id)
     assumptions = [
         'SARIMA, ARIMA, and Prophet are compared with walk-forward validation before the best model is trained on the full series.',
         'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
-        'A naive last-observation baseline is always calculated for comparison.',
+        f'{baseline["model_name"]} is evaluated on the same walk-forward windows as the selected model.',
+        'Forecast ranges are empirical 95% intervals from walk-forward residuals and widen for later forecast periods.',
     ]
 
     response = {
@@ -6285,14 +6724,21 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
             'last_observed_period': history[-1]['period'],
         },
         'model_comparison': auto_result['model_comparison'],
-        'naive_baseline': auto_result['naive_baseline'],
-        'validation_warnings': auto_result.get('validation_warnings', []),
+        'naive_baseline': baseline,
+        'validation_warnings': [*auto_result.get('validation_warnings', []), *validation_reasons],
+        'validation_report': {
+            'status': validation_status,
+            'model_beats_baseline': model_beats_baseline,
+            'evaluation_method': 'Chronological walk-forward validation. Each forecast is generated using only data available before its validation period.',
+            'forecast_interval': 'Empirical 95% residual interval that widens with the forecast horizon.',
+            'reasons': validation_reasons or ['Data quality passed and the selected model beat the same-window baseline.'],
+        },
         'assumptions_audit': assumptions,
         'recommended_models': build_time_series_model_recommendations(profile, stationarity),
         'model_details': {
             'model_type': selected['model_type'],
             'model_name': model_name,
-            'rationale': f'{model_name} had the best validation metrics among the requested time-series candidates and was retrained on the full dataset for the final forecast.',
+            'rationale': f'{model_name} had the lowest validation MAE among the requested time-series candidates and was retrained on the full dataset for the final forecast.',
         },
         'analysis': (
             f'{model_name} was auto-selected and forecasted {request.forecast_periods} future {period_label}{"s" if request.forecast_periods != 1 else ""}. '
@@ -6545,6 +6991,13 @@ def forecast_ts_best_model(request: TsForecastRunRequest) -> JSONResponse:
 
 @router.post('/forecast/ml/run')
 def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONResponse:
+    normalized_model_type = str(request.model_type or 'auto').strip().lower().replace(' ', '_').replace('-', '_')
+    allowed_ml_forecast_models = {'auto', 'gradient_boosting', 'xgboost', 'prophet'}
+    if normalized_model_type not in allowed_ml_forecast_models:
+        raise HTTPException(
+            status_code=422,
+            detail='ML forecast model must be auto, gradient_boosting, xgboost, or prophet.',
+        )
     session_id = get_session_id(request.dataset_id, request.session_id)
     target_col = request.target_column
     if not target_col and request.dataset_id:
@@ -6587,7 +7040,10 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             horizon=request.forecast_periods,
             frequency='auto',
             frame=pipeline_frame,
-            model_type=request.model_type or 'auto',
+            model_type=normalized_model_type,
+            feature_groups=request.feature_groups,
+            lag_periods=request.lag_periods,
+            test_percentage=request.test_percentage,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -6608,13 +7064,17 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
     forecast_rows = [row for row in pipeline_result['forecast_line'] if row['type'] == 'forecast']
     history = [{'period': row['period'], 'actual': row['actual']} for row in actual_rows]
     test_results = [{'period': row['period'], 'actual': None, 'predicted': row['backtest']} for row in backtest_rows]
-    future_predictions = [{'period': row['period'], 'predicted': row['forecast']} for row in forecast_rows]
+    future_predictions = [
+        {'period': row['period'], 'predicted': row['forecast'], 'lower': row.get('lower'), 'upper': row.get('upper')}
+        for row in forecast_rows
+    ]
     generated_features = pipeline_result['feature_table_sample']['columns']
     importance = [{'name': row['feature'], 'importance': row['importance']} for row in pipeline_result['shap_importance']]
     total_periods = len(history)
     test_periods = len(test_results)
     train_periods = max(0, total_periods - test_periods)
     usable_periods = int(metadata.get('usable_periods') or total_periods)
+    pipeline_quality = pipeline_result.get('data_quality', {})
     data_quality = {
         'score': selected_model['data_quality_score'],
         'status': selected_model['data_quality_status'],
@@ -6623,7 +7083,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'missing_share': metadata.get('missing_share', 0),
         'zero_or_negative_share': metadata.get('zero_value_share', 0),
         'volatility': metadata['volatility'],
-        'issues': [] if selected_model['data_quality_status'] == 'pass' else ['Data quality score below production pass threshold.'],
+        'issues': pipeline_quality.get('issues', []),
     }
     model_comparison = [
         {
@@ -6636,11 +7096,16 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         }
         for row in pipeline_result['model_comparison']
     ]
+    model_beats_baseline = float(selected_model['mae']) < float(selected_model['naive_baseline_mae'])
+    validation_status = 'ready' if data_quality['status'] == 'pass' and model_beats_baseline else 'caution'
+    validation_reasons = list(data_quality['issues'])
+    if not model_beats_baseline:
+        validation_reasons.append('The selected model did not beat the same-window naive baseline; use this forecast only as a scenario.')
     assumptions = [
-        'Gradient Boosting, Prophet, XGBoost, and LightGBM candidates are compared with walk-forward validation using MAE, RMSE, MAPE, and SMAPE.',
+        'Gradient Boosting, Prophet, and XGBoost candidates are compared with chronological walk-forward validation using MAE, RMSE, MAPE, and SMAPE.',
         'SMAPE is the primary model selection metric to reduce near-zero denominator inflation.',
-        'LightGBM availability is reported as a named failure if unavailable.',
-        'A naive last-observation baseline is always calculated for comparison.',
+        f'{selected_model["baseline_name"]} is evaluated on the exact same recursive holdout window as the selected model.',
+        metadata['feature_policy'],
     ]
 
     response = {
@@ -6666,8 +7131,8 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             'total_periods': total_periods,
             'train_periods': train_periods,
             'test_periods': test_periods,
-            'train_percentage': 80,
-            'test_percentage': 20,
+            'train_percentage': metadata['training_split_pct'],
+            'test_percentage': metadata['test_split_pct'],
             'forecast_periods': request.forecast_periods,
             'lag_periods': len([feature for feature in generated_features if feature.startswith('lag_')]),
             'train_start': history[0]['period'] if history else None,
@@ -6679,11 +7144,18 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
         'shap_feature_importance': importance,
         'model_comparison': model_comparison,
         'naive_baseline': {
-            'model_name': 'Naive last-observation baseline',
-            'metrics': {'mae': selected_model['naive_baseline_mae']},
+            'model_name': selected_model['baseline_name'],
+            'metrics': selected_model['baseline_metrics'],
             'mae_improvement_pct': selected_model['mae_improvement_pct'],
         },
-        'validation_warnings': [],
+        'validation_warnings': validation_reasons,
+        'validation_report': {
+            'status': validation_status,
+            'model_beats_baseline': model_beats_baseline,
+            'evaluation_method': selected_model['evaluation_method'],
+            'forecast_interval': 'A 90% empirical absolute-error interval from the holdout residuals; it widens with forecast horizon.',
+            'reasons': validation_reasons or ['Data quality passed and the selected model beat the same-window baseline.'],
+        },
         'assumptions_audit': assumptions,
         'recommended_models': build_ml_model_recommendations(generated_features),
         'model_details': {
@@ -7224,17 +7696,34 @@ def build_loss_base_frame(
         f'Revenue column mapped to "{revenue_column}".',
         'Loss forecast uses upstream TS/ML future periods and historical loss-driver rates.',
     ]
-    returns_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['returns'], numeric=True)
-    revenue_loss_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['revenue_loss'], numeric=True)
-    inventory_value_columns = matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['inventory_value'])
-    discount_columns = matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['discount'])
-    waste_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['waste'], numeric=True)
-    stockout_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['stockout'], numeric=True)
-    quantity_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
-    unit_cost_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
-    category_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['category'])
-    region_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['region'])
-    price_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['price'], numeric=True)
+    returns_column = mapped_or_matching_column(clean_frame, column_mapping, 'returns', LOSS_COLUMN_PATTERNS['returns'], numeric=True)
+    revenue_loss_column = mapped_or_matching_column(clean_frame, column_mapping, 'revenue_loss', LOSS_COLUMN_PATTERNS['revenue_loss'], numeric=True)
+    mapped_inventory = (column_mapping or {}).get('inventory_value')
+    inventory_value_columns = [mapped_inventory] if mapped_inventory in clean_frame.columns else matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['inventory_value'])
+    mapped_discount = (column_mapping or {}).get('discount')
+    discount_columns = [mapped_discount] if mapped_discount in clean_frame.columns else matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['discount'])
+    waste_column = mapped_or_matching_column(clean_frame, column_mapping, 'waste', LOSS_COLUMN_PATTERNS['waste'], numeric=True)
+    stockout_column = mapped_or_matching_column(clean_frame, column_mapping, 'stockout', LOSS_COLUMN_PATTERNS['stockout'], numeric=True)
+    quantity_column = mapped_or_matching_column(clean_frame, column_mapping, 'quantity', LOSS_COLUMN_PATTERNS['quantity'], numeric=True)
+    unit_cost_column = mapped_or_matching_column(clean_frame, column_mapping, 'unit_cost', LOSS_COLUMN_PATTERNS['unit_cost'], numeric=True)
+    category_column = mapped_or_matching_column(clean_frame, column_mapping, 'category', LOSS_COLUMN_PATTERNS['category'])
+    region_column = mapped_or_matching_column(clean_frame, column_mapping, 'region', LOSS_COLUMN_PATTERNS['region'])
+    price_column = mapped_or_matching_column(clean_frame, column_mapping, 'price', LOSS_COLUMN_PATTERNS['price'], numeric=True)
+
+    for label, column in {
+        'Returns/refunds': returns_column,
+        'Revenue loss': revenue_loss_column,
+        'Waste': waste_column,
+        'Stockout': stockout_column,
+        'Quantity': quantity_column,
+        'Unit cost': unit_cost_column,
+        'Price': price_column,
+        'Category': category_column,
+        'Region': region_column,
+    }.items():
+        if column:
+            source = 'explicitly mapped' if (column_mapping or {}).get(label.lower().replace('/', '_').replace(' ', '_')) == column else 'matched'
+            audit_trail.append(f'{label} column {source} to "{column}".')
 
     work = clean_frame.copy()
     work['_period'] = pd.to_datetime(work[date_column], errors='coerce')
@@ -7293,11 +7782,12 @@ def build_loss_base_frame(
 
     average_actual_revenue = max(float(historical['_actual_revenue'].mean() or 0), 1.0)
     driver_totals = {
-        'Revenue Loss': float(historical['_revenue_loss'].sum()),
+        # Return loss is included in the revenue-loss output column.  Keep the
+        # historical driver weights on the same basis to avoid double counting.
+        'Revenue Loss': float(historical['_revenue_loss'].sum() + historical['_return_loss'].sum()),
         'Operational Loss': float(historical['_operational_loss'].sum()),
         'Inventory Loss': float(historical['_inventory_loss'].sum()),
         'Discount Loss': float(historical['_discount_loss'].sum()),
-        'Returns / Refunds': float(historical['_return_loss'].sum()),
     }
     total_driver = sum(driver_totals.values()) or 1.0
     driver_weights = {key: value / total_driver for key, value in driver_totals.items()}
@@ -7320,8 +7810,10 @@ def build_loss_base_frame(
     assumption_notes = [
         f'COGS basis: {cogs_source}.',
         f'Operating expense basis: {operating_source}.',
-        'Inventory loss basis falls back to inferred waste/stockout or bounded historical exposure when explicit fields are absent.',
-        'Discount loss basis falls back to bounded historical exposure when explicit discount fields are absent.',
+        ('Inventory loss basis uses mapped inventory or event fields.' if inventory_value_columns or waste_column or stockout_column
+         else 'Inventory loss basis uses a bounded historical exposure fallback because no inventory, waste, or stockout field was found.'),
+        ('Discount loss basis uses mapped discount fields.' if discount_columns
+         else 'Discount loss basis uses a bounded historical exposure fallback because no discount field was found.'),
     ]
     audit_trail.extend(assumption_notes)
     requires_confirmation = any('standard' in note.lower() or 'falls back' in note.lower() or 'fallback assumption' in note.lower() for note in assumption_notes)
@@ -7331,6 +7823,29 @@ def build_loss_base_frame(
             detail='Loss forecast requires confirmation of calculation assumptions before running.',
             headers={'X-Assumptions-Required': 'true'},
         )
+
+    historical_total_loss = (
+        historical['_revenue_loss'] + historical['_operational_loss'] + historical['_inventory_loss']
+        + historical['_discount_loss'] + historical['_return_loss']
+    )
+    historical_loss_rate = (historical_total_loss / historical['_actual_revenue'].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(historical_loss_rate) >= 6:
+        median_loss_rate = float(historical_loss_rate.median())
+        # A data-derived p10-p90 range communicates uncertainty without claiming
+        # a statistical confidence level the loss model has not established.
+        loss_rate_spread = max(
+            median_loss_rate - float(historical_loss_rate.quantile(0.10)),
+            float(historical_loss_rate.quantile(0.90)) - median_loss_rate,
+            0.02,
+        )
+        range_method = 'Historical loss-rate variability (p10-p90), widened with forecast horizon.'
+        range_is_fallback = False
+    else:
+        median_loss_rate = float(historical_loss_rate.median()) if len(historical_loss_rate) else 0.0
+        loss_rate_spread = max(median_loss_rate * 0.35, 0.05)
+        range_method = 'Conservative sensitivity range; fewer than six usable historical periods were available.'
+        range_is_fallback = True
+        audit_trail.append('Uncertainty range uses a conservative fallback because fewer than six usable historical periods were available.')
 
     rows: list[dict[str, Any]] = []
     for index, item in forecast_frame.reset_index(drop=True).iterrows():
@@ -7351,8 +7866,10 @@ def build_loss_base_frame(
         total_loss = revenue_loss + operational_loss + inventory_loss + discount_loss + return_loss
         risk_score = min(1.0, total_loss / max(forecasted_revenue, 1.0))
         risk_label = 'Low' if risk_score < 0.05 else 'Medium' if risk_score <= 0.15 else 'High'
-        lower = max(0.0, total_loss * 0.82)
-        upper = total_loss * 1.18
+        horizon_scale = 1 + (index * 0.08)
+        range_width = max(total_loss * loss_rate_spread * horizon_scale, forecasted_revenue * 0.01)
+        lower = max(0.0, total_loss - range_width)
+        upper = total_loss + range_width
         rows.append({
             'id': uuid.uuid4().hex,
             'session_id': session_id,
@@ -7403,7 +7920,22 @@ def build_loss_base_frame(
     if not segments:
         segments = [{'segment': 'All Business', 'segment_type': 'portfolio', 'total_loss': round(sum(row['total_loss'] for row in rows), 2), 'risk_score': round(float(np.mean([row['loss_risk_score'] for row in rows])), 4), 'risk_label': rows[0]['risk_label'] if rows else 'Low'}]
 
-    return pd.DataFrame(rows), segments, driver_weights, audit_trail
+    result_frame = pd.DataFrame(rows)
+    upstream_caution = any(
+        str((result or {}).get('validation_report', {}).get('status', '')).lower() == 'caution'
+        for result in (ts_result, _ml_result)
+    )
+    uses_fallback = _cogs_is_fallback or _opex_is_fallback or not (inventory_value_columns or waste_column or stockout_column) or not discount_columns or range_is_fallback
+    result_frame.attrs['loss_validation'] = {
+        'validation_status': 'caution' if uses_fallback or upstream_caution else 'ready',
+        'assumption_mode': 'illustrative' if uses_fallback else 'mapped',
+        'range_method': range_method,
+        'validation_reasons': [
+            note for note in audit_trail
+            if 'fallback' in note.lower() or 'standard' in note.lower() or 'conservative' in note.lower()
+        ] + (['One or more upstream revenue forecasts are marked Caution.'] if upstream_caution else []),
+    }
+    return result_frame, segments, driver_weights, audit_trail
 
 
 def persist_loss_forecast(session_id: str, rows: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
@@ -7475,7 +8007,7 @@ def build_profit_rows(
     scenario_parameters: dict[str, dict[str, float]] | None = None,
     column_mapping: dict[str, str] | None = None,
     confirmed_assumptions: bool = False,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str], bool]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str], bool, dict[str, Any]]:
     forecast_frame, _ts_result, _ml_result, clean_frame = fetch_upstream_forecasts(session_id, 'Profit Forecast')
     loss_rows = query_loss_results(session_id)
     if not loss_rows:
@@ -7492,12 +8024,28 @@ def build_profit_rows(
     loss_by_period = {normalize_period_value(row['period']): float(row.get('total_loss') or 0) for row in loss_rows}
     forecast_frame = forecast_frame.head(forecast_periods).copy()
     revenue_column = mapped_or_matching_column(clean_frame, column_mapping, 'revenue', LOSS_COLUMN_PATTERNS['revenue'], numeric=True)
-    cogs_series, cogs_source, cogs_ratio, cogs_is_fallback = resolve_cogs_series(clean_frame, revenue_column)
+    date_column = mapped_or_matching_column(clean_frame, column_mapping, 'date', LOSS_COLUMN_PATTERNS['date'])
+    cogs_column = mapped_or_matching_column(clean_frame, column_mapping, 'cogs', LOSS_COLUMN_PATTERNS['cost'], numeric=True)
+    opex_column = mapped_or_matching_column(clean_frame, column_mapping, 'operating_expense', LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
+    if not revenue_column:
+        raise HTTPException(status_code=422, detail='Profit Forecast requires a mapped revenue or sales amount column.')
     revenue_series = numeric_series(clean_frame, revenue_column, 0.0).clip(lower=0)
+    if cogs_column:
+        cogs_series = numeric_series(clean_frame, cogs_column, 0.0).clip(lower=0)
+        cogs_ratio = float(cogs_series.sum() / max(revenue_series.sum(), 1.0))
+        cogs_source = f'mapped cost (COGS) column "{cogs_column}"'
+        cogs_is_fallback = False
+    else:
+        cogs_series, cogs_source, cogs_ratio, cogs_is_fallback = resolve_cogs_series(clean_frame, revenue_column)
     gross_profit_series = (revenue_series - cogs_series).clip(lower=0)
-    _opex_series, opex_source, operating_expense_ratio, opex_is_fallback = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
+    if opex_column:
+        _opex_series = numeric_series(clean_frame, opex_column, 0.0).clip(lower=0)
+        operating_expense_ratio = float(_opex_series.sum() / max(revenue_series.sum(), 1.0))
+        opex_source = f'mapped operating expense column "{opex_column}"'
+        opex_is_fallback = False
+    else:
+        _opex_series, opex_source, operating_expense_ratio, opex_is_fallback = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
     illustrative_assumptions = bool(cogs_is_fallback or opex_is_fallback)
-    date_column = first_matching_column(clean_frame, LOSS_COLUMN_PATTERNS['date'])
     historical_cogs_ratios: list[float] = []
     seasonal_cogs_ratios: dict[int, float] = {}
     if date_column:
@@ -7509,13 +8057,13 @@ def build_profit_rows(
         if not margin_work.empty:
             period_costs = margin_work.groupby(margin_work['_period'].dt.to_period('M')).agg({'_revenue': 'sum', '_cogs': 'sum'}).reset_index()
             period_costs['_ratio'] = period_costs.apply(
-                lambda row: bounded_ratio(float(row['_cogs']) / float(row['_revenue']), cogs_ratio) if float(row['_revenue']) else cogs_ratio,
+                lambda row: max(0.0, float(row['_cogs']) / float(row['_revenue'])) if float(row['_revenue']) else cogs_ratio,
                 axis=1,
             )
             historical_cogs_ratios = [float(value) for value in period_costs['_ratio'].tail(max(1, forecast_periods)).tolist()]
             period_costs['_month'] = period_costs['_period'].dt.month
             seasonal_cogs_ratios = {
-                int(row['_month']): bounded_ratio(float(row['_ratio']), cogs_ratio)
+                int(row['_month']): max(0.0, float(row['_ratio']))
                 for _, row in period_costs.groupby('_month', as_index=False)['_ratio'].mean().iterrows()
             }
     uses_ml_cogs_forecast = 'ML forecast target' in str(forecast_frame.attrs.get('cogs_source') or '')
@@ -7529,10 +8077,14 @@ def build_profit_rows(
         if scenario in scenario_config:
             for key in ('revenue', 'cogs', 'loss'):
                 if key in overrides and np.isfinite(float(overrides[key])):
-                    scenario_config[scenario][key] = float(overrides[key])
+                    multiplier = float(overrides[key])
+                    if not 0.25 <= multiplier <= 3.0:
+                        raise HTTPException(status_code=422, detail=f'{scenario} {key} multiplier must be between 0.25 and 3.0.')
+                    scenario_config[scenario][key] = multiplier
     audit_trail = [
         *loss_audit,
         f'Profit revenue column mapped to "{revenue_column or "not available"}".',
+        f'Profit date column mapped to "{date_column or "not available"}".',
         f'COGS basis: {cogs_source}.',
         f'Operating expense basis: {opex_source}.',
         f'COGS ratio basis: {cogs_ratio:.4f}.',
@@ -7561,8 +8113,6 @@ def build_profit_rows(
             cogs = max(base_cogs * multipliers['cogs'], 0.0)
             if cogs <= 0 and revenue > 0:
                 cogs = revenue * cogs_ratio
-            if cogs > revenue * 0.92:
-                cogs = revenue * min(0.72, max(0.42, cogs_ratio))
             losses = max(loss_by_period.get(period, 0.0) * multipliers['loss'], 0.0)
             operating_expenses = revenue * operating_expense_ratio
             gross_profit = revenue - cogs
@@ -7587,12 +8137,37 @@ def build_profit_rows(
         scenarios[scenario] = rows
 
     baseline = scenarios.get('baseline', [])
-    breakeven_index = next((index for index, row in enumerate(baseline) if float(row['net_profit']) >= 0), None)
+    running_profit = 0.0
+    cumulative_breakeven_index: int | None = None
+    for index, row in enumerate(baseline):
+        running_profit += float(row['net_profit'])
+        if cumulative_breakeven_index is None and running_profit >= 0:
+            cumulative_breakeven_index = index
+    first_profitable_index = next((index for index, row in enumerate(baseline) if float(row['net_profit']) >= 0), None)
     breakeven = {
-        'breakeven_period': baseline[breakeven_index]['period'] if breakeven_index is not None else None,
-        'periods_to_breakeven': breakeven_index + 1 if breakeven_index is not None else None,
+        'breakeven_period': baseline[cumulative_breakeven_index]['period'] if cumulative_breakeven_index is not None else None,
+        'periods_to_breakeven': cumulative_breakeven_index + 1 if cumulative_breakeven_index is not None else None,
+        'first_profitable_period': baseline[first_profitable_index]['period'] if first_profitable_index is not None else None,
     }
-    return scenarios, breakeven, audit_trail, illustrative_assumptions
+    upstream_caution = any(
+        str((result or {}).get('validation_report', {}).get('status', '')).lower() == 'caution'
+        for result in (_ts_result, _ml_result)
+    )
+    loss_caution = str((ensure_session_state(session_id).get('loss_summary') or {}).get('validation_status', '')).lower() == 'caution'
+    reasons = [note for note in audit_trail if 'fallback' in note.lower() or 'standard' in note.lower()]
+    if upstream_caution:
+        reasons.append('One or more upstream revenue forecasts are marked Caution.')
+    if loss_caution:
+        reasons.append('The linked loss forecast is marked Caution.')
+    validation = {
+        'validation_status': 'caution' if illustrative_assumptions or upstream_caution or loss_caution else 'ready',
+        'validation_reasons': reasons,
+        'assumption_mode': 'illustrative' if illustrative_assumptions else 'mapped',
+        'mapped_columns': {'date': date_column, 'revenue': revenue_column, 'cogs': cogs_column, 'operating_expense': opex_column},
+        'scenario_parameters': scenario_config,
+        'reconciliation': 'Revenue − COGS − operating expenses − losses = net profit for every projected period.',
+    }
+    return scenarios, breakeven, audit_trail, illustrative_assumptions, validation
 
 
 def persist_profit_forecast(session_id: str, scenarios: dict[str, list[dict[str, Any]]]) -> None:
@@ -7656,15 +8231,17 @@ def run_loss_forecast(request: ForecastRunRequest, http_request: Request) -> JSO
         state['forecast_steps']['loss'] = True
         state['loss_forecast_result'] = rows
         state['loss_segments'] = segments
-        state['loss_summary'] = build_loss_summary(rows, driver_weights)
+        validation = dict(frame.attrs.get('loss_validation') or {})
+        state['loss_summary'] = {
+            **build_loss_summary(rows, driver_weights),
+            **validation,
+            'available_periods': len(rows),
+        }
         state['loss_assumptions_audit'] = audit_trail
         append_forecast_version(session_id, 'loss_forecast', {'status': 'success', 'metrics': state['loss_summary'], 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='loss_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail=f'Generated {len(rows)} loss forecast rows.')
-        illustrative = any(
-            'standard' in str(note).lower() or 'falls back' in str(note).lower() or 'fallback assumption' in str(note).lower()
-            for note in (audit_trail or [])
-        )
+        illustrative = validation.get('assumption_mode') == 'illustrative'
         return JSONResponse(content=safe_serialize({
             'status': 'success',
             'loss_forecast': rows,
@@ -7710,7 +8287,7 @@ def get_loss_forecast_segments(session_id: str) -> JSONResponse:
 def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> JSONResponse:
     try:
         session_id = request.session_id
-        scenarios, breakeven, audit_trail, illustrative = build_profit_rows(
+        scenarios, breakeven, audit_trail, illustrative, validation = build_profit_rows(
             session_id,
             request.forecast_periods,
             request.scenario_parameters,
@@ -7724,6 +8301,7 @@ def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> J
         state['profit_scenarios'] = serialized
         state['breakeven'] = safe_serialize(breakeven)
         state['profit_assumptions_audit'] = audit_trail
+        state['profit_validation_report'] = validation
         append_forecast_version(session_id, 'profit_forecast', {'status': 'success', 'metrics': breakeven, 'assumptions_audit': audit_trail})
         state['updated_at'] = utc_now_iso()
         record_activity(request=http_request, action='profit_forecast', status='success', dataset_id=session_id, server_session_id=session_id, detail='Generated profit forecast scenarios.')
@@ -7732,6 +8310,7 @@ def run_profit_forecast(request: ForecastRunRequest, http_request: Request) -> J
             'scenarios': serialized,
             'breakeven': breakeven,
             'assumptions_audit': audit_trail,
+            'validation_report': validation,
             'illustrative_assumptions': bool(illustrative),
             'assumption_mode': 'illustrative' if illustrative else 'mapped',
         }))
@@ -7771,99 +8350,154 @@ def get_profit_breakeven(session_id: str) -> JSONResponse:
 
 @router.post('/predict')
 def predict(request: PredictRequest, http_request: Request) -> JSONResponse:
+    with DATASET_CACHE_LOCK, MODEL_CACHE_LOCK:
+        return predict_with_bundle_access_check(request, http_request)
+
+
+def predict_with_bundle_access_check(request: PredictRequest, http_request: Request) -> JSONResponse:
     try:
         bundle = load_model_bundle(request.model_id)
-    except HTTPException:
-        return JSONResponse(
-            status_code=200,
-            content={
-                'status': 'failed',
-                'error': 'No trained model found. Please complete ML Assistant training first.',
-                'detail': f'Model bundle not found for id {request.model_id}.',
-            },
-        )
+        validate_model_bundle_access(bundle, dataset_id=request.dataset_id, request=http_request)
+    except HTTPException as error:
+        return JSONResponse(status_code=error.status_code, content={
+            'status': 'failed', 'error': error.detail,
+        })
     except Exception as error:
         logger.exception('Prediction bundle loading failed model_id=%s', request.model_id)
-        return JSONResponse(status_code=200, content={'status': 'failed', 'error': 'Unable to load the trained model.', 'detail': str(error)})
+        return JSONResponse(status_code=404, content={'status': 'failed', 'error': 'Unable to load the trained model. Train or upload it again.'})
 
     try:
-        if bundle.get('preprocessing'):
-            frame_or_array = transform_features_for_bundle(request.features, bundle)
-            estimator = bundle.get('model') or bundle.get('pipeline')
-        else:
-            missing = [feature for feature in bundle['feature_columns'] if request.features.get(feature) in [None, '']]
-            if missing:
-                raise ValueError(f'Missing features: {missing}')
-            frame_or_array = normalize_feature_frame(pd.DataFrame([{feature: request.features.get(feature) for feature in bundle['feature_columns']}]))
-            estimator = bundle['pipeline']
-
-        raw_prediction = estimator.predict(frame_or_array)[0]
-        prediction: Any = raw_prediction
-        if bundle['problem_type'] == 'regression':
-            prediction = int(round(float(raw_prediction)))
-
-        payload: dict[str, Any] = {
-            'status': 'success',
-            'prediction': safe_serialize(prediction),
-            'prediction_label': safe_serialize(prediction),
-            'cv_score_mean': safe_serialize(bundle.get('cv_score_mean')),
-            'cv_score_std': safe_serialize(bundle.get('cv_score_std')),
-        }
-        if bundle['problem_type'] == 'regression' and bundle.get('validation_rmse') is not None:
-            interval = 1.96 * float(bundle['validation_rmse'])
-            numeric_prediction = float(raw_prediction)
-            error_band = {
-                'lower': round(numeric_prediction - interval, 6),
-                'upper': round(numeric_prediction + interval, 6),
-                'margin': round(interval, 6),
-            }
-            payload['error_band'] = error_band
-            payload['error_band_note'] = (
-                'Approximate range based on validation RMSE; it is not a calibrated 95% prediction interval.'
-            )
-            # Keep the old field for API compatibility. New clients should use
-            # error_band and its explicit note instead of interpreting this as
-            # a statistical confidence interval.
-            payload['confidence_interval'] = error_band
-
-        label_encoder: LabelEncoder | None = bundle.get('label_encoder')
-        if bundle['problem_type'] == 'classification' and label_encoder is not None:
-            label = label_encoder.inverse_transform([int(prediction)])[0]
-            payload['prediction_label'] = str(label)
-
-            if hasattr(estimator, 'predict_proba'):
-                probabilities = estimator.predict_proba(frame_or_array)[0]
-                probability_map: dict[str, float] = {}
-                for encoded_class, probability in enumerate(probabilities):
-                    label_name = label_encoder.inverse_transform([encoded_class])[0]
-                    probability_map[str(label_name)] = round(float(probability), 6)
-                payload['probabilities'] = probability_map
-                payload['confidence'] = round(float(np.max(probabilities)), 6)
-                payload['top_class'] = max(probability_map, key=probability_map.get)
-
+        payload = build_prediction_payload(request, bundle)
         record_activity(
-            request=http_request,
-            action='predict',
-            status='success',
-            model_id=request.model_id,
+            request=http_request, action='predict', status='success', model_id=request.model_id,
             detail='Generated a prediction from a trained model.',
-            metadata={
-                'feature_count': len(request.features),
-                'prediction': payload.get('prediction_label', payload.get('prediction')),
-                'confidence': payload.get('confidence'),
-            },
+            metadata={'feature_count': len(request.features), 'prediction': payload['prediction_label'],
+                      'warnings': payload['warnings'], 'dataset_version': bundle.get('dataset_version'),
+                      'dataset_fingerprint': bundle.get('dataset_fingerprint'), 'inputs': payload['inputs'],
+                      'error_band': payload.get('error_band'), 'scored_at': payload['scored_at']},
         )
         return JSONResponse(content=safe_serialize(payload))
+    except (ValueError, TypeError) as error:
+        return JSONResponse(status_code=422, content={'status': 'failed', 'error': str(error)})
     except Exception:
         logger.exception('Prediction failed model_id=%s', request.model_id)
-        return JSONResponse(
-            status_code=200,
-            content={
-                'status': 'failed',
-                'error': 'Prediction failed. Check the selected model and input values.',
-                'detail': 'Additional diagnostic details were recorded in the server log.',
-            },
+        return JSONResponse(status_code=500, content={'status': 'failed', 'error': 'The model could not score these inputs. Review its schema or retrain it.'})
+
+
+def build_prediction_payload(request: PredictRequest, bundle: dict[str, Any]) -> dict[str, Any]:
+    from ml_execute import classification_probability_summary, decode_class_label
+
+    features, input_warnings = validate_prediction_inputs(request.features, bundle)
+    if bundle.get('preprocessing'):
+        frame_or_array = transform_features_for_bundle(features, bundle)
+        estimator = bundle.get('model') or bundle.get('pipeline')
+    else:
+        frame_or_array = pd.DataFrame([features], columns=bundle['feature_columns'])
+        estimator = bundle['pipeline']
+
+    raw_prediction = estimator.predict(frame_or_array)[0]
+    if np.isscalar(raw_prediction) and bool(pd.isna(raw_prediction)):
+        raise ValueError('The model returned a missing prediction. Review the model and inputs.')
+    prediction: Any = raw_prediction
+    if bundle['problem_type'] == 'regression':
+        prediction = float(raw_prediction)
+        if not np.isfinite(prediction):
+            raise ValueError('The model returned a non-finite prediction. Review the input values and model.')
+
+    payload: dict[str, Any] = {
+        'status': 'success',
+        'prediction': safe_serialize(prediction),
+        'prediction_label': safe_serialize(prediction),
+        'cv_score_mean': safe_serialize(bundle.get('cv_score_mean')),
+        'cv_score_std': safe_serialize(bundle.get('cv_score_std')),
+        'model_id': request.model_id,
+        'dataset_version': bundle.get('dataset_version'),
+        'dataset_fingerprint': bundle.get('dataset_fingerprint'),
+        'inputs': safe_serialize(features),
+        'warnings': input_warnings,
+        'readiness': prediction_schema(bundle)['readiness'],
+        'scored_at': utc_now_iso(),
+    }
+    if (bundle['problem_type'] == 'regression' and bundle.get('validation_rmse') is not None
+            and np.isfinite(float(bundle['validation_rmse'])) and float(bundle['validation_rmse']) >= 0):
+        interval = 1.96 * float(bundle['validation_rmse'])
+        numeric_prediction = float(raw_prediction)
+        error_band = {
+            'lower': round(numeric_prediction - interval, 6),
+            'upper': round(numeric_prediction + interval, 6),
+            'margin': round(interval, 6),
+        }
+        payload['error_band'] = error_band
+        payload['error_band_note'] = (
+            'Approximate range based on validation RMSE; it is not a calibrated 95% prediction interval.'
         )
+        # Keep the old field for API compatibility. New clients should use
+        # error_band and its explicit note instead of interpreting this as
+        # a statistical confidence interval.
+        payload['confidence_interval'] = error_band
+
+    label_encoder: LabelEncoder | None = bundle.get('label_encoder')
+    if bundle['problem_type'] == 'classification':
+        payload['prediction_label'] = decode_class_label(raw_prediction, label_encoder)
+        payload.update(classification_probability_summary(estimator, frame_or_array, label_encoder))
+        payload['top_class'] = payload.get('probability_class')
+        payload['probability_note'] = payload.get('probability_note') or 'Model probability; calibration has not been measured. This score does not guarantee correctness.'
+        if payload.get('probabilities') is None:
+            payload['warnings'].append(payload['probability_note'])
+    return payload
+
+
+@router.get('/prediction/schema/{model_id}')
+def get_prediction_schema(model_id: str, http_request: Request, dataset_id: str | None = None) -> JSONResponse:
+    with DATASET_CACHE_LOCK, MODEL_CACHE_LOCK:
+        bundle = load_model_bundle(model_id)
+        validate_model_bundle_access(bundle, dataset_id=dataset_id, request=http_request)
+        return JSONResponse(content=safe_serialize(prediction_schema(bundle)))
+
+
+@router.post('/predict/batch')
+async def predict_batch(
+    http_request: Request, model_id: str = Form(...), dataset_id: str | None = Form(None),
+    sheet_name: str | None = Form(None), file: UploadFile = File(...),
+) -> JSONResponse:
+    # Authorization precedes parsing; inference holds the same replacement lock
+    # as single-row scoring so a batch cannot mix dataset/model generations.
+    await run_in_threadpool(get_prediction_schema, model_id, http_request, dataset_id)
+    content = await file.read(50 * 1024 * 1024 + 1)
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail='Batch input must be 50 MB or smaller.')
+    try:
+        frame = await run_in_threadpool(read_prediction_table, content, file.filename or '', sheet_name=sheet_name)
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f'Unable to read batch input: {error}') from error
+    payload = await run_in_threadpool(score_prediction_batch, frame, model_id, dataset_id, http_request)
+    return JSONResponse(content=safe_serialize(payload))
+
+
+def score_prediction_batch(frame: pd.DataFrame, model_id: str, dataset_id: str | None, http_request: Request) -> dict[str, Any]:
+    """Run bounded batch work away from the event loop; retain one model snapshot."""
+    results = []
+    with DATASET_CACHE_LOCK, MODEL_CACHE_LOCK:
+        bundle = load_model_bundle(model_id)
+        validate_model_bundle_access(bundle, dataset_id=dataset_id, request=http_request)
+        required = [field['name'] for field in prediction_schema(bundle)['fields']]
+        missing = [name for name in required if name not in frame.columns]
+        if missing:
+            raise HTTPException(status_code=422, detail=f'Missing model feature columns: {", ".join(missing)}.')
+        for row_number, values in enumerate(frame.to_dict(orient='records'), start=1):
+            features = {str(key): None if value is None or (np.isscalar(value) and bool(pd.isna(value))) else value
+                        for key, value in values.items()}
+            try:
+                payload = build_prediction_payload(PredictRequest(model_id=model_id, dataset_id=dataset_id, features=features), bundle)
+                results.append({'row': row_number, **payload})
+            except Exception as error:
+                results.append({'row': row_number, 'status': 'failed', 'error': str(error)})
+    succeeded = sum(item['status'] == 'success' for item in results)
+    summary = {'total': len(results), 'succeeded': succeeded, 'failed': len(results) - succeeded,
+               'with_warnings': sum(bool(item.get('warnings')) for item in results)}
+    record_activity(request=http_request, action='predict_batch', status='success', model_id=model_id,
+                    detail=f'Batch scoring: {succeeded} succeeded; {summary["failed"]} rejected.', metadata=summary)
+    return {'results': results, 'summary': summary}
 
 
 def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
@@ -7944,6 +8578,11 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
     single: dict[str, Any] | None = None
     try:
         bundle = load_model_bundle(trained["model_id"])
+        with DATASET_CACHE_LOCK, MODEL_CACHE_LOCK:
+            validate_model_bundle_access(
+                bundle, dataset_id=dataset_id, request=http_request,
+                allow_unowned_internal=True,
+            )
         raw_features = list((bundle.get("preprocessing") or {}).get("raw_feature_columns")
                             or bundle.get("feature_columns") or [])
         parsed = extract_feature_values(question, frame, raw_features)
@@ -8150,6 +8789,8 @@ def assistant_ask(request: AssistantAskRequest, http_request: Request) -> JSONRe
     from nl_analytics import answer_question, dataset_signature, profile_dataset
 
     try:
+        if request.dataset_id:
+            dataset_artifact_context(request.dataset_id, http_request)
         frame = load_full_dataset_frame(request.dataset_id, request.data)
     except HTTPException as error:
         raise error
@@ -8205,18 +8846,39 @@ def assistant_ask(request: AssistantAskRequest, http_request: Request) -> JSONRe
 
 @router.post('/upload-model')
 async def upload_model(http_request: Request, file: UploadFile = File(...)) -> JSONResponse:
+    owner_session_id = get_client_session_id(http_request)
+    if not owner_session_id:
+        raise HTTPException(status_code=401, detail='A client session is required to upload a model.')
     filename = file.filename or 'uploaded_model'
     if not filename.lower().endswith(('.joblib', '.pkl', '.pickle')):
         raise HTTPException(status_code=400, detail='Only .joblib, .pkl, and .pickle model files are supported.')
 
     try:
-        content = await file.read()
+        content = await file.read(50 * 1024 * 1024 + 1)
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail='Model files must be 50 MB or smaller.')
         raw_bundle = joblib.load(io.BytesIO(content))
         model_bundle = normalize_uploaded_bundle(raw_bundle, filename)
+        if not model_bundle.get('feature_columns'):
+            raise HTTPException(status_code=422, detail='The uploaded model needs named feature_columns or feature_names_in_. Export a pipeline with its input schema.')
+        model_bundle['prediction_validation'] = {
+            **(model_bundle.get('prediction_validation') or {}),
+            'reasons': ['This is an externally uploaded model. Its validation evidence and training provenance have not been independently verified.'],
+        }
     except HTTPException:
         raise
     except Exception as error:
         raise HTTPException(status_code=400, detail=f'Failed to load model file: {error}') from error
+
+    owner_session_id = get_client_session_id(http_request)
+    if not owner_session_id:
+        raise HTTPException(status_code=401, detail='A client session is required to upload a model.')
+    model_bundle.update({
+        'dataset_id': None,
+        'dataset_version': None,
+        'dataset_fingerprint': None,
+        'owner_session_id': owner_session_id,
+    })
 
     model_id = str(uuid.uuid4())[:8]
     save_model_bundle(model_id, model_bundle)
@@ -10923,7 +11585,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
                 continue
             metrics_row = item.get('metrics') or {}
             comparison.append([name, item.get('status', 'N/A'), fmt(metrics_row.get('mae')), fmt(metrics_row.get('rmse')), fmt(metrics_row.get('mape')), item.get('availability_note') or item.get('skip_reason') or 'Available'])
-        for name in ['XGBoost', 'LightGBM', 'Prophet', 'Gradient Boosting']:
+        for name in ['XGBoost', 'Prophet', 'Gradient Boosting']:
             if not any(name.lower().split()[0] in str(row[0]).lower() for row in comparison[1:]):
                 comparison.append([name, 'Not evaluated', 'N/A', 'N/A', 'N/A', 'No candidate result returned'])
         add_table(comparison, [content_width * 0.17, content_width * 0.12, content_width * 0.1, content_width * 0.1, content_width * 0.1, content_width * 0.35])
@@ -11248,7 +11910,7 @@ def cache_dataset(request: DatasetCacheRequest, http_request: Request) -> JSONRe
         'row_count': int(len(data_frame)),
         'column_count': int(len(data_frame.columns)),
         'columns': list(data_frame.columns),
-    })
+    }, owner_session_id=get_client_session_id(http_request))
     maybe_store_dataset_frequency(dataset_id, data_frame)
 
     response = {
@@ -11331,6 +11993,7 @@ def get_dataset_preview(
 @router.post('/infer-dtypes')
 def infer_dtypes(request: DtypeInferenceRequest, http_request: Request) -> JSONResponse:
     if request.dataset_id:
+        dataset_artifact_context(request.dataset_id, http_request)
         dataset_entry = DATASET_CACHE.get(request.dataset_id)
         if dataset_entry is None:
             raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
@@ -11464,7 +12127,10 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'columns': [str(column) for column in frame.columns],
             'duplicate_count': int(preview_duplicate_rows),
         })
-        set_dataset_cache_entry(dataset_id, dataset_entry)
+        set_dataset_cache_entry(
+            dataset_id, dataset_entry,
+            owner_session_id=get_client_session_id(http_request),
+        )
         pandas_frame = frame.to_pandas(use_pyarrow_extension_array=False) if hasattr(frame, 'to_pandas') else pd.DataFrame(frame)
         maybe_store_dataset_frequency(dataset_id, pandas_frame)
 
@@ -11523,6 +12189,7 @@ async def parse_parquet(http_request: Request, file: UploadFile = File(...)) -> 
 @router.post('/parse-dataset-sheet-selection')
 def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_request: Request) -> JSONResponse:
     try:
+        dataset_artifact_context(request.dataset_id, http_request)
         dataset_entry = DATASET_CACHE.get(request.dataset_id)
         if dataset_entry is None:
             raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
@@ -11610,6 +12277,7 @@ def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_re
 @router.post('/clean-dataset')
 def clean_dataset(request: ParquetCleaningRequest, http_request: Request) -> JSONResponse:
     try:
+        dataset_artifact_context(request.dataset_id, http_request)
         result = clean_cached_dataset(request)
         record_activity(
             request=http_request,

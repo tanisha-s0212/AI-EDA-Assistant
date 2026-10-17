@@ -195,7 +195,7 @@ export default function TimeSeriesForecastTab() {
   const usablePeriods = profile.usable_periods ?? 0;
   const hasEnoughPeriodsForMultiModel = usablePeriods >= MULTI_MODEL_MIN_PERIODS;
   const insufficientPeriodsMessage = !hasEnoughPeriodsForMultiModel
-    ? `Need at least ${MULTI_MODEL_MIN_PERIODS} aggregated months for multi-model time-series (have ${usablePeriods}). Use a longer history or upload samples/sales/sales_monthly.csv (PrecisionForge manufacturing demo).`
+    ? `Need at least ${MULTI_MODEL_MIN_PERIODS} aggregated periods for reliable seasonal model comparison (have ${usablePeriods}). Add a longer history and retry.`
     : null;
 
   const chartData = useMemo(() => {
@@ -222,10 +222,13 @@ export default function TimeSeriesForecastTab() {
     try {
       const payload = {
         dataset_id: datasetId ?? null,
+        data: datasetId ? [] : data,
         date_column: dateColumn,
         target_column: targetColumn,
         forecast_periods: forecastPeriods,
-        training_split: trainSplitPercent / 100,
+        test_percentage: 100 - trainSplitPercent,
+        model_type: 'auto',
+        require_quality_gate: true,
       };
       const response = await apiClient.post('/forecast/ts/run', payload);
       const nextResult = response.data as TimeSeriesForecastResult;
@@ -347,7 +350,7 @@ export default function TimeSeriesForecastTab() {
               </div>
               <h2 className="mt-3 text-2xl font-bold tracking-tight">Sales Forecast Using Time Series Analysis</h2>
               <p className="mt-2 text-sm text-muted-foreground">
-                Three models (SARIMA, Prophet, HoltWinters) are trained and compared. The best is auto-selected by lowest SMAPE.
+                SARIMA, ARIMA, and Prophet are compared with chronological validation. A model is only marked ready when it beats the same-window baseline.
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary">{dateColumn || 'Pick a date column'}</Badge>
@@ -532,7 +535,7 @@ export default function TimeSeriesForecastTab() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Step 3: Training And Forecasting</CardTitle>
-                    <CardDescription>All 3 models are trained. The best is auto-selected by lowest SMAPE (tiebreak: SARIMA &gt; HoltWinters &gt; Prophet).</CardDescription>
+                    <CardDescription>Eligible time-series candidates are compared with chronological validation. The final forecast is checked against the same-window baseline.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-5">
                     {insufficientPeriodsMessage && (
@@ -553,16 +556,10 @@ export default function TimeSeriesForecastTab() {
                     </div>
                     <div className="flex justify-between">
                       <Button variant="outline" onClick={() => setCurrentStep(2)} className="gap-2"><ChevronLeft className="h-4 w-4" />Previous</Button>
-                      <div className="flex gap-2">
-                        <Button onClick={handleRun} disabled={isTraining || !hasEnoughPeriodsForMultiModel} variant="outline" className="gap-2">
-                          {isTraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                          {isTraining ? 'Training...' : 'Legacy TS'}
-                        </Button>
-                        <Button onClick={handleMultiModelRun} disabled={isTraining || !hasEnoughPeriodsForMultiModel} className="gap-2">
-                          {isTraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                          {isTraining ? 'Training All 3...' : 'Train & Auto-Select'}
-                        </Button>
-                      </div>
+                      <Button onClick={handleRun} disabled={isTraining || !hasEnoughPeriodsForMultiModel} className="gap-2">
+                        {isTraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                        {isTraining ? 'Training Candidates...' : 'Train & Auto-Select'}
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -627,10 +624,15 @@ export default function TimeSeriesForecastTab() {
 
                     <Card>
                       <CardHeader>
-                        <CardTitle>Production Validation</CardTitle>
-                        <CardDescription>Auto-selection, data quality gate, naive baseline, and calculation assumptions.</CardDescription>
+                        <CardTitle>Forecast Validation</CardTitle>
+                        <CardDescription>Data quality, same-window baseline comparison, and the method used to validate this forecast.</CardDescription>
                       </CardHeader>
                       <CardContent className="grid gap-4 lg:grid-cols-3">
+                        <div className="rounded-xl border p-4">
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Decision Support Status</p>
+                          <p className={`mt-2 text-2xl font-bold ${result.validation_report?.status === 'ready' ? 'text-emerald-600' : 'text-amber-600'}`}>{result.validation_report?.status === 'ready' ? 'Ready' : 'Use caution'}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{result.validation_report?.model_beats_baseline ? 'Model beat the same-window baseline.' : 'Model did not beat the baseline.'}</p>
+                        </div>
                         <div className="rounded-xl border p-4">
                           <p className="text-xs uppercase tracking-wide text-muted-foreground">Data Quality</p>
                           <p className="mt-2 text-2xl font-bold">{result.data_quality?.score ?? 'N/A'}</p>
@@ -642,8 +644,8 @@ export default function TimeSeriesForecastTab() {
                           <p className="mt-1 text-sm text-muted-foreground">{result.naive_baseline?.mae_improvement_pct ?? 0}% MAE improvement</p>
                         </div>
                         <div className="rounded-xl border p-4">
-                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Audit Trail</p>
-                          <p className="mt-2 text-sm text-muted-foreground">{result.assumptions_audit?.slice(0, 2).join(' ') ?? 'No assumptions captured.'}</p>
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">Evaluation</p>
+                          <p className="mt-2 text-sm text-muted-foreground">{result.validation_report?.evaluation_method ?? result.assumptions_audit?.slice(0, 2).join(' ') ?? 'No assumptions captured.'}</p>
                         </div>
                       </CardContent>
                     </Card>

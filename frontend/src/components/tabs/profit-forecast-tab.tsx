@@ -32,17 +32,11 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 const SCENARIOS: ProfitScenario[] = ['optimistic', 'baseline', 'pessimistic'];
-const PERIOD_OPTIONS = [
-  { label: '7d', value: 7 },
-  { label: '30d', value: 30 },
-  { label: '90d', value: 90 },
-  { label: '180d', value: 180 },
-];
-
 function sum(rows: ProfitForecastResult[], key: keyof ProfitForecastResult) {
   return rows.reduce((total, row) => total + Number(row[key] ?? 0), 0);
 }
@@ -95,11 +89,14 @@ export default function ProfitForecastTab() {
   } = useCurrencyFormat();
   const percentAxis = (value: number | string) => formatPercentValue(value);
   const datasetId = useAppStore((state) => state.datasetId);
+  const columns = useAppStore((state) => state.columns);
+  const timeSeriesForecastResult = useAppStore((state) => state.timeSeriesForecastResult);
   const lossForecast = useAppStore((state) => state.lossForecast);
   const scenarios = useAppStore((state) => state.scenarios);
   const profitLoading = useAppStore((state) => state.profitLoading);
   const profitError = useAppStore((state) => state.profitError);
   const profitIllustrativeAssumptions = useAppStore((state) => state.profitIllustrativeAssumptions);
+  const profitValidationReport = useAppStore((state) => state.profitValidationReport);
   const breakevenPeriod = useAppStore((state) => state.breakevenPeriod);
   const periodsToBreakeven = useAppStore((state) => state.periodsToBreakeven);
   const runProfitForecast = useAppStore((state) => state.runProfitForecast);
@@ -108,11 +105,27 @@ export default function ProfitForecastTab() {
   const [scenario, setScenario] = useState<ProfitScenario>('baseline');
   const [confirmedAssumptions, setConfirmedAssumptions] = useState(false);
   const [assumptionDialogOpen, setAssumptionDialogOpen] = useState(false);
+  const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
+  const [scenarioParameters, setScenarioParameters] = useState<Record<ProfitScenario, Record<'revenue' | 'cogs' | 'loss', number>>>({
+    optimistic: { revenue: 1.15, cogs: 0.97, loss: 0.8 },
+    baseline: { revenue: 1, cogs: 1, loss: 1 },
+    pessimistic: { revenue: 0.85, cogs: 1.05, loss: 1.2 },
+  });
 
   const locked = !datasetId || !lossForecast?.length;
   const activeRows = scenarios?.[scenario] ?? [];
   const baselineRows = scenarios?.baseline ?? [];
   const firstActive = activeRows[0] ?? null;
+  const availablePeriods = lossForecast?.length ?? 0;
+  const selectedPeriods = Math.max(1, Math.min(periods, availablePeriods || 1));
+  const periodLabel = timeSeriesForecastResult?.period_label || 'period';
+  const periodOptions = [...new Set([1, 3, 6, 12, availablePeriods].filter((value) => value > 0 && value <= availablePeriods))]
+    .map((value) => ({ value, label: `${value} ${periodLabel}${value === 1 ? '' : 's'}` }));
+  const effectiveColumnMapping = {
+    date: timeSeriesForecastResult?.date_column,
+    revenue: timeSeriesForecastResult?.target_column,
+    ...Object.fromEntries(Object.entries(columnMapping).filter(([, value]) => value && value !== '__auto__')),
+  } as Record<string, string>;
 
   const summary = useMemo(() => {
     const selected = {
@@ -181,13 +194,10 @@ export default function ProfitForecastTab() {
     }
     try {
       setConfirmedAssumptions(true);
-      await runProfitForecast(datasetId, periods, {
+      await runProfitForecast(datasetId, selectedPeriods, {
         confirmedAssumptions: true,
-        scenarioParameters: {
-          optimistic: { revenue: 1.15, cogs: 0.97, loss: 0.8 },
-          baseline: { revenue: 1, cogs: 1, loss: 1 },
-          pessimistic: { revenue: 0.85, cogs: 1.05, loss: 1.2 },
-        },
+        columnMapping: effectiveColumnMapping,
+        scenarioParameters,
       });
       toast({ title: 'Profit forecast ready', description: 'Generated optimistic, baseline, and pessimistic P&L scenarios.' });
     } catch (error) {
@@ -240,9 +250,9 @@ export default function ProfitForecastTab() {
               ))}
             </div>
             <div className="flex gap-3">
-              <Select value={String(periods)} onValueChange={(value) => setPeriods(Number(value))}>
+              <Select value={String(selectedPeriods)} onValueChange={(value) => setPeriods(Number(value))}>
                 <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-                <SelectContent>{PERIOD_OPTIONS.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
+                <SelectContent>{periodOptions.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
               </Select>
               <Button onClick={() => handleRun()} disabled={profitLoading} className="bg-emerald-600 text-white hover:bg-emerald-700">
                 {profitLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
@@ -264,6 +274,63 @@ export default function ProfitForecastTab() {
           </label>
         </AlertDescription>
       </Alert>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Financial column mapping</CardTitle>
+          <CardDescription>Date and revenue use the completed time-series forecast. Map your accounting columns to avoid fallback cost assumptions.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          {[
+            ['cogs', 'COGS / direct cost'],
+            ['operating_expense', 'Operating expense'],
+          ].map(([key, label]) => (
+            <label key={key} className="space-y-1 text-sm font-medium">
+              <span>{label}</span>
+              <Select value={columnMapping[key] || '__auto__'} onValueChange={(value) => setColumnMapping((current) => ({ ...current, [key]: value }))}>
+                <SelectTrigger><SelectValue placeholder="Auto-detect" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__auto__">Auto-detect / unavailable</SelectItem>
+                  {columns.map((column) => <SelectItem key={column.name} value={column.name}>{column.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </label>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Scenario assumptions</CardTitle>
+          <CardDescription>Multipliers apply to the selected forecast. Enter 1.00 for no change; permitted values are 0.25 to 3.00.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 lg:grid-cols-3">
+          {SCENARIOS.map((scenarioName) => (
+            <div key={scenarioName} className="rounded-lg border p-3">
+              <p className="mb-3 font-semibold capitalize" style={{ color: scenarioColor(scenarioName) }}>{scenarioName}</p>
+              <div className="grid grid-cols-3 gap-2">
+                {(['revenue', 'cogs', 'loss'] as const).map((key) => (
+                  <label key={key} className="text-xs font-medium capitalize">
+                    {key}
+                    <Input
+                      className="mt-1 h-8"
+                      type="number"
+                      min="0.25"
+                      max="3"
+                      step="0.01"
+                      value={scenarioParameters[scenarioName][key]}
+                      onChange={(event) => setScenarioParameters((current) => ({
+                        ...current,
+                        [scenarioName]: { ...current[scenarioName], [key]: Number(event.target.value) },
+                      }))}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
 
       <AlertDialog open={assumptionDialogOpen} onOpenChange={setAssumptionDialogOpen}>
         <AlertDialogContent>
@@ -287,7 +354,7 @@ export default function ProfitForecastTab() {
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Illustrative assumptions</AlertTitle>
           <AlertDescription>
-            Profit scenarios may include fallback cost assumptions from upstream loss/revenue mapping. Label as illustrative when ERP cost fields were not fully mapped.
+            {profitValidationReport?.validation_reasons?.join(' ') || 'Profit scenarios include documented fallback assumptions. Confirm mapped accounting fields before using these results for decisions.'}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -323,6 +390,14 @@ export default function ProfitForecastTab() {
               </motion.div>
             ))}
           </div>
+
+          <Alert>
+            <Scale className="h-4 w-4" />
+            <AlertTitle>{profitValidationReport?.validation_status === 'ready' ? 'Financial readiness checks passed' : 'Review inputs before using for decisions'}</AlertTitle>
+            <AlertDescription>
+              {[profitValidationReport?.reconciliation || 'Each row reconciles revenue, costs, losses, and net profit.', ...(profitValidationReport?.validation_reasons ?? [])].join(' ')}
+            </AlertDescription>
+          </Alert>
 
           <AnimatePresence mode="wait">
             <motion.div key={scenario} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="space-y-6">
@@ -416,7 +491,7 @@ export default function ProfitForecastTab() {
                 <Card className={periodsToBreakeven && periodsToBreakeven <= 60 ? 'border-emerald-200 bg-emerald-50' : periodsToBreakeven && periodsToBreakeven <= 90 ? 'border-amber-200 bg-amber-50' : 'border-rose-200 bg-rose-50'}>
                   <CardHeader>
                     <CardTitle>Break-even Analysis</CardTitle>
-                    <CardDescription>Baseline scenario timeline to non-negative net profit.</CardDescription>
+                    <CardDescription>Baseline cumulative net profit timeline to break-even.</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <p className="text-3xl font-black">{breakevenPeriod ?? 'Not reached'}</p>

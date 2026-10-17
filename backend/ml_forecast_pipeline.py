@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,8 @@ from sales_domain import is_date_part_column, pick_best_date_column, pick_best_r
 
 DATE_PATTERNS = ['invoice_date', 'order_date', 'bill_date', 'year_month', 'date', 'period', 'start', 'time', 'created', 'ended', 'timestamp']
 TARGET_PATTERNS = ['sale_free', 'sale_value', 'net_sales', 'total_value_sale', 'gmv', 'turnover', 'revenue', 'sales', 'total_value']
-MODEL_PRIORITY = {'XGBoost': 0, 'Gradient Boosting': 1, 'Prophet': 2, 'LightGBM': 3}
+MODEL_PRIORITY = {'XGBoost': 0, 'Gradient Boosting': 1, 'Prophet': 2}
+SUPPORTED_MODEL_TYPES = {'auto', 'gradient_boosting', 'xgboost', 'prophet'}
 
 
 def get_config(frequency: str) -> dict[str, Any]:
@@ -33,7 +33,6 @@ def get_config(frequency: str) -> dict[str, Any]:
             'calendar': ['trend_index', 'month_number', 'quarter_number', 'weekday_number', 'is_month_end'],
             'min_rows': 20,
             'cv_splits': 5,
-            'lgbm_min_leaf': 5,
             'prophet_mode': 'multiplicative',
             'yearly_seasonality': False,
             'period_label': 'Week of YYYY-MM-DD',
@@ -48,7 +47,6 @@ def get_config(frequency: str) -> dict[str, Any]:
         'calendar': ['trend_index', 'month_number', 'quarter_number', 'is_quarter_end', 'is_year_end'],
         'min_rows': 12,
         'cv_splits': 3,
-        'lgbm_min_leaf': 2,
         'prophet_mode': 'multiplicative',
         'yearly_seasonality': True,
         'period_label': 'Month of YYYY-MM',
@@ -198,7 +196,9 @@ def load_and_detect_frame(frame: pd.DataFrame, date_col: str | None = None, targ
     working = _parse_object_dates(frame)
     resolved_date = (
         date_col
-        if date_col and date_col in working.columns and not is_date_part_column(date_col)
+        # An explicit user selection is authoritative, including a column named
+        # "month" that contains full dates.  Heuristics apply only to auto-detect.
+        if date_col and date_col in working.columns
         else _detect_date_column(working)
     )
     resolved_target = target_col if target_col in working.columns else _detect_target_column(working)
@@ -333,24 +333,25 @@ def _add_calendar_features(frame: pd.DataFrame, date_col: str, frequency: str, c
     return working
 
 
-def engineer_features(df: pd.DataFrame, target_col: str, date_col: str, frequency: str, config: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
-    """Build calendar, lag, rolling features, dropping non-numeric and ID-type columns, and ensuring required engineered features are present."""
-    import re
-    # 1. Drop non-numeric and ID-type columns
-    id_pattern = re.compile(r'id|no|number|code|key|batch|seq|row|index', re.IGNORECASE)
-    cols_to_drop = []
-    for col in df.columns:
-        if col == date_col or col == target_col:
-            continue
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            cols_to_drop.append(col)
-        elif id_pattern.search(col):
-            cols_to_drop.append(col)
-            
-    working = df.drop(columns=cols_to_drop, errors='ignore').copy().sort_values(date_col).reset_index(drop=True)
-    
-    # 2. Keep track of dataset baseline features
-    dataset_features = [col for col in working.columns if col not in (date_col, target_col)]
+def engineer_features(
+    df: pd.DataFrame,
+    target_col: str,
+    date_col: str,
+    frequency: str,
+    config: dict[str, Any],
+    feature_groups: list[str] | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build only forecast-time-safe, target-derived features.
+
+    Source columns are deliberately excluded.  Values such as discounts, costs, or
+    margins are often unavailable for future periods and can leak the target into
+    validation.  This keeps training and future inference on the same inputs.
+    """
+    allowed_groups = {'trend', 'calendar', 'lags', 'rolling'}
+    selected_groups = set(feature_groups or allowed_groups) & allowed_groups
+    if not selected_groups:
+        raise ValueError('Choose at least one ML feature group.')
+    working = df[[date_col, target_col]].copy().sort_values(date_col).reset_index(drop=True)
     
     # 3. Add calendar features
     working = _add_calendar_features(working, date_col, frequency, config)
@@ -376,7 +377,8 @@ def engineer_features(df: pd.DataFrame, target_col: str, date_col: str, frequenc
         if column not in working.columns:
             working[column] = target.shift(1).rolling(window=window, min_periods=window).std().fillna(0.0)
 
-    # 4. Auto-generate mandatory engineered features if missing
+    # 4. Generate the shared feature vocabulary. Selection happens below so future
+    # rows and historical rows use exactly the same set of inputs.
     dates = pd.to_datetime(working[date_col])
     
     if 'trend_index' not in working.columns:
@@ -402,18 +404,20 @@ def engineer_features(df: pd.DataFrame, target_col: str, date_col: str, frequenc
     if 'rolling_std_3' not in working.columns:
         working['rolling_std_3'] = target.shift(1).rolling(window=3, min_periods=1).std().fillna(0.0)
 
-    # 5. Build final feature list
-    mandatory_features = [
-        'trend_index', 'month_number', 'quarter_number', 'weekday_number', 'is_month_end',
-        'lag_1', 'lag_2', 'lag_3', 'rolling_mean_3', 'rolling_mean_6', 'rolling_std_3'
-    ]
-    
-    feature_set = set(dataset_features)
-    feature_set.update(config.get('calendar', []))
-    feature_set.update([f'lag_{lag}' for lag in config.get('lags', [])])
-    feature_set.update([f'rolling_mean_{window}' for window in config.get('rolling_windows', [])])
-    feature_set.update([f'rolling_std_{window}' for window in config.get('rolling_std_windows', [])])
-    feature_set.update(mandatory_features)
+    # 5. Only include the feature groups selected in the UI.  Do not append raw
+    # dataset columns: they are not reliably known at forecast time.
+    feature_set: set[str] = set()
+    if 'trend' in selected_groups:
+        feature_set.add('trend_index')
+    if 'calendar' in selected_groups:
+        feature_set.update(config.get('calendar', []))
+    if 'lags' in selected_groups:
+        feature_set.update([f'lag_{lag}' for lag in config.get('lags', [])])
+        feature_set.update({'lag_1', 'lag_2', 'lag_3'})
+    if 'rolling' in selected_groups:
+        feature_set.update([f'rolling_mean_{window}' for window in config.get('rolling_windows', [])])
+        feature_set.update([f'rolling_std_{window}' for window in config.get('rolling_std_windows', [])])
+        feature_set.update({'rolling_mean_3', 'rolling_mean_6', 'rolling_std_3'})
     
     feature_list = [col for col in working.columns if col in feature_set and col not in (date_col, target_col)]
     
@@ -428,6 +432,12 @@ def engineer_features(df: pd.DataFrame, target_col: str, date_col: str, frequenc
     feature_df = feature_df.replace([np.inf, -np.inf], np.nan).dropna(subset=feature_list).reset_index(drop=True)
     if feature_df.empty:
         raise ValueError('Insufficient data after feature engineering: 0 rows')
+    constant_features = [column for column in feature_list if feature_df[column].nunique(dropna=False) <= 1]
+    if constant_features:
+        logger.info('Dropping constant forecast features: %s', constant_features)
+        feature_list = [column for column in feature_list if column not in constant_features]
+    if not feature_list:
+        raise ValueError('Selected feature groups produced no varying forecast-time-safe features.')
         
     for column in feature_list:
         zero_share = float((feature_df[column] == 0).mean())
@@ -435,20 +445,6 @@ def engineer_features(df: pd.DataFrame, target_col: str, date_col: str, frequenc
             logger.warning('Feature column %s has %.1f%% zeros', column, zero_share * 100)
             
     return feature_df, feature_list
-
-
-def safe_import_lightgbm(min_data_in_leaf: int) -> tuple[Any | None, str]:
-    """Import or install LightGBM and return a configured regressor plus status."""
-    try:
-        import lightgbm as lgb
-        return lgb.LGBMRegressor(num_leaves=31, n_estimators=100, learning_rate=0.05, random_state=42, min_data_in_leaf=min_data_in_leaf, verbose=-1), 'available'
-    except Exception:
-        try:
-            subprocess.run(['pip', 'install', 'lightgbm', '-q'], check=True, timeout=120)
-            import lightgbm as lgb
-            return lgb.LGBMRegressor(num_leaves=31, n_estimators=100, learning_rate=0.05, random_state=42, min_data_in_leaf=min_data_in_leaf, verbose=-1), 'installed_and_available'
-        except Exception as error:
-            return None, f'failed: {error}'
 
 
 def compute_smape(actual: list[float] | np.ndarray, predicted: list[float] | np.ndarray) -> float:
@@ -470,7 +466,7 @@ def compute_all_metrics(actual: list[float] | np.ndarray, predicted: list[float]
     return {'mae': round(mae, 2), 'rmse': round(rmse, 2), 'mape': round(mape, 2), 'smape': round(compute_smape(actual_arr, predicted_arr), 2)}
 
 
-def build_models_dict(lgbm_model: Any | None, lgbm_status: str) -> dict[str, Any]:
+def build_models_dict() -> dict[str, Any]:
     """Build the production candidate dictionary."""
     models: dict[str, Any] = {'Gradient Boosting': GradientBoostingRegressor(random_state=42, n_estimators=100, learning_rate=0.05, max_depth=3)}
     try:
@@ -479,7 +475,6 @@ def build_models_dict(lgbm_model: Any | None, lgbm_status: str) -> dict[str, Any
     except Exception as error:
         models['XGBoost'] = {'status': 'failed', 'note': f'failed: {error}'}
     models['Prophet'] = {'type': 'prophet'}
-    models['LightGBM'] = lgbm_model if lgbm_model is not None else {'status': 'failed', 'note': lgbm_status}
     return models
 
 
@@ -496,8 +491,33 @@ def _fit_predict_prophet(train: pd.DataFrame, validation_dates: pd.Series, date_
     return [max(0.0, float(value)) for value in forecast['yhat'].tolist()]
 
 
+def _recursive_holdout_predictions(
+    model: Any,
+    train: pd.DataFrame,
+    test_dates: pd.Series,
+    features: list[str],
+    target: str,
+    date_col: str,
+    frequency: str,
+) -> list[float]:
+    """Forecast an unseen block without reading its actual target values."""
+    if isinstance(model, dict) and model.get('type') == 'prophet':
+        return _fit_predict_prophet(train, test_dates, date_col, target, frequency)
+    estimator = clone(model)
+    estimator.fit(train[features], train[target])
+    config = get_config(frequency)
+    history = pd.to_numeric(train[target], errors='coerce').astype(float).tolist()
+    predictions: list[float] = []
+    for test_date in pd.to_datetime(test_dates):
+        row = _build_future_feature_row(history, pd.Timestamp(test_date), frequency, config, features)
+        prediction = max(0.0, float(estimator.predict(row)[0]))
+        predictions.append(prediction)
+        history.append(prediction)
+    return predictions
+
+
 def walk_forward_validate(df: pd.DataFrame, features: list[str], target: str, models_dict: dict[str, Any], n_splits: int, frequency: str, date_col: str = 'period') -> dict[str, dict[str, Any]]:
-    """Validate all candidates with TimeSeriesSplit and capture named failures."""
+    """Validate candidates in chronological folds without using fold targets as lags."""
     results: dict[str, dict[str, Any]] = {}
     splits = min(n_splits, max(2, len(df) - 2))
     splitter = TimeSeriesSplit(n_splits=splits)
@@ -511,12 +531,9 @@ def walk_forward_validate(df: pd.DataFrame, features: list[str], target: str, mo
             for train_index, test_index in splitter.split(df):
                 train = df.iloc[train_index].copy()
                 test = df.iloc[test_index].copy()
-                if model_name == 'Prophet':
-                    fold_predictions = _fit_predict_prophet(train, test[date_col], date_col, target, frequency)
-                else:
-                    estimator = clone(model)
-                    estimator.fit(train[features], train[target])
-                    fold_predictions = [max(0.0, float(value)) for value in estimator.predict(test[features])]
+                fold_predictions = _recursive_holdout_predictions(
+                    model, train, test[date_col], features, target, date_col, frequency
+                )
                 actuals.extend(pd.to_numeric(test[target], errors='coerce').astype(float).tolist())
                 predictions.extend(fold_predictions)
             metrics = compute_all_metrics(actuals, predictions)
@@ -574,23 +591,54 @@ def format_period_label(value: pd.Timestamp, frequency: str) -> str:
 
 
 def forecast_future(model: Any, df: pd.DataFrame, features: list[str], target: str, date_col: str, horizon: int, frequency: str) -> list[dict[str, Any]]:
-    """Iteratively predict future periods, appending each prediction before the next step."""
+    """Iteratively predict future periods without rebuilding the full history each step."""
     config = get_config(frequency)
     history = df[[date_col, target]].copy().sort_values(date_col).reset_index(drop=True)
+    history_values = pd.to_numeric(history[target], errors='coerce').astype(float).tolist()
     forecasts: list[dict[str, Any]] = []
     next_date = pd.Timestamp(history.iloc[-1][date_col]) + config['offset']
     for _ in range(horizon):
         if model.__class__.__name__ == 'Prophet':
             prediction = float(model.predict(pd.DataFrame({'ds': [next_date]}))['yhat'].iloc[0])
         else:
-            row = _build_future_row(history, date_col, target, frequency, config, next_date)
-            row = row.reindex(columns=features).fillna(float(history[target].mean()))
+            row = _build_future_feature_row(history_values, next_date, frequency, config, features)
             prediction = float(model.predict(row)[0])
         prediction = max(0.0, prediction)
         forecasts.append({'period': next_date.strftime('%Y-%m-%d'), 'period_label': format_period_label(next_date, frequency), 'forecast_value': round(prediction, 2)})
-        history = pd.concat([history, pd.DataFrame([{date_col: next_date, target: prediction}])], ignore_index=True)
+        history_values.append(prediction)
         next_date = next_date + config['offset']
     return forecasts
+
+
+def _build_future_feature_row(
+    history: list[float], next_date: pd.Timestamp, frequency: str,
+    config: dict[str, Any], features: list[str],
+) -> pd.DataFrame:
+    """Calculate the engineered features for one future period in O(feature count)."""
+    if not history:
+        raise ValueError('At least one historical target value is required for forecasting.')
+    values = np.asarray(history, dtype=float)
+    fallback = float(np.mean(values))
+    date = pd.Timestamp(next_date)
+    row: dict[str, float] = {
+        'trend_index': float(len(values) + 1),
+        'month_number': float(date.month),
+        'quarter_number': float(date.quarter),
+        'weekday_number': float(date.dayofweek),
+        'is_month_end': float(date.is_month_end),
+        'is_quarter_end': float(date.is_quarter_end),
+        'is_year_end': float(date.is_year_end),
+    }
+    requested_lags = {int(name.split('_', 1)[1]) for name in features if name.startswith('lag_') and name.split('_', 1)[1].isdigit()}
+    for lag in set(config.get('lags', [])) | requested_lags:
+        row[f'lag_{lag}'] = float(values[-lag]) if len(values) >= lag else fallback
+    requested_means = {int(name.rsplit('_', 1)[1]) for name in features if name.startswith('rolling_mean_') and name.rsplit('_', 1)[1].isdigit()}
+    for window in set(config.get('rolling_windows', [])) | requested_means:
+        row[f'rolling_mean_{window}'] = float(np.mean(values[-window:])) if len(values) >= window else fallback
+    requested_stds = {int(name.rsplit('_', 1)[1]) for name in features if name.startswith('rolling_std_') and name.rsplit('_', 1)[1].isdigit()}
+    for window in set(config.get('rolling_std_windows', [])) | requested_stds:
+        row[f'rolling_std_{window}'] = float(np.std(values[-window:], ddof=1)) if len(values) >= window else 0.0
+    return pd.DataFrame([{feature: row.get(feature, fallback) for feature in features}], columns=features)
 
 
 def compute_shap_importance(model: Any, X: pd.DataFrame, feature_names: list[str]) -> list[dict[str, Any]]:
@@ -611,31 +659,50 @@ def compute_shap_importance(model: Any, X: pd.DataFrame, feature_names: list[str
     return sorted(rows, key=lambda item: item['importance'], reverse=True)[:10]
 
 
-def _naive_baseline_mae(values: list[float]) -> float:
-    """Compute last-observation naive MAE over the final 20 percent holdout."""
-    if len(values) < 3:
-        return 0.0
-    split = max(1, int(len(values) * 0.8))
-    actual = values[split:]
-    predicted = [values[index - 1] for index in range(split, len(values))]
-    return round(float(mean_absolute_error(actual, predicted)), 2) if actual else 0.0
+def _naive_holdout_predictions(train_values: list[float], test_size: int, frequency: str) -> tuple[list[float], str]:
+    """Return a transparent baseline for the same horizon used by the ML holdout."""
+    if not train_values or test_size <= 0:
+        return [], 'last-observation'
+    season = 52 if frequency == 'weekly' else 12
+    if len(train_values) >= season:
+        history = list(train_values)
+        predictions = []
+        for _ in range(test_size):
+            predictions.append(float(history[-season]))
+            history.append(predictions[-1])
+        return predictions, f'seasonal-naive ({season}-period)'
+    return [float(train_values[-1])] * test_size, 'last-observation'
 
 
-def _data_quality(clean_df: pd.DataFrame, target_col: str, frequency: str) -> tuple[float, str]:
-    """Score cleaned target history from 0 to 100."""
+def _data_quality(clean_df: pd.DataFrame, target_col: str, date_col: str, frequency: str) -> dict[str, Any]:
+    """Score the prepared series and make the reasons visible to business users."""
     config = get_config(frequency)
     values = pd.to_numeric(clean_df[target_col], errors='coerce')
     completeness = 1.0 - float(values.isna().mean())
     zero_penalty = min(0.5, float((values.fillna(0) == 0).mean()))
     period_score = min(1.0, len(clean_df) / max(1, config['min_rows'] * 2))
-    score = round(100.0 * ((0.45 * completeness) + (0.35 * period_score) + (0.20 * (1.0 - zero_penalty))), 1)
-    return score, 'pass' if score >= 70 else 'fail'
+    nonpositive_share = float((values.fillna(0) <= 0).mean())
+    expected_frequency = 'W-MON' if frequency == 'weekly' else 'MS'
+    dates = pd.to_datetime(clean_df[date_col], errors='coerce').dropna().sort_values()
+    expected = pd.date_range(dates.iloc[0], dates.iloc[-1], freq=expected_frequency) if len(dates) else pd.DatetimeIndex([])
+    missing_periods = max(0, len(expected) - len(dates.unique()))
+    gap_penalty = min(0.25, missing_periods / max(1, len(expected)))
+    score = round(100.0 * ((0.40 * completeness) + (0.35 * period_score) + (0.15 * (1.0 - zero_penalty)) + (0.10 * (1.0 - gap_penalty))), 1)
+    issues: list[str] = []
+    if missing_periods:
+        issues.append(f'{missing_periods} expected {frequency} period(s) are absent after aggregation.')
+    if nonpositive_share > 0.10:
+        issues.append(f'{nonpositive_share:.0%} of periods are zero or negative.')
+    if len(clean_df) < config['min_rows'] * 2:
+        issues.append('History is short for a stable seasonal forecast.')
+    status = 'pass' if score >= 80 and not missing_periods else ('warning' if score >= 60 else 'fail')
+    return {'score': score, 'status': status, 'missing_periods': missing_periods, 'issues': issues, 'nonpositive_share': nonpositive_share}
 
 
 def _comparison_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert validation results into the artifact comparison contract."""
     rows = []
-    for model_name in ['Gradient Boosting', 'Prophet', 'XGBoost', 'LightGBM']:
+    for model_name in ['Gradient Boosting', 'Prophet', 'XGBoost']:
         metrics = results.get(model_name, {'status': 'failed', 'note': 'not evaluated'})
         rows.append({
             'model': model_name,
@@ -703,6 +770,12 @@ def write_all_outputs(
     horizon: int,
     best_model: Any,
     feature_list: list[str],
+    holdout_predictions: list[float],
+    holdout_actuals: list[float],
+    baseline_predictions: list[float],
+    baseline_name: str,
+    test_percentage: int,
+    model_was_requested: bool,
     *,
     period_label: str | None = None,
 ) -> dict[str, Any]:
@@ -715,15 +788,18 @@ def write_all_outputs(
     volatility = float(values.std() / values.mean()) if float(values.mean() or 0.0) != 0.0 else 0.0
     zero_value_share = float((values.fillna(0) <= 0).mean()) if len(values) else 0.0
     missing_share = float(values.isna().mean()) if len(values) else 0.0
-    quality_score, quality_status = _data_quality(clean_df, target_col, frequency)
-    naive_mae = _naive_baseline_mae(values.tolist())
+    quality = _data_quality(clean_df, target_col, date_col, frequency)
+    quality_score, quality_status = quality['score'], quality['status']
+    baseline_metrics = compute_all_metrics(holdout_actuals, baseline_predictions)
+    naive_mae = baseline_metrics['mae']
     top_driver = shap[0]['feature'] if shap else ''
     top_importance = float(shap[0]['importance']) if shap else 0.0
     improvement = round(((naive_mae - float(best_metrics['mae'])) / naive_mae) * 100.0, 2) if naive_mae else 0.0
     comparison = _comparison_rows(results)
     selection_note = (
-        f'{best_model_name} selected by lowest SMAPE. '
-        'Note: SMAPE used as primary metric to avoid near-zero denominator inflation.'
+        f'{best_model_name} was selected by the user; its validation metrics are shown alongside the baseline.'
+        if model_was_requested else
+        f'{best_model_name} selected by lowest SMAPE. Note: SMAPE used as primary metric to avoid near-zero denominator inflation.'
     )
     resolved_period_label = period_label or ('week' if frequency == 'weekly' else 'month')
     metadata = {
@@ -736,9 +812,12 @@ def write_all_outputs(
         'volatility': round(volatility, 4),
         'zero_value_share': round(zero_value_share, 4),
         'missing_share': round(missing_share, 4),
-        'training_split_pct': 80,
+        'training_split_pct': 100 - int(test_percentage),
+        'test_split_pct': int(test_percentage),
         'horizon_periods': int(horizon),
         'generated_feature_count': int(len(feature_list)),
+        'feature_policy': 'Only time and prior target values are used; source business columns are excluded to prevent future-data leakage.',
+        'missing_periods': quality['missing_periods'],
         'pipeline_status': 'completed',
         'next_tab': 'loss_forecast',
         'retrain_available': True,
@@ -753,22 +832,36 @@ def write_all_outputs(
         'top_driver_importance': top_importance,
         'naive_baseline_mae': naive_mae,
         'mae_improvement_pct': improvement,
-        'selection_reason': f'{best_model_name} had the best SMAPE among completed candidates.',
+        'selection_reason': (
+            f'{best_model_name} was selected by the user.' if model_was_requested
+            else f'{best_model_name} had the best SMAPE among completed candidates.'
+        ),
         'selection_metric': 'SMAPE',
         'selection_note': selection_note,
         'data_quality_score': quality_score,
         'data_quality_status': quality_status,
+        'baseline_name': baseline_name,
+        'baseline_metrics': baseline_metrics,
+        'evaluation_method': 'Chronological recursive holdout. Each holdout forecast is generated without its actual value or later actual values.',
     }
-    backtest_values = _holdout_backtest(best_model, feature_df.rename(columns={date_col: 'period'}), feature_list, target_col)
+    residual_quantile = float(np.quantile(np.abs(np.asarray(holdout_actuals) - np.asarray(holdout_predictions)), 0.9)) if holdout_predictions else 0.0
+    for step, row in enumerate(forecast, start=1):
+        spread = residual_quantile * float(np.sqrt(step))
+        row['lower'] = round(max(0.0, float(row['forecast_value']) - spread), 2)
+        row['upper'] = round(float(row['forecast_value']) + spread, 2)
     forecast_line = []
     for _, row in clean_df.iterrows():
         forecast_line.append({'period': pd.Timestamp(row[date_col]).strftime('%Y-%m-%d'), 'actual': round(float(row[target_col]), 2), 'backtest': None, 'forecast': None, 'type': 'actual'})
     feature_dates = [pd.Timestamp(value).strftime('%Y-%m-%d') for value in feature_df[date_col].tolist()]
-    for index, prediction in enumerate(backtest_values):
-        if prediction is not None:
-            forecast_line.append({'period': feature_dates[index], 'actual': None, 'backtest': prediction, 'forecast': None, 'type': 'backtest'})
+    holdout_start = len(feature_dates) - len(holdout_predictions)
+    for offset, prediction in enumerate(holdout_predictions):
+        forecast_line.append({'period': feature_dates[holdout_start + offset], 'actual': None, 'backtest': round(float(prediction), 2), 'forecast': None, 'type': 'backtest'})
     for row in forecast:
-        forecast_line.append({'period': row['period'], 'actual': None, 'backtest': None, 'forecast': row['forecast_value'], 'type': 'forecast'})
+        forecast_line.append({
+            'period': row['period'], 'actual': None, 'backtest': None,
+            'forecast': row['forecast_value'], 'lower': row.get('lower'), 'upper': row.get('upper'),
+            'type': 'forecast',
+        })
     future_values = [float(row['forecast_value']) for row in forecast]
     peak_index = int(np.argmax(future_values)) if future_values else 0
     future_table = {
@@ -779,7 +872,7 @@ def write_all_outputs(
         'last_period': forecast[-1]['period'] if forecast else '',
         'latest_actual': round(float(values.iloc[-1]), 2) if len(values) else 0.0,
         'horizon_label': config['horizon_label'],
-        'rows': [{'period': row['period'], 'forecast': row['forecast_value']} for row in forecast],
+        'rows': [{'period': row['period'], 'forecast': row['forecast_value'], 'lower': row.get('lower'), 'upper': row.get('upper')} for row in forecast],
     }
     sample_start = int(len(feature_df) * 0.4)
     sample_end = max(sample_start + 1, int(len(feature_df) * 0.5))
@@ -789,8 +882,8 @@ def write_all_outputs(
     feature_sample = {'columns': feature_list, 'rows': safe_records(sample_rows[feature_list].round(4))}
     top3 = ', '.join(item['feature'] for item in shap[:3]) or 'engineered time features'
     insight = {
-        'insight_text': f'ML forecasting auto-selected {best_model_name} after comparing production candidates. Strongest drivers: {top3}. Backtest MAE {best_metrics["mae"]}, RMSE {best_metrics["rmse"]}, SMAPE {best_metrics["smape"]}%.',
-        'audit_trail': 'Gradient Boosting, Prophet, XGBoost, LightGBM compared via walk-forward validation using MAE, RMSE, MAPE, SMAPE. LightGBM reported as named failure if unavailable.',
+        'insight_text': f'ML forecasting selected {best_model_name} after chronological validation. Strongest drivers: {top3}. Recursive holdout MAE {best_metrics["mae"]}, RMSE {best_metrics["rmse"]}, SMAPE {best_metrics["smape"]}%.',
+        'audit_trail': 'Candidates are compared with chronological walk-forward validation. The final holdout and baseline use the same recursive forecast window without future actual values.',
         'data_quality_score': quality_score,
         'data_quality_status': quality_status,
     }
@@ -815,6 +908,7 @@ def write_all_outputs(
         'feature_table_sample': feature_sample,
         'forecast_insight': insight,
         'trim_report': trim_report,
+        'data_quality': quality,
     }
 
 
@@ -839,8 +933,15 @@ def run_full_pipeline(
     frequency: str = 'auto',
     frame: pd.DataFrame | None = None,
     model_type: str = 'auto',
+    feature_groups: list[str] | None = None,
+    lag_periods: int | None = None,
+    test_percentage: int = 20,
 ) -> dict[str, Any]:
     """Run the complete Aroha IDA ML sales forecast pipeline with an 80/20 train-test split on the selected model."""
+    normalized_model_type = str(model_type or 'auto').strip().lower().replace(' ', '_').replace('-', '_')
+    if normalized_model_type not in SUPPORTED_MODEL_TYPES:
+        supported = ', '.join(sorted(SUPPORTED_MODEL_TYPES))
+        raise ValueError(f'Unsupported ML forecast model "{model_type}". Choose one of: {supported}.')
     if frame is None:
         raw_df, detected_date_col, detected_target_col = load_and_detect(path, date_col, target_col)
     else:
@@ -859,32 +960,33 @@ def run_full_pipeline(
         frequency = prepared_frequency
     if frequency not in {'weekly', 'monthly'}:
         frequency = 'monthly'
-    config = get_config(frequency)
+    config = dict(get_config(frequency))
+    if lag_periods is not None:
+        validated_lags = max(1, min(12, int(lag_periods)))
+        config['lags'] = list(range(1, validated_lags + 1))
     clean_df, trim_report = clean_data(df, target_col, date_col, frequency)
-    feature_df, feature_list = engineer_features(clean_df, target_col, date_col, frequency, config)
+    feature_df, feature_list = engineer_features(clean_df, target_col, date_col, frequency, config, feature_groups)
     if len(feature_df) < max(3, config['cv_splits'] + 2):
         raise ValueError(f'Insufficient data after feature engineering: {len(feature_df)} rows')
-    lgbm_model, lgbm_status = safe_import_lightgbm(config['lgbm_min_leaf'])
-    models = build_models_dict(lgbm_model, lgbm_status)
+    models = build_models_dict()
     results = walk_forward_validate(feature_df, feature_list, target_col, models, config['cv_splits'], frequency, date_col)
     
-    # Select best or requested model key
+    # Select the requested model or the best completed candidate.
     selected_model_name = 'Gradient Boosting'
-    if model_type != 'auto' and model_type:
-        normalized_requested = model_type.lower().replace(' ', '_').replace('-', '_')
+    if normalized_model_type != 'auto':
+        normalized_requested = normalized_model_type
         for key in models.keys():
             if key.lower().replace(' ', '_').replace('-', '_') == normalized_requested:
                 selected_model_name = key
                 break
-        else:
-            best_model_name, _ = auto_select_model(results)
-            selected_model_name = best_model_name
     else:
         best_model_name, _ = auto_select_model(results)
         selected_model_name = best_model_name
 
-    # Train-test split (80/20 chronological)
-    split_idx = int(len(feature_df) * 0.8)
+    # Chronological holdout.  The requested split is used by both the model and
+    # its baseline so the UI never reports a configuration it ignored.
+    validated_test_percentage = max(10, min(50, int(test_percentage)))
+    split_idx = int(len(feature_df) * (100 - validated_test_percentage) / 100)
     if split_idx < 1:
         split_idx = 1
     if split_idx >= len(feature_df):
@@ -894,6 +996,8 @@ def run_full_pipeline(
     test_df = feature_df.iloc[split_idx:]
 
     chosen_model = models[selected_model_name]
+    if isinstance(chosen_model, dict) and chosen_model.get('status') == 'failed':
+        raise ValueError(f'{selected_model_name} is unavailable: {chosen_model.get("note", "unknown error")}')
     
     # Train and evaluate on split
     if isinstance(chosen_model, dict) and chosen_model.get('type') == 'prophet':
@@ -905,17 +1009,18 @@ def run_full_pipeline(
         prophet_model = Prophet(seasonality_mode=config['prophet_mode'], yearly_seasonality=config['yearly_seasonality'], weekly_seasonality=False, daily_seasonality=False)
         prophet_model.fit(train_df.rename(columns={date_col: 'ds', target_col: 'y'})[['ds', 'y']])
         
-        test_preds = prophet_model.predict(pd.DataFrame({'ds': pd.to_datetime(test_df[date_col])}))['yhat'].tolist()
-        test_preds = [max(0.0, float(v)) for v in test_preds]
+        test_preds = _recursive_holdout_predictions(
+            chosen_model, train_df, test_df[date_col], feature_list, target_col, date_col, frequency
+        )
         
         # Retrain on full
         full_model = Prophet(seasonality_mode=config['prophet_mode'], yearly_seasonality=config['yearly_seasonality'], weekly_seasonality=False, daily_seasonality=False)
         full_model.fit(feature_df.rename(columns={date_col: 'ds', target_col: 'y'})[['ds', 'y']])
         best_model = full_model
     else:
-        estimator = clone(chosen_model)
-        estimator.fit(train_df[feature_list], train_df[target_col])
-        test_preds = [max(0.0, float(v)) for v in estimator.predict(test_df[feature_list])]
+        test_preds = _recursive_holdout_predictions(
+            chosen_model, train_df, test_df[date_col], feature_list, target_col, date_col, frequency
+        )
         
         # Retrain on full
         full_model = clone(chosen_model)
@@ -923,7 +1028,11 @@ def run_full_pipeline(
         best_model = full_model
 
     # Compute metrics on test split
-    best_metrics = compute_all_metrics(test_df[target_col].tolist(), test_preds)
+    holdout_actuals = pd.to_numeric(test_df[target_col], errors='coerce').astype(float).tolist()
+    best_metrics = compute_all_metrics(holdout_actuals, test_preds)
+    baseline_predictions, baseline_name = _naive_holdout_predictions(
+        pd.to_numeric(train_df[target_col], errors='coerce').astype(float).tolist(), len(holdout_actuals), frequency
+    )
     
     forecast = forecast_future(best_model, feature_df, feature_list, target_col, date_col, horizon, frequency)
     shap = compute_shap_importance(best_model, feature_df[feature_list], feature_list)
@@ -943,6 +1052,12 @@ def run_full_pipeline(
         horizon,
         best_model,
         feature_list,
+        test_preds,
+        holdout_actuals,
+        baseline_predictions,
+        baseline_name,
+        validated_test_percentage,
+        normalized_model_type != 'auto',
         period_label=period_label,
     )
     print_summary(trim_report, results, selected_model_name, best_metrics, forecast)

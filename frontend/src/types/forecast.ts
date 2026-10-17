@@ -48,6 +48,20 @@ export interface LossForecastSummary {
   average_risk_score: number;
   top_loss_driver: string;
   driver_weights?: Record<string, number>;
+  validation_status?: 'ready' | 'caution';
+  validation_reasons?: string[];
+  assumption_mode?: 'mapped' | 'illustrative';
+  range_method?: string;
+  available_periods?: number;
+}
+
+export interface ProfitForecastValidation {
+  validation_status: 'ready' | 'caution';
+  validation_reasons: string[];
+  assumption_mode: 'mapped' | 'illustrative';
+  mapped_columns: Record<string, string | null>;
+  scenario_parameters: Record<string, Record<string, number>>;
+  reconciliation: string;
 }
 
 export interface ScenarioComparison {

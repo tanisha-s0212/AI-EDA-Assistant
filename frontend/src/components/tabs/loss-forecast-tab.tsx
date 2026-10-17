@@ -40,13 +40,6 @@ const LOSS_COLORS = {
   total_loss: '#dc2626',
 };
 
-const PERIOD_OPTIONS = [
-  { label: '7d', value: 7 },
-  { label: '30d', value: 30 },
-  { label: '90d', value: 90 },
-  { label: '180d', value: 180 },
-];
-
 function riskClass(label: string) {
   if (label === 'High') return 'border-red-200 bg-red-100 text-red-700';
   if (label === 'Medium') return 'border-amber-200 bg-amber-100 text-amber-700';
@@ -81,18 +74,6 @@ function SkeletonBlock({ className = 'h-72' }: { className?: string }) {
   return <div className={`animate-pulse rounded-2xl border bg-muted/40 ${className}`} />;
 }
 
-function buildHeatmap(rows: LossForecastResult[], segments: SegmentBreakdown[]) {
-  const baseSegments = segments.length ? segments.slice(0, 6) : [{ segment: 'All Business', risk_score: 0.05, risk_label: 'Low' }];
-  return baseSegments.map((segment, rowIndex) => ({
-    segment: segment.segment,
-    cells: rows.slice(0, 12).map((row, columnIndex) => {
-      const score = Math.min(1, Math.max(0, (segment.risk_score || row.loss_risk_score) * (0.9 + row.loss_risk_score + columnIndex * 0.01 + rowIndex * 0.005)));
-      const label = score > 0.15 ? 'High' : score >= 0.05 ? 'Medium' : 'Low';
-      return { period: row.period, score, label };
-    }),
-  }));
-}
-
 export default function LossForecastTab() {
   const { toast } = useToast();
   const {
@@ -103,6 +84,7 @@ export default function LossForecastTab() {
     formatPercent,
   } = useCurrencyFormat();
   const datasetId = useAppStore((state) => state.datasetId);
+  const columns = useAppStore((state) => state.columns);
   const timeSeriesForecastResult = useAppStore((state) => state.timeSeriesForecastResult);
   const mlForecastResult = useAppStore((state) => state.mlForecastResult);
   const lossForecast = useAppStore((state) => state.lossForecast) ?? [];
@@ -119,6 +101,7 @@ export default function LossForecastTab() {
   const [sortKey, setSortKey] = useState<keyof LossForecastResult>('period');
   const [confirmedAssumptions, setConfirmedAssumptions] = useState(false);
   const [assumptionDialogOpen, setAssumptionDialogOpen] = useState(false);
+  const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
 
   const locked = !timeSeriesForecastResult || !mlForecastResult || !datasetId;
 
@@ -136,7 +119,16 @@ export default function LossForecastTab() {
   const filteredSegments = lossSegments.filter((item) => item.segment_type === segmentView);
   const segmentRows = filteredSegments;
   const totalSegmentLoss = segmentRows.reduce((sum, row) => sum + row.total_loss, 0);
-  const heatmapRows = buildHeatmap(lossForecast, segmentRows);
+  const availablePeriods = Math.min(timeSeriesForecastResult?.future_forecast?.length ?? 0, mlForecastResult?.future_forecast?.length ?? 0);
+  const selectedPeriods = Math.max(1, Math.min(periods, availablePeriods || 1));
+  const periodLabel = timeSeriesForecastResult?.period_label || 'period';
+  const periodOptions = [...new Set([1, 3, 6, 12, availablePeriods].filter((value) => value > 0 && value <= availablePeriods))]
+    .map((value) => ({ value, label: `${value} ${periodLabel}${value === 1 ? '' : 's'}` }));
+  const effectiveColumnMapping = {
+    date: timeSeriesForecastResult?.date_column,
+    revenue: timeSeriesForecastResult?.target_column,
+    ...Object.fromEntries(Object.entries(columnMapping).filter(([, value]) => value && value !== '__auto__')),
+  } as Record<string, string>;
 
   const actions = useMemo(() => {
     const driverTotals = [
@@ -157,9 +149,9 @@ export default function LossForecastTab() {
     }
     try {
       setConfirmedAssumptions(true);
-      await runLossForecast(datasetId, periods, { confirmedAssumptions: true });
+      await runLossForecast(datasetId, selectedPeriods, { confirmedAssumptions: true, columnMapping: effectiveColumnMapping });
       setPage(0);
-      toast({ title: 'Loss forecast ready', description: `Generated risk and loss projections for ${periods} future periods.` });
+      toast({ title: 'Loss forecast ready', description: `Generated risk and loss projections for ${selectedPeriods} future ${periodLabel}${selectedPeriods === 1 ? '' : 's'}.` });
     } catch (error) {
       toast({ title: 'Loss forecast failed', description: getApiErrorMessage(error, 'Unable to run loss forecast.'), variant: 'destructive' });
     }
@@ -195,9 +187,9 @@ export default function LossForecastTab() {
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Identify and quantify future value erosion across your business.</p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Select value={String(periods)} onValueChange={(value) => setPeriods(Number(value))}>
+            <Select value={String(selectedPeriods)} onValueChange={(value) => setPeriods(Number(value))}>
               <SelectTrigger className="w-full sm:w-36"><SelectValue /></SelectTrigger>
-              <SelectContent>{PERIOD_OPTIONS.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
+              <SelectContent>{periodOptions.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
             </Select>
             <Button onClick={() => handleRun()} disabled={lossLoading} className="bg-red-600 text-white hover:bg-red-700">
               {lossLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
@@ -218,6 +210,32 @@ export default function LossForecastTab() {
           </label>
         </AlertDescription>
       </Alert>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Loss-driver column mapping</CardTitle>
+          <CardDescription>Revenue and date use the completed time-series forecast. Map available loss drivers to avoid fallback assumptions.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {[
+            ['returns', 'Returns / refunds'], ['revenue_loss', 'Known revenue loss'], ['inventory_value', 'Inventory value'],
+            ['waste', 'Waste quantity'], ['stockout', 'Stockout quantity'], ['quantity', 'Units sold'],
+            ['unit_cost', 'Unit cost'], ['discount', 'Discount amount or rate'], ['price', 'Unit price'],
+            ['category', 'Category'], ['region', 'Region'],
+          ].map(([key, label]) => (
+            <label key={key} className="space-y-1 text-sm font-medium">
+              <span>{label}</span>
+              <Select value={columnMapping[key] || '__auto__'} onValueChange={(value) => setColumnMapping((current) => ({ ...current, [key]: value }))}>
+                <SelectTrigger><SelectValue placeholder="Auto-detect" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__auto__">Auto-detect / unavailable</SelectItem>
+                  {columns.map((column) => <SelectItem key={column.name} value={column.name}>{column.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </label>
+          ))}
+        </CardContent>
+      </Card>
 
       <AlertDialog open={assumptionDialogOpen} onOpenChange={setAssumptionDialogOpen}>
         <AlertDialogContent>
@@ -241,7 +259,7 @@ export default function LossForecastTab() {
           <ShieldAlert className="h-4 w-4" />
           <AlertTitle>Illustrative assumptions</AlertTitle>
           <AlertDescription>
-            One or more COGS/OpEx/loss drivers used standard fallbacks (for example 60% COGS or 12% OpEx). Treat these results as illustrative unless mapped ERP cost columns are confirmed.
+            {lossSummary?.validation_reasons?.join(' ') || 'One or more inputs used a documented fallback. Treat these results as illustrative until the relevant source columns are mapped and confirmed.'}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -281,11 +299,17 @@ export default function LossForecastTab() {
             ))}
           </div>
 
+          <Alert>
+            <ShieldAlert className="h-4 w-4" />
+            <AlertTitle>{lossSummary?.validation_status === 'ready' ? 'Evidence checks passed' : 'Review before using for decisions'}</AlertTitle>
+            <AlertDescription>{lossSummary?.range_method || 'Loss ranges are derived from the available historical data.'}</AlertDescription>
+          </Alert>
+
           <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }}>
             <Card>
               <CardHeader>
                 <CardTitle>Loss Trend</CardTitle>
-                <CardDescription>Driver-level losses with total forecasted value erosion and 95% interval bounds.</CardDescription>
+                <CardDescription>Driver-level forecasted loss. The table bounds use {lossSummary?.range_method?.toLowerCase() || 'historical variability'}, and are not a confidence interval.</CardDescription>
               </CardHeader>
               <CardContent className="h-96">
                 <ResponsiveContainer width="100%" height="100%">
@@ -300,6 +324,8 @@ export default function LossForecastTab() {
                     <Line dataKey="inventory_loss" name="Inventory Loss" stroke={LOSS_COLORS.inventory_loss} strokeWidth={2} />
                     <Line dataKey="discount_loss" name="Discount Loss" stroke={LOSS_COLORS.discount_loss} strokeWidth={2} />
                     <Line dataKey="total_loss" name="Total Loss" stroke={LOSS_COLORS.total_loss} strokeWidth={3} />
+                    <Line dataKey="lower_bound" name="Lower variability bound" stroke="#9ca3af" strokeDasharray="5 4" dot={false} />
+                    <Line dataKey="upper_bound" name="Upper variability bound" stroke="#9ca3af" strokeDasharray="5 4" dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </CardContent>
@@ -368,34 +394,6 @@ export default function LossForecastTab() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Risk Score Heatmap</CardTitle>
-              <CardDescription>Green means low exposure, amber means watch closely, red means high-risk loss pressure.</CardDescription>
-            </CardHeader>
-            <CardContent className="overflow-x-auto">
-              <div className="min-w-[760px] space-y-2">
-                {heatmapRows.map((row) => (
-                  <div key={row.segment} className="grid grid-cols-[150px_repeat(12,minmax(42px,1fr))] items-center gap-2">
-                    <span className="truncate text-sm font-medium">{row.segment}</span>
-                    {row.cells.map((cell, index) => (
-                      <motion.div
-                        key={`${row.segment}-${cell.period}-${index}`}
-                        initial={{ scale: 0.75, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ delay: index * 0.025 }}
-                        title={`${cell.period}: ${formatPercent(cell.score)}`}
-                        className={`h-9 rounded-md border ${riskClass(cell.label)} text-center text-[10px] font-semibold leading-9`}
-                      >
-                        {Math.round(cell.score * 100)}%
-                      </motion.div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <CardTitle>Loss Forecast Results</CardTitle>
@@ -419,6 +417,8 @@ export default function LossForecastTab() {
                         ['inventory_loss', 'Inventory Loss'],
                         ['discount_loss', 'Discount Loss'],
                         ['total_loss', 'Total Loss'],
+                        ['lower_bound', 'Lower bound'],
+                        ['upper_bound', 'Upper bound'],
                         ['loss_risk_score', 'Risk Score'],
                         ['risk_label', 'Risk Label'],
                       ].map(([key, label]) => (
@@ -435,6 +435,8 @@ export default function LossForecastTab() {
                         <TableCell>{formatCurrency(row.inventory_loss)}</TableCell>
                         <TableCell>{formatCurrency(row.discount_loss)}</TableCell>
                         <TableCell className="font-semibold">{formatCurrency(row.total_loss)}</TableCell>
+                        <TableCell>{formatCurrency(row.lower_bound ?? 0)}</TableCell>
+                        <TableCell>{formatCurrency(row.upper_bound ?? 0)}</TableCell>
                         <TableCell>{formatPercent(row.loss_risk_score)}</TableCell>
                         <TableCell><Badge className={riskClass(row.risk_label)}>{row.risk_label}</Badge></TableCell>
                       </TableRow>
