@@ -22,11 +22,14 @@ npm run dev
 ```
 
 2. Backend
-```bash
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 cd backend
-python -m pip install -r requirements.txt
-python main.py
+..\.venv\Scripts\python.exe main.py
 ```
+
+These commands are for Windows PowerShell. For macOS or Linux and the forecast dependency check, see [development and validation](docs/DEVELOPMENT.md).
 
 3. Open `http://localhost:3000`
 

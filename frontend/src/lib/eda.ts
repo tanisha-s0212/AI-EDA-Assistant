@@ -322,7 +322,8 @@ export function detectOutliers(
 }
 
 export function heatColor(value: number) {
-  if (value >= 0) {
+  if (value === 0) return 'rgba(148, 163, 184, 0.15)';
+  if (value > 0) {
     const alpha = 0.15 + Math.abs(value) * 0.55;
     return `rgba(16, 185, 129, ${alpha})`;
   }

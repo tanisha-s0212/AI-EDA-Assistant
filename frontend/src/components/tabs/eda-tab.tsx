@@ -509,7 +509,7 @@ export default function EdaTab() {
         <Card className="h-full overflow-hidden">
           <CardHeader className="border-b bg-secondary/60">
             <CardTitle className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-primary" /> Correlation Heatmap</CardTitle>
-            <CardDescription>Matrix view for up to five numeric columns from the active in-app dataset slice.</CardDescription>
+            <CardDescription>Up to five numeric columns from the active dataset slice. Red indicates negative correlation, gray indicates zero, and green indicates positive correlation; stronger colors indicate stronger relationships.</CardDescription>
           </CardHeader>
           <CardContent className="pt-6">
             {stats.numericColumns.length >= 2 ? (

@@ -862,6 +862,8 @@ def load_ts_dataset(
         'inferred_period_label': series_frame.attrs.get('inferred_period_label', period_label),
         'frequency_auto_adjusted': bool(series_frame.attrs.get('frequency_auto_adjusted', False)),
     }
+    grain = dataset_entry.get('grain_capability') or (infer_dataset_grain(probe_frame) if probe_frame is not None else {})
+    series_frame.attrs['monthly_aggregate'] = grain.get('grain') == 'monthly_aggregate' and grain.get('period_column') == date_col
     series_frame.rename(columns={'period': date_col, 'sales': target_col}, inplace=True)
     for key, value in frequency_meta.items():
         series_frame.attrs[key] = value
@@ -950,7 +952,12 @@ def maybe_store_dataset_frequency(dataset_id: str, frame: pd.DataFrame) -> None:
 
 def check_stationarity(series: pd.Series, frequency: str) -> dict[str, Any]:
     """Run ADF test and return API-compatible stationarity metadata."""
-    from statsmodels.tsa.stattools import adfuller
+    try:
+        from statsmodels.tsa.stattools import adfuller
+    except ModuleNotFoundError as error:
+        if error.name == 'statsmodels':
+            raise ModuleNotFoundError('Forecasting requires statsmodels. Start the backend with the project virtual environment and install backend/requirements.txt using that same interpreter.', name='statsmodels') from error
+        raise
     clean = series.dropna()
     clean = pd.to_numeric(clean, errors='coerce').dropna()
     if len(clean) < 4:
@@ -1022,7 +1029,7 @@ def _fit_predict_ts_candidate(model_name: str, train_frame: pd.DataFrame, next_d
     if model_name == 'SARIMA':
         import pmdarima as pm
         model = pm.auto_arima(
-            y_train, seasonal=True, m=freq_period,
+            y_train, seasonal=freq_period > 1, m=freq_period,
             stepwise=True, suppress_warnings=True,
             error_action='ignore', max_p=3, max_q=3,
             max_P=2, max_Q=2, information_criterion='aic',
@@ -1047,8 +1054,8 @@ def _fit_predict_ts_candidate(model_name: str, train_frame: pd.DataFrame, next_d
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
     has_zeros = (y_train == 0).any()
     has_neg = (y_train < 0).any()
-    seasonal_type = 'add' if (has_zeros or has_neg) else 'mul'
-    model = ExponentialSmoothing(y_train, trend='add', seasonal=seasonal_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
+    seasonal_type = ('add' if (has_zeros or has_neg) else 'mul') if freq_period > 1 else None
+    model = ExponentialSmoothing(y_train, trend='add', seasonal=seasonal_type, seasonal_periods=freq_period if seasonal_type else None, damped_trend=True).fit(optimized=True)
     pred = float(model.forecast(1)[0])
     try:
         sim = model.simulate(1, repetitions=100, error='add', random_errors='bootstrap')
@@ -1065,24 +1072,29 @@ def _fit_predict_ts_candidate(model_name: str, train_frame: pd.DataFrame, next_d
     meta = {
         'alpha': round(float(model.params['smoothing_level']), 4),
         'beta': round(float(model.params['smoothing_trend']), 4),
-        'gamma': round(float(model.params['smoothing_seasonal']), 4),
+        'gamma': round(float(model.params['smoothing_seasonal']), 4) if seasonal_type else None,
     }
     return pred, lower, upper, meta
 
 
 # ── 3-model training ──────────────────────────────────────────
 
-def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, training_split: float = 0.8, horizon: int = 3) -> tuple[dict[str, Any], np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
+def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, training_split: float = 0.8, horizon: int = 3, *, monthly_aggregate: bool = False) -> tuple[dict[str, Any], np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """Train SARIMA, Prophet, HoltWinters with expanding walk-forward validation."""
-    first_nonzero_idx = df[df[target_col] > 0].index[0]
-    clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
+    monthly_aggregate = monthly_aggregate and frequency == 'monthly'
+    if monthly_aggregate:
+        # A zero is a valid monthly total, including at the start of the series.
+        clean_df = df.copy().reset_index(drop=True)
+    else:
+        first_nonzero_idx = df[df[target_col] > 0].index[0]
+        clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
     clean_df[date_col] = pd.to_datetime(clean_df[date_col], errors='coerce')
     clean_df[target_col] = pd.to_numeric(clean_df[target_col], errors='coerce')
     clean_df = clean_df.dropna(subset=[date_col, target_col]).sort_values(date_col).reset_index(drop=True)
     first_nonzero_date = str(clean_df[date_col].iloc[0])[:10]
     if len(clean_df) < TS_MULTI_MODEL_MIN_PERIODS:
         raise ValueError(
-            format_insufficient_ts_periods_message('period', len(clean_df), TS_MULTI_MODEL_MIN_PERIODS)
+            format_insufficient_ts_periods_message('month' if monthly_aggregate else 'period', len(clean_df), TS_MULTI_MODEL_MIN_PERIODS)
         )
     split_idx = int(len(clean_df) * training_split)
     split_idx = min(max(split_idx, 12), len(clean_df) - 1)
@@ -1090,12 +1102,16 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
     test = clean_df.iloc[split_idx:]
     y_train = train[target_col].values.astype(float)
     y_test = test[target_col].values.astype(float)
+    stationarity_values = train[target_col] if monthly_aggregate else clean_df[target_col]
+    differencing_required = bool(check_stationarity(stationarity_values, frequency).get('differencing_required'))
     max_period = len(y_train) // 2
-    if freq_period > max_period:
+    if not monthly_aggregate and freq_period > max_period:
         logger.warning('freq_period %s reduced to %s - insufficient data.', freq_period, max_period)
         freq_period = max_period
+    # Keep the real 12-month cycle. Short monthly training folds cannot fit it
+    # reliably, so use a nonseasonal model throughout validation and refitting.
+    short_monthly_history = monthly_aggregate and len(y_train) - int(differencing_required) <= 2 * freq_period
     results: dict[str, Any] = {}
-    differencing_required = bool(check_stationarity(clean_df[target_col], frequency).get('differencing_required'))
 
     for model_name in ['SARIMA', 'Prophet', 'HoltWinters']:
         predictions: list[float] = []
@@ -1112,6 +1128,7 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
                     fit_frame = fold_train.copy()
                     fit_frame[target_col] = fit_frame[target_col].astype(float).diff()
                     fit_frame = fit_frame.dropna(subset=[target_col]).reset_index(drop=True)
+                candidate_period = 1 if short_monthly_history and model_name in {'SARIMA', 'HoltWinters'} else freq_period
                 pred, lower, upper, meta = _fit_predict_ts_candidate(
                     model_name,
                     fit_frame,
@@ -1119,7 +1136,7 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
                     target_col,
                     date_col,
                     frequency,
-                    freq_period,
+                    candidate_period,
                 )
                 if differencing_required:
                     pred = baseline + pred
@@ -1139,6 +1156,9 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
                 **model_meta,
                 **metrics,
             }
+            if short_monthly_history and model_name in {'SARIMA', 'HoltWinters'}:
+                results[model_name]['seasonal_period_used'] = 1
+                results[model_name]['note'] = 'Nonseasonal fit: the training window is too short for a 12-month seasonal cycle.'
         except Exception as exc:
             logger.exception('%s walk-forward validation failed', model_name)
             results[model_name] = {'status': 'failed', 'error': str(exc), 'mae': None, 'rmse': None, 'mape': None, 'smape': None}
@@ -1163,7 +1183,7 @@ def auto_select_ts_model(results: dict[str, Any]) -> tuple[str, dict[str, Any], 
 
 # ── Future forecast generation ─────────────────────────────────
 
-def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, horizon: int = 3) -> list[dict[str, Any]]:
+def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, horizon: int = 3, *, differencing_required: bool | None = None) -> list[dict[str, Any]]:
     """Retrain best model on full dataset and generate horizon periods."""
     y_full = clean_df[target_col].values.astype(float)
     last_date = clean_df[date_col].max()
@@ -1172,12 +1192,13 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
     forecast_vals: list[float] = []
     lower_bounds: list[float] = []
     upper_bounds: list[float] = []
-    differencing_required = bool(check_stationarity(clean_df[target_col], frequency).get('differencing_required'))
+    if differencing_required is None:
+        differencing_required = bool(check_stationarity(clean_df[target_col], frequency).get('differencing_required'))
     y_model = np.diff(y_full) if differencing_required and len(y_full) > 1 else y_full
     baseline = float(y_full[-1]) if differencing_required and len(y_full) else 0.0
     if best_model_name == 'SARIMA':
         import pmdarima as pm
-        model = pm.auto_arima(y_model, seasonal=True, m=freq_period, stepwise=True, suppress_warnings=True, error_action='ignore', random_state=42)
+        model = pm.auto_arima(y_model, seasonal=freq_period > 1, m=freq_period, stepwise=True, suppress_warnings=True, error_action='ignore', random_state=42)
         preds, ci = model.predict(n_periods=horizon, return_conf_int=True)
         if differencing_required:
             preds = baseline + np.cumsum(preds)
@@ -1207,8 +1228,8 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
         has_zeros = (y_model == 0).any()
         has_neg = (y_model < 0).any()
-        s_type = 'add' if (has_zeros or has_neg) else 'mul'
-        model = ExponentialSmoothing(y_model, trend='add', seasonal=s_type, seasonal_periods=freq_period, damped_trend=True).fit(optimized=True)
+        s_type = ('add' if (has_zeros or has_neg) else 'mul') if freq_period > 1 else None
+        model = ExponentialSmoothing(y_model, trend='add', seasonal=s_type, seasonal_periods=freq_period if s_type else None, damped_trend=True).fit(optimized=True)
         preds = np.array(model.forecast(horizon), dtype=float)
         sim = model.simulate(horizon, repetitions=100, error='add', random_errors='bootstrap')
         if isinstance(sim, pd.DataFrame):
@@ -1239,6 +1260,26 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
         }
         for d, f, l, u in zip(future_dates, forecast_vals, lower_bounds, upper_bounds)
     ]
+
+
+def select_and_forecast_ts(results: dict[str, Any], clean_df: pd.DataFrame, target_col: str, date_col: str, frequency: str, freq_period: int, horizon: int) -> tuple[str, dict[str, Any], str, list[dict[str, Any]]]:
+    """Try validated candidates in rank order if a final fit fails."""
+    while True:
+        try:
+            best_name, best_metrics, reason = auto_select_ts_model(results)
+        except ValueError as error:
+            details = '; '.join(f'{name}: {row.get("error", "unavailable")}' for name, row in results.items())
+            raise ValueError(f'All time-series models failed. Check dependencies and data quality. {details}') from error
+        try:
+            forecast = generate_ts_future_forecast(
+                best_name, clean_df, target_col, date_col, frequency,
+                best_metrics.get('seasonal_period_used', freq_period), horizon,
+                differencing_required=best_metrics.get('differencing_applied'),
+            )
+            return best_name, best_metrics, reason, forecast
+        except Exception as error:
+            logger.warning('%s final forecast fit failed: %s', best_name, error)
+            results[best_name] = {**best_metrics, 'status': 'failed', 'error': f'Final forecast fit failed: {error}'}
 
 
 # ── Programmatic insight ──────────────────────────────────────
@@ -1286,7 +1327,7 @@ def write_ts_output_files(output_dir: str, frequency: str, freq_period: int, tar
         json.dump(stationarity, f, indent=2)
     comparison = []
     for model_name, v in results.items():
-        row = {'model': model_name, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'aic': v.get('aic'), 'order': v.get('order'), 'note': v.get('error', 'completed')}
+        row = {'model': model_name, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'aic': v.get('aic'), 'order': v.get('order'), 'note': v.get('error') or v.get('note', 'completed')}
         if model_name == 'HoltWinters':
             row['alpha'] = v.get('alpha')
             row['beta'] = v.get('beta')
@@ -1304,7 +1345,7 @@ def write_ts_output_files(output_dir: str, frequency: str, freq_period: int, tar
     best_upper = results[best_name].get('conf_int_upper', [])
     for i, row in enumerate(test.itertuples()):
         dt_val = str(getattr(row, date_col))[:10] if hasattr(row, date_col) else str(i)
-        forecast_line.append({'period': dt_val, 'actual': None, 'backtest': round(best_preds[i], 2) if i < len(best_preds) else None, 'forecast': None, 'lower': round(best_lower[i], 2) if i < len(best_lower) else None, 'upper': round(best_upper[i], 2) if i < len(best_upper) else None, 'type': 'backtest'})
+        forecast_line.append({'period': dt_val, 'actual': None, 'backtest': round(best_preds[i], 2) if i < len(best_preds) else None, 'forecast': None, 'lower': round(best_lower[i], 2) if i < len(best_lower) and best_lower[i] is not None else None, 'upper': round(best_upper[i], 2) if i < len(best_upper) and best_upper[i] is not None else None, 'type': 'backtest'})
     for item in future_forecast:
         forecast_line.append({'period': item['period'], 'actual': None, 'backtest': None, 'forecast': item['forecast'], 'lower': item['lower'], 'upper': item['upper'], 'type': 'forecast'})
     with open(os.path.join(save_dir, 'forecast_line.json'), 'w') as f:
@@ -1333,7 +1374,7 @@ def write_ts_to_postgres(dataset_id: str, best_name: str, best_metrics: dict[str
                 [best_name, best_metrics.get('mae'), best_metrics.get('smape'),
                  stationarity.get('status'), datetime.utcnow().isoformat(), dataset_id]
             )
-            model_comparison_json = [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()]
+            model_comparison_json = [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error') or v.get('note', 'completed')} for k, v in results.items()]
             conn.execute(
                 '''INSERT INTO ts_forecast_results
                    (dataset_id, best_model, mae, rmse, mape, smape,
@@ -5022,7 +5063,7 @@ def model_availability_note(model_type: str) -> str:
     return 'Candidate available.'
 
 
-def fit_arima_family_forecast(history: list[float], forecast_periods: int, period_label: str, *, seasonal: bool) -> tuple[list[float], dict[str, Any]]:
+def fit_arima_family_forecast(history: list[float], forecast_periods: int, period_label: str, *, seasonal: bool, monthly_aggregate: bool = False) -> tuple[list[float], dict[str, Any]]:
     if SARIMAX is None:
         raise RuntimeError('statsmodels SARIMAX is unavailable.')
 
@@ -5045,6 +5086,7 @@ def fit_arima_family_forecast(history: list[float], forecast_periods: int, perio
                 max_q=3,
                 max_P=2 if seasonal else 0,
                 max_Q=2 if seasonal else 0,
+                **({'start_P': 0, 'start_Q': 0} if monthly_aggregate and not seasonal else {}),
                 d=None,
                 D=None if seasonal else 0,
                 trace=False,
@@ -5080,8 +5122,8 @@ def fit_sarima_forecast(history: list[float], forecast_periods: int, period_labe
     return fit_arima_family_forecast(history, forecast_periods, period_label, seasonal=True)
 
 
-def fit_arima_forecast(history: list[float], forecast_periods: int, period_label: str) -> tuple[list[float], dict[str, Any]]:
-    return fit_arima_family_forecast(history, forecast_periods, period_label, seasonal=False)
+def fit_arima_forecast(history: list[float], forecast_periods: int, period_label: str, *, monthly_aggregate: bool = False) -> tuple[list[float], dict[str, Any]]:
+    return fit_arima_family_forecast(history, forecast_periods, period_label, seasonal=False, monthly_aggregate=monthly_aggregate)
 
 
 def walk_forward_splits(total_periods: int, requested_test_periods: int, lag_periods: int) -> list[tuple[int, int]]:
@@ -5130,7 +5172,8 @@ def evaluate_statistical_candidate(
                 raise RuntimeError(f'SARIMA training failed during walk-forward validation: {error}') from error
         elif model_type == 'arima':
             try:
-                fitted_predictions, tuning_details = fit_arima_forecast(history, fold_periods, period_label)
+                arima_options = {'monthly_aggregate': True} if series_frame.attrs.get('monthly_aggregate') else {}
+                fitted_predictions, tuning_details = fit_arima_forecast(history, fold_periods, period_label, **arima_options)
             except Exception as error:
                 raise RuntimeError(f'ARIMA training failed during walk-forward validation: {error}') from error
         if len(fitted_predictions) < fold_periods:
@@ -5329,7 +5372,8 @@ def build_future_for_selected_model(
                 raise RuntimeError(f'SARIMA training failed while building the final future forecast: {error}') from error
         if model_type == 'arima' and SARIMAX is not None:
             try:
-                predictions, tuning_details = fit_arima_forecast(history, forecast_periods, period_label)
+                arima_options = {'monthly_aggregate': True} if series_frame.attrs.get('monthly_aggregate') else {}
+                predictions, tuning_details = fit_arima_forecast(history, forecast_periods, period_label, **arima_options)
                 selected['tuning'] = tuning_details
                 rows = []
                 for step, prediction in enumerate(predictions, start=1):
@@ -6654,9 +6698,13 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
         if dataset_entry is None:
             raise HTTPException(status_code=400, detail='Cached dataset not found. Please upload the file again.')
         series_frame, freq, period_label = prepare_sales_series_from_cached_dataset(dataset_entry, request.date_column, request.target_column)
+        grain = dataset_entry.get('grain_capability') or {}
     else:
         frame = load_dataset_frame(request.dataset_id, request.data, required_columns)
         series_frame, freq, period_label = prepare_sales_series(frame, request.date_column, request.target_column)
+        grain = infer_dataset_grain(frame)
+
+    series_frame.attrs['monthly_aggregate'] = period_label == 'month' and grain.get('grain') == 'monthly_aggregate' and grain.get('period_column') == request.date_column
 
     total_periods = len(series_frame)
     data_quality = ensure_forecast_data_sufficiency(series_frame, period_label, request.require_quality_gate)
@@ -6888,6 +6936,7 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             target_column=request.target_column,
         )
         frequency, freq_period = detect_ts_frequency(df, date_col)
+        monthly_aggregate = bool(df.attrs.get('monthly_aggregate')) and frequency == 'monthly'
         period_label = df.attrs.get('period_label') or (
             'day' if frequency == 'daily' else 'week' if frequency == 'weekly' else 'month'
         )
@@ -6902,9 +6951,17 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
                     str(period_label or 'period'), usable_periods, TS_MULTI_MODEL_MIN_PERIODS
                 ),
             )
-        results, y_train, y_test, train, test, clean_df, first_nonzero_date = train_all_ts_models(df, target_col, date_col, frequency, freq_period, split, horizon)
-        best_name, best_metrics, reason = auto_select_ts_model(results)
-        future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
+        try:
+            results, y_train, y_test, train, test, clean_df, first_nonzero_date = train_all_ts_models(df, target_col, date_col, frequency, freq_period, split, horizon, monthly_aggregate=monthly_aggregate)
+            if monthly_aggregate:
+                best_name, best_metrics, reason, future_forecast = select_and_forecast_ts(results, clean_df, target_col, date_col, frequency, freq_period, horizon)
+            else:
+                best_name, best_metrics, reason = auto_select_ts_model(results)
+                future_forecast = generate_ts_future_forecast(best_name, clean_df, target_col, date_col, frequency, freq_period, horizon)
+        except ValueError as error:
+            if monthly_aggregate:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            raise
         model_comparison_list = [{'model': k, 'smape': v.get('smape'), 'mae': v.get('mae'), 'status': v['status']} for k, v in results.items()]
         insight = generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list, target_column=target_col)
         output_dir = get_ts_output_dir(dataset_id)
@@ -6926,12 +6983,16 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             'next_tab': 'ml_forecast',
             'retrain_available': True,
             'best_model': best_name,
+            **({'seasonal_period_used': best_metrics.get('seasonal_period_used', freq_period),
+                'differencing_applied': best_metrics.get('differencing_applied')} if monthly_aggregate else {}),
         })
         save_workspace_context(dataset_id, 'sales_mapping', sales_mapping_payload(date_col, target_col, source='ts_run'))
         response_data = {
             'status': 'completed',
             'best_model': best_name,
             'selected_best_model': best_name,
+            **({'seasonal_period_used': best_metrics.get('seasonal_period_used', freq_period),
+                'differencing_applied': best_metrics.get('differencing_applied')} if monthly_aggregate else {}),
             'smape': best_metrics['smape'],
             'mae': best_metrics['mae'],
             'rmse': best_metrics.get('rmse'),
@@ -6951,7 +7012,7 @@ def run_ts_forecast(request: TsForecastRunRequest) -> JSONResponse:
             'future_forecast': future_forecast,
             'insight': insight,
             'model_metrics': {k: {'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape')} for k, v in results.items()},
-            'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()]
+            'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error') or v.get('note', 'completed')} for k, v in results.items()]
         }
         session_state = ensure_session_state(dataset_id)
         session_state['forecast_steps']['ts'] = True
@@ -6984,14 +7045,23 @@ def forecast_ts_best_model(request: TsForecastRunRequest) -> JSONResponse:
             except Exception:
                 logger.exception('Failed to read latest TS best model dataset_id=%s', dataset_id)
         context = get_workspace_context(dataset_id, 'ts_forecast_context') or {}
+        session_result = ensure_session_state(dataset_id).get('time_series_result') or {}
         best_model = best_model or context.get('best_model')
+        best_model = best_model or session_result.get('best_model')
         if not best_model:
             return JSONResponse(status_code=400, content={'error': 'No selected TS model found. Run multi-model training first.', 'status': 'failed'})
         df, date_col, target_col = load_ts_dataset(dataset_id)
         frequency, freq_period = detect_ts_frequency(df, date_col)
-        first_nonzero_idx = df[df[target_col] > 0].index[0]
-        clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
-        future_forecast = generate_ts_future_forecast(str(best_model), clean_df, target_col, date_col, frequency, freq_period, request.horizon)
+        if df.attrs.get('monthly_aggregate') and frequency == 'monthly':
+            clean_df = df.copy().reset_index(drop=True)
+            settings = context if context.get('best_model') == best_model else session_result if session_result.get('best_model') == best_model else {}
+            model_period = settings.get('seasonal_period_used', freq_period)
+            differencing = settings.get('differencing_applied')
+            future_forecast = generate_ts_future_forecast(str(best_model), clean_df, target_col, date_col, frequency, model_period, request.horizon, differencing_required=differencing)
+        else:
+            first_nonzero_idx = df[df[target_col] > 0].index[0]
+            clean_df = df.loc[first_nonzero_idx:].copy().reset_index(drop=True)
+            future_forecast = generate_ts_future_forecast(str(best_model), clean_df, target_col, date_col, frequency, freq_period, request.horizon)
         return JSONResponse(content=safe_serialize({'status': 'completed', 'best_model': best_model, 'forecast': future_forecast, 'future_forecast': future_forecast}))
     except HTTPException:
         raise
@@ -8690,9 +8760,11 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
         # prepare_sales_series aggregates to canonical period/sales columns.
         series_frame, freq, period_label = prepare_sales_series(frame, date_col, target_col)
         frequency, freq_period = normalize_ts_frequency(freq, period_label)
+        grain = infer_dataset_grain(frame)
+        monthly_aggregate = frequency == 'monthly' and grain.get('grain') == 'monthly_aggregate' and grain.get('period_column') == date_col
         stationarity = check_stationarity(series_frame["sales"], frequency)
         results, _y_train, _y_test, train, test, clean_df, _first = train_all_ts_models(
-            series_frame, "sales", "period", frequency, freq_period, 0.8, 3)
+            series_frame, "sales", "period", frequency, freq_period, 0.8, 3, monthly_aggregate=monthly_aggregate)
     except (ValueError, HTTPException) as error:
         detail = error.detail if isinstance(error, HTTPException) else str(error)
         out = dict(plan)
@@ -8738,9 +8810,12 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
                     "answer": f"Forecast training failed: {error}."})
         return out
     try:
-        best_name, best_metrics, reason = auto_select_ts_model(results)
-        future = generate_ts_future_forecast(best_name, clean_df, "sales", "period",
-                                             frequency, freq_period, 3)
+        if monthly_aggregate:
+            best_name, best_metrics, reason, future = select_and_forecast_ts(results, clean_df, "sales", "period", frequency, freq_period, 3)
+        else:
+            best_name, best_metrics, reason = auto_select_ts_model(results)
+            future = generate_ts_future_forecast(best_name, clean_df, "sales", "period",
+                                                 frequency, freq_period, 3)
         # Seasonal-naive baseline on the same walk-forward test slice.
         baseline_smape = None
         try:

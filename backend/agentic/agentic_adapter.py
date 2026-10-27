@@ -1150,17 +1150,27 @@ def execute_time_series_forecast(session_id: str, request: Request) -> Any:
         raise HTTPException(status_code=422, detail='Could not auto-detect date and target columns.')
     df, _freq, _period_label = backend.prepare_sales_series(frame, date_col, target_col)
     frequency, freq_period = backend.detect_ts_frequency(df, date_col)
+    grain = backend.infer_dataset_grain(frame)
+    monthly_aggregate = frequency == 'monthly' and grain.get('grain') == 'monthly_aggregate' and grain.get('period_column') == date_col
     stationarity = backend.check_stationarity(df[target_col], frequency)
     try:
         results, _y_train, _y_test, train, test, clean_df, first_nonzero_date = backend.train_all_ts_models(
-            df, target_col, date_col, frequency, freq_period, 0.8, 3
+            df, target_col, date_col, frequency, freq_period, 0.8, 3, monthly_aggregate=monthly_aggregate
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    best_name, best_metrics, reason = backend.auto_select_ts_model(results)
-    future_forecast = backend.generate_ts_future_forecast(
-        best_name, clean_df, target_col, date_col, frequency, freq_period, 3
-    )
+    if monthly_aggregate:
+        try:
+            best_name, best_metrics, reason, future_forecast = backend.select_and_forecast_ts(
+                results, clean_df, target_col, date_col, frequency, freq_period, 3
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        best_name, best_metrics, reason = backend.auto_select_ts_model(results)
+        future_forecast = backend.generate_ts_future_forecast(
+            best_name, clean_df, target_col, date_col, frequency, freq_period, 3
+        )
     model_comparison_list = [{'model': k, 'smape': v.get('smape'), 'mae': v.get('mae'), 'status': v['status']} for k, v in results.items()]
     insight = backend.generate_ts_insight(best_name, best_metrics, stationarity, model_comparison_list)
     output_dir = backend.get_ts_output_dir(dataset_id)
@@ -1175,7 +1185,9 @@ def execute_time_series_forecast(session_id: str, request: Request) -> Any:
     backend.save_workspace_context(dataset_id, 'ts_forecast_context', {
         'frequency': frequency, 'freq_period': freq_period, 'date_col': date_col,
         'target_col': target_col, 'clean_start_date': first_nonzero_date,
-        'pipeline_status': 'completed', 'next_tab': 'ml_forecast'
+        'pipeline_status': 'completed', 'next_tab': 'ml_forecast',
+        **({'best_model': best_name, 'seasonal_period_used': best_metrics.get('seasonal_period_used', freq_period),
+            'differencing_applied': best_metrics.get('differencing_applied')} if monthly_aggregate else {}),
     })
     response_data = {
         'status': 'completed', 'best_model': best_name,
@@ -1183,7 +1195,7 @@ def execute_time_series_forecast(session_id: str, request: Request) -> Any:
         'rmse': best_metrics.get('rmse'), 'mape': best_metrics.get('mape'),
         'reason': reason, 'stationarity': stationarity,
         'future_forecast': future_forecast, 'insight': insight,
-        'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error', 'completed')} for k, v in results.items()],
+        'model_comparison': [{'model': k, 'status': v['status'], 'mae': v.get('mae'), 'rmse': v.get('rmse'), 'mape': v.get('mape'), 'smape': v.get('smape'), 'note': v.get('error') or v.get('note', 'completed')} for k, v in results.items()],
     }
     return JSONResponse(content=response_data)
 

@@ -581,6 +581,7 @@ export default function TimeSeriesForecastTab() {
                             <TableHead>RMSE</TableHead>
                             <TableHead>MAPE</TableHead>
                             <TableHead>SMAPE</TableHead>
+                            <TableHead>Model notes</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -601,6 +602,7 @@ export default function TimeSeriesForecastTab() {
                               <TableCell>{formatNumber(row.rmse)}</TableCell>
                               <TableCell>{row.mape != null ? row.mape + '%' : 'N/A'}</TableCell>
                               <TableCell>{row.smape != null ? row.smape + '%' : 'N/A'}</TableCell>
+                              <TableCell className="max-w-md text-sm text-muted-foreground">{row.note && row.note !== 'completed' ? row.note : '—'}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
