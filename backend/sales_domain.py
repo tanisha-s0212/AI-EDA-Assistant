@@ -79,6 +79,61 @@ def is_date_part_column(name: str) -> bool:
     return bool(DATE_PART_EXCLUDE.match(str(name).strip()))
 
 
+def is_valid_monthly_period_column(name: str, frame: pd.DataFrame | None) -> bool:
+    """Allow a bare ``month`` only when its values prove it is a monthly period.
+
+    The normal date-part exclusion protects datasets with integer month-of-year
+    features. A period field called ``month`` is a legitimate exception only
+    when it parses as dates and has a monthly cadence.
+    """
+    if str(name).strip().lower() != 'month' or frame is None or name not in frame.columns:
+        return False
+    parsed = pd.to_datetime(frame[name], errors='coerce').dropna()
+    if len(parsed) < 2 or len(parsed) / max(1, int(frame[name].notna().sum())) < 0.9:
+        return False
+    periods = parsed.sort_values().drop_duplicates()
+    if len(periods) < 2:
+        return False
+    month_boundary_share = float(((periods.dt.day == 1) | periods.dt.is_month_end).mean())
+    gaps = periods.diff().dropna().dt.total_seconds() / 86400.0
+    return month_boundary_share >= 0.9 and not gaps.empty and 27 <= float(gaps.median()) <= 32
+
+
+def infer_dataset_grain(frame: pd.DataFrame) -> dict[str, Any]:
+    """Return conservative, additive grain evidence for dataset capabilities.
+
+    Only monthly aggregation is positively identified. All other datasets stay
+    ``unknown`` so existing transaction and day-wise paths retain their current
+    behavior rather than being reclassified from weak evidence.
+    """
+    for name in frame.columns:
+        column = str(name)
+        if is_date_part_column(column) and not is_valid_monthly_period_column(column, frame):
+            continue
+        if not (
+            pd.api.types.is_datetime64_any_dtype(frame[column])
+            or score_date_column(column) > 0
+            or column.strip().lower() == 'month'
+        ):
+            continue
+        parsed = pd.to_datetime(frame[column], errors='coerce')
+        non_null = int(frame[column].notna().sum())
+        if non_null < 2 or int(parsed.notna().sum()) / max(1, non_null) < 0.9:
+            continue
+        periods = parsed.dropna().sort_values().drop_duplicates()
+        if len(periods) < 2:
+            continue
+        gaps = periods.diff().dropna().dt.total_seconds() / 86400.0
+        boundary_share = float(((periods.dt.day == 1) | periods.dt.is_month_end).mean())
+        if not gaps.empty and boundary_share >= 0.9 and 27 <= float(gaps.median()) <= 32:
+            return {
+                'grain': 'monthly_aggregate', 'period_column': column,
+                'frequency': 'month', 'confidence': 'validated',
+                'evidence': 'date values have a monthly cadence and month boundaries',
+            }
+    return {'grain': 'unknown', 'period_column': None, 'frequency': None, 'confidence': 'unknown', 'evidence': 'no validated monthly period field'}
+
+
 def score_date_column(name: str) -> int:
     if is_date_part_column(name):
         return 0
@@ -137,7 +192,8 @@ def pick_best_date_column(
             unique_count = _column_unique_count(name, frame=frame, column_info=column_info)
             scored.append((score, unique_count, name))
     if not scored:
-        return None
+        monthly = [name for name in available if is_valid_monthly_period_column(name, frame)]
+        return monthly[0] if monthly else None
     # Higher name score first; break ties by higher cardinality (real timestamps beat sparse labels).
     scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
     return scored[0][2]
@@ -203,7 +259,9 @@ def resolve_sales_columns(
 ) -> tuple[str, str]:
     available = [str(c) for c in columns]
     # Ignore stale/explicit date-part columns (e.g. mapping saved `month`) and re-pick.
-    if date_column and (date_column not in available or is_date_part_column(date_column)):
+    if date_column and (date_column not in available or (
+        is_date_part_column(date_column) and not is_valid_monthly_period_column(date_column, frame)
+    )):
         date_column = None
     date_col = date_column if date_column and date_column in available else pick_best_date_column(
         available, column_info=column_info, frame=frame,

@@ -101,6 +101,16 @@ def test_resolve_cogs_is_fallback_false_when_cogs_mapped():
     assert 'mapped cost' in source
 
 
+def test_tax_cost_is_not_treated_as_cogs():
+    frame = pd.DataFrame({
+        'sales': [100.0, 120.0],
+        'tax_cost': [18.0, 21.6],
+    })
+    _series, source, _ratio, is_fallback = resolve_cogs_series(frame, 'sales')
+    assert is_fallback is True
+    assert 'tax_cost' not in source
+
+
 def test_resolve_opex_is_fallback_false_when_mapped():
     frame = pd.DataFrame({
         'order_date': pd.date_range('2018-01-01', periods=20, freq='D'),

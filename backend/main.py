@@ -113,6 +113,7 @@ from sales_domain import (
     DATE_PATTERN as SALES_DATE_PATTERN,
     REVENUE_PATTERN as SALES_REVENUE_PATTERN,
     is_date_part_column,
+    infer_dataset_grain,
     pick_best_date_column,
     resolve_sales_columns,
     sales_mapping_payload,
@@ -837,7 +838,10 @@ def load_ts_dataset(
 
     probe_frame: pd.DataFrame | None = None
     try:
-        probe_frame = read_cached_frame(dataset_entry) if dataset_entry.get('frame_path') or dataset_entry.get('parquet_path') else None
+        if dataset_entry.get('frame_path'):
+            probe_frame = read_cached_frame(dataset_entry)
+        elif dataset_entry.get('parquet_path'):
+            probe_frame = read_cached_parquet(dataset_entry, low_memory=True).to_pandas(use_pyarrow_extension_array=False)
     except Exception:
         probe_frame = None
 
@@ -3234,6 +3238,8 @@ def persist_inferred_dataset_frame(dataset_id: str, source_entry: dict[str, Any]
         'row_count': int(len(frame)),
         'column_count': int(len(frame.columns)),
         'columns': list(frame.columns),
+        'column_info': build_column_info_from_frame(frame),
+        'grain_capability': infer_dataset_grain(frame),
         'duplicate_count': duplicate_rows,
     })
     maybe_store_dataset_frequency(dataset_id, frame)
@@ -6806,6 +6812,9 @@ def sales_readiness(request: SalesReadinessRequest) -> JSONResponse:
             'revenue_column_confidence': confidence,
             'zero_sales_share': round(zero_share, 4),
             'missing_share': round(missing_share, 4),
+            'grain_capability': dataset_entry.get('grain_capability') or {
+                'grain': 'unknown', 'confidence': 'unknown',
+            },
             'notes': [] if ready else [
                 format_insufficient_ts_periods_message('period', periods, min_required) if periods < min_required else None,
                 'Revenue column confidence is low; confirm the sales target mapping.' if confidence < 40 else None,
@@ -7480,6 +7489,7 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
         if column_matches_pattern(str(column), LOSS_COLUMN_PATTERNS['operating_cost'])
         or column_matches_pattern(str(column), LOSS_COLUMN_PATTERNS['inventory_value'])
         or column_matches_pattern(str(column), LOSS_COLUMN_PATTERNS['discount'])
+        or re.search(r'(?:^|_)tax(?:_|$)|gst|vat|sales_tax', str(column), re.IGNORECASE)
         or str(column) == str(revenue_column)
     }
     cost_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['cost'], exclude={str(column) for column in excluded_cost_columns})
@@ -7512,7 +7522,7 @@ def resolve_cogs_series(frame: pd.DataFrame, revenue_column: str | None = None) 
             ratio = bounded_ratio(float(cogs.sum() / max(revenue.sum(), 1.0)), 0.58)
             return cogs, f'gross margin column "{margin_column}"', ratio, False
 
-    universal_cost_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['universal_cost'], exclude={str(revenue_column)} if revenue_column else set())
+    universal_cost_columns = matching_numeric_columns(frame, LOSS_COLUMN_PATTERNS['universal_cost'], exclude=excluded_cost_columns)
     if universal_cost_columns:
         cogs = numeric_columns_sum(frame, universal_cost_columns, 0.0).clip(lower=0)
         if float(cogs.sum()) > 0:
@@ -12128,12 +12138,14 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'column_count': int(column_count),
             'columns': [str(column) for column in frame.columns],
             'duplicate_count': int(preview_duplicate_rows),
+            'column_info': column_info,
         })
+        pandas_frame = frame.to_pandas(use_pyarrow_extension_array=False) if hasattr(frame, 'to_pandas') else pd.DataFrame(frame)
+        dataset_entry['grain_capability'] = infer_dataset_grain(pandas_frame)
         set_dataset_cache_entry(
             dataset_id, dataset_entry,
             owner_session_id=get_client_session_id(http_request),
         )
-        pandas_frame = frame.to_pandas(use_pyarrow_extension_array=False) if hasattr(frame, 'to_pandas') else pd.DataFrame(frame)
         maybe_store_dataset_frequency(dataset_id, pandas_frame)
 
         preview_loaded = int(total_rows) > len(rows)
@@ -12237,6 +12249,8 @@ def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_re
         'row_count': total_rows,
         'column_count': int(len(frame.columns)),
         'duplicate_count': duplicate_rows,
+        'column_info': column_info,
+        'grain_capability': infer_dataset_grain(pd.DataFrame(frame)),
     })
     set_dataset_cache_entry(request.dataset_id, dataset_entry)
     maybe_store_dataset_frequency(request.dataset_id, frame)

@@ -64,6 +64,11 @@ describe('pickPreferredSalesDateColumn', () => {
     expect(isForecastDateColumnCandidate({ name: 'dayofweek', role: 'numeric' })).toBe(false);
   });
 
+  test('can retain a validated monthly period supplied by the backend', () => {
+    expect(isForecastDateColumnCandidate({ name: 'month', role: 'datetime' })).toBe(true);
+    expect(isForecastDateColumnCandidate({ name: 'month', role: 'numeric' })).toBe(false);
+  });
+
   test('TS and ML tabs share the same preferred date for station-like schemas', () => {
     // Both tabs call pickPreferredSalesDateColumn — one source of truth.
     const preferred = pickPreferredSalesDateColumn(stationColumns);

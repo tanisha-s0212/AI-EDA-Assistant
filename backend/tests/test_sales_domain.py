@@ -14,6 +14,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from main import DATASET_CACHE, app, set_dataset_cache_entry  # noqa: E402
 from sales_domain import (  # noqa: E402
+    infer_dataset_grain,
     pick_best_date_column,
     pick_best_revenue_column,
     resolve_sales_columns,
@@ -127,6 +128,34 @@ def test_resolve_sales_columns_respects_explicit_overrides():
     assert target_col == 'net_sales'
 
 
+def test_month_named_timestamp_is_accepted_only_when_it_is_a_valid_monthly_period():
+    frame = pd.DataFrame({
+        'month': pd.date_range('2022-01-01', periods=24, freq='MS'),
+        'revenue': [1000 + index for index in range(24)],
+    })
+    date_col, target_col = resolve_sales_columns(
+        frame.columns, date_column='month', target_column='revenue', frame=frame,
+    )
+    assert (date_col, target_col) == ('month', 'revenue')
+    grain = infer_dataset_grain(frame)
+    assert grain['grain'] == 'monthly_aggregate'
+    assert grain['period_column'] == 'month'
+    assert grain['frequency'] == 'month'
+
+
+def test_numeric_month_part_remains_ineligible_as_a_date_column():
+    frame = pd.DataFrame({
+        'created': pd.date_range('2022-01-01', periods=24, freq='D'),
+        'month': list(range(1, 13)) * 2,
+        'revenue': [1000 + index for index in range(24)],
+    })
+    date_col, _ = resolve_sales_columns(
+        frame.columns, date_column='month', target_column='revenue', frame=frame,
+    )
+    assert date_col == 'created'
+    assert infer_dataset_grain(frame)['grain'] != 'monthly_aggregate'
+
+
 def test_stationarity_accepts_explicit_columns(client: TestClient, monthly_dataset_id: str):
     from unittest.mock import patch
 
@@ -157,6 +186,31 @@ def test_sales_readiness(client: TestClient, monthly_dataset_id: str):
     assert body['period_count'] >= 24
     assert body['target_column'] == 'net_sales'
     assert body['status'] in {'ready', 'needs_attention'}
+
+
+def test_sales_readiness_accepts_validated_month_named_period(client: TestClient, tmp_path: Path):
+    frame = pd.DataFrame({
+        'month': pd.date_range('2021-01-01', periods=30, freq='MS'),
+        'revenue': [1000.0 + index for index in range(30)],
+    })
+    path = tmp_path / 'monthly_named_month.parquet'
+    frame.to_parquet(path, index=False)
+    dataset_id = 'monthly_named_month'
+    set_dataset_cache_entry(dataset_id, {
+        'parquet_path': str(path), 'filename': 'monthly.csv',
+        'row_count': len(frame), 'column_count': len(frame.columns),
+        'columns': list(frame.columns),
+        'column_info': [{'name': 'month', 'role': 'datetime'}, {'name': 'revenue', 'role': 'numeric'}],
+    })
+    try:
+        response = client.post('/api/sales/readiness', json={'dataset_id': dataset_id})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body['date_column'] == 'month'
+        assert body['target_column'] == 'revenue'
+        assert body['period_count'] == 30
+    finally:
+        DATASET_CACHE.pop(dataset_id, None)
 
 
 def test_upload_formats_exist():
