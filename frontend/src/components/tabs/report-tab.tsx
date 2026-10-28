@@ -112,6 +112,7 @@ export default function ReportTab() {
     targetColumn, problemType, selectedFeatures, selectedModel, modelMetrics, featureImportance,
     uploadedModel, predictionResult, predictionAnalysis, predictionProbabilities, predictionHistory,
     timeSeriesForecastResult, mlForecastResult, lossForecast, profitForecast, lossSegments, scenarios, breakevenPeriod, modelTrained,
+    profitValidationReport, lossSummary, displayCurrency,
     reportGenerated, reportUrl, setReportGenerated, setReportUrl, setActiveTab,
   } = store;
 
@@ -278,6 +279,9 @@ export default function ReportTab() {
     lossForecast: lossForecast ?? [],
     profitForecast: scenarios?.[DEFAULT_REPORT_CONFIG.scenario] ?? profitForecast ?? [],
     lossSegments: lossSegments ?? [],
+    profitValidationReport,
+    lossSummary,
+    displayCurrency,
     scenarios,
     breakevenPeriod,
     reportConfig: DEFAULT_REPORT_CONFIG,
@@ -295,7 +299,7 @@ export default function ReportTab() {
   }), [
     aiInsights, cleanedData?.length, cleanedRowCount, cleaningDone, cleaningLogs, columns, datasetId, duplicates, edaStats, featureImportance,
     fileName, memoryUsage, mlForecastResult, modelMetrics, predictionAnalysis, predictionHistory, predictionProbabilities, predictionResult,
-    loadedRowCount, lossForecast, lossSegments, previewLoaded, problemType, profitForecast, rawData?.length, scenarios, selectedFeatures,
+    loadedRowCount, lossForecast, lossSegments, lossSummary, previewLoaded, problemType, profitForecast, profitValidationReport, displayCurrency, rawData?.length, scenarios, selectedFeatures,
     selectedModel, targetColumn, timeSeriesForecastResult, totalRows, uploadedModel, breakevenPeriod,
   ]);
 

@@ -55,6 +55,17 @@ function getPreferredDateColumn(columns: ColumnInfo[]) {
   return pickPreferredSalesDateColumn(columns);
 }
 
+function hasMonthlyDateGrain(data: DataRow[], dateColumn: string, frequency: string, resultFrequency?: string | null) {
+  if (/month/i.test(`${frequency} ${resultFrequency ?? ''}`)) return true;
+  if (!dateColumn) return false;
+
+  const dates = [...new Set(data.map((row) => {
+    const parsed = new Date(String(row[dateColumn] ?? ''));
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+  }).filter((date): date is string => date !== null))];
+  return dates.length > 1 && dates.every((date) => date.endsWith('-01'));
+}
+
 function buildGeneratedFeaturePreview(featureGroups: FeatureGroupId[], lagPeriods: number) {
   const preview: string[] = [];
   if (featureGroups.includes('trend')) preview.push('trend_index');
@@ -94,12 +105,13 @@ export default function MlForecastTab() {
   const cleanedData = useAppStore((state) => state.cleanedData);
   const columns = useAppStore((state) => state.columns);
   const datasetId = useAppStore((state) => state.datasetId);
+  const confirmedMapping = useAppStore((state) => state.confirmedSalesMapping);
   const storedResult = useAppStore((state) => state.mlForecastResult);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const data = cleanedData ?? rawData ?? [];
 
-  const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
-  const dateColumns = useMemo(() => columns.filter(isForecastDateColumnCandidate), [columns]);
+  const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric' || column.name === confirmedMapping?.targetColumn), [columns, confirmedMapping]);
+  const dateColumns = useMemo(() => columns.filter((column) => isForecastDateColumnCandidate(column) || column.name === confirmedMapping?.dateColumn), [columns, confirmedMapping]);
   const preferredDateColumn = useMemo(() => getPreferredDateColumn(columns), [columns]);
   const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
@@ -116,11 +128,16 @@ export default function MlForecastTab() {
   const [salesPeriodCount, setSalesPeriodCount] = useState<number | null>(null);
 
   useEffect(() => {
-    if ((!dateColumn || isDatePartColumn(dateColumn)) && preferredDateColumn) {
+    setDateColumn(confirmedMapping?.dateColumn ?? '');
+    setTargetColumn(confirmedMapping?.targetColumn ?? '');
+  }, [datasetId, confirmedMapping]);
+
+  useEffect(() => {
+    if ((!dateColumn || (isDatePartColumn(dateColumn) && !dateColumns.some((column) => column.name === dateColumn))) && preferredDateColumn) {
       setDateColumn(preferredDateColumn);
     }
     if (!targetColumn && smartTargetColumn) setTargetColumn(smartTargetColumn);
-  }, [columns, dateColumn, targetColumn, preferredDateColumn, smartTargetColumn]);
+  }, [columns, dateColumns, dateColumn, targetColumn, preferredDateColumn, smartTargetColumn]);
 
   useEffect(() => {
     if (featureGroups.length === 0 && currentStep > 1) {
@@ -174,6 +191,9 @@ export default function MlForecastTab() {
       }),
     [localProfile, result, salesPeriodCount],
   );
+  const isMonthlySeries = hasMonthlyDateGrain(data, dateColumn, profile.detected_frequency, result?.period_label);
+  const forecastUnit = isMonthlySeries ? 'month' : 'period';
+  const forecastUnitPlural = `${forecastUnit}s`;
   const generatedFeatures = useMemo(() => buildGeneratedFeaturePreview(featureGroups, lagPeriods), [featureGroups, lagPeriods]);
   const recommendations = useMemo(() => buildModelRecommendations(generatedFeatures.length), [generatedFeatures.length]);
 
@@ -241,7 +261,7 @@ export default function MlForecastTab() {
       const nextResult = response.data as MlForecastResult;
       setResult(nextResult);
       useAppStore.setState({ mlForecastResult: nextResult });
-      toast({ title: 'ML forecast ready', description: `Projected ${forecastPeriods} future ${nextResult.period_label ?? 'period'}${forecastPeriods === 1 ? '' : 's'}.` });
+      toast({ title: 'ML forecast ready', description: `Projected ${forecastPeriods} future ${forecastPeriods === 1 ? forecastUnit : forecastUnitPlural}.` });
     } catch (error) {
       toast({ title: 'Forecast failed', description: getApiErrorMessage(error, 'ML forecasting failed.'), variant: 'destructive' });
     } finally {
@@ -281,22 +301,22 @@ export default function MlForecastTab() {
               </div>
               <h2 className="mt-3 text-2xl font-bold tracking-tight">Sales Forecast Using Machine Learning</h2>
               <p className="mt-2 text-sm text-muted-foreground">
-                The forecast uses time markers and prior observed sales only. It validates the model on a later period and compares it with a simple baseline before showing a business forecast.
+                The forecast uses time markers and prior observed sales only. It validates the model on a later {isMonthlySeries ? 'month' : 'period'} and compares it with a simple baseline before showing a business forecast.
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary">{dateColumn || 'Pick a date column'}</Badge>
                 <Badge variant="secondary">{targetColumn ? `Target: ${targetColumn}` : 'Pick a target column'}</Badge>
                 <Badge variant="secondary">{generatedFeatures.length} generated features</Badge>
-                <Badge variant="secondary">{forecastPeriods} future periods</Badge>
+                <Badge variant="secondary">{forecastPeriods} future {forecastUnitPlural}</Badge>
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-3 xl:w-[360px] xl:grid-cols-1">
               <div className="rounded-2xl border bg-white/80 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-none">
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Detected Frequency</p>
-                <p className="mt-2 text-lg font-semibold capitalize">{profile.detected_frequency}</p>
+                <p className="mt-2 text-lg font-semibold capitalize">{isMonthlySeries ? 'monthly' : profile.detected_frequency}</p>
               </div>
               <div className="rounded-2xl border bg-white/80 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-none">
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Usable Periods</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Usable {isMonthlySeries ? 'Months' : 'Periods'}</p>
                 <p className="mt-2 text-lg font-semibold">{profile.usable_periods}</p>
               </div>
               <div className="rounded-2xl border bg-white/80 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-none">
@@ -335,7 +355,7 @@ export default function MlForecastTab() {
               <Card>
                 <CardHeader>
                   <CardTitle>Step 1: Target And Feature Engineering</CardTitle>
-                  <CardDescription>Choose the forecasting columns and the forecast-time-safe features to generate. Other dataset columns are excluded because they may not exist for future periods.</CardDescription>
+                  <CardDescription>Choose the forecasting columns and the forecast-time-safe features to generate. Other dataset columns are excluded because they may not exist in future {forecastUnitPlural}.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -358,10 +378,10 @@ export default function MlForecastTab() {
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <Label>Future Periods</Label>
+                      <Label>Future {isMonthlySeries ? 'Months' : 'Periods'}</Label>
                       <Select value={String(forecastPeriods)} onValueChange={(value) => setForecastPeriods(Number(value))}>
                         <SelectTrigger><SelectValue placeholder="Select horizon" /></SelectTrigger>
-                        <SelectContent>{HORIZON_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value} periods</SelectItem>)}</SelectContent>
+                        <SelectContent>{HORIZON_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value} {isMonthlySeries ? 'months' : 'periods'}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
                     <div className="space-y-2">
@@ -550,11 +570,11 @@ export default function MlForecastTab() {
                           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                             <div>
                               <CardTitle>Forecast Line</CardTitle>
-                              <CardDescription>Historical actuals, recursive backtest predictions, future ML forecast, and a 90% empirical forecast range.</CardDescription>
+                              <CardDescription>Historical actuals, recursive backtest predictions, and an approximate forecast range. Coverage is not calibrated.</CardDescription>
                             </div>
                             <div className="flex flex-wrap gap-2">
                               <Badge variant="outline" className="border-primary/20 bg-primary/5 text-primary">Actuals + Backtest + Future</Badge>
-                              <Badge variant="outline" className="border-secondary bg-secondary text-secondary-foreground">{result.future_forecast.length} projected periods</Badge>
+                              <Badge variant="outline" className="border-secondary bg-secondary text-secondary-foreground">{result.future_forecast.length} projected {isMonthlySeries ? 'months' : 'periods'}</Badge>
                             </div>
                           </div>
                         </CardHeader>
@@ -584,7 +604,7 @@ export default function MlForecastTab() {
                             <ForecastSeriesChart
                               data={chartData}
                               showConfidence
-                              confidenceLabel="90%"
+                              confidenceLabel="estimated"
                               heightClassName="h-full"
                               yTickFormatter={(value) => formatNumber(value)}
                             />
@@ -655,17 +675,17 @@ export default function MlForecastTab() {
                                 <CardTitle>Future Forecast Table</CardTitle>
                                 <CardDescription>Projected values for the ML forecast horizon.</CardDescription>
                               </div>
-                              <Badge variant="secondary">{result.period_label ?? 'Period'} horizon</Badge>
+                              <Badge variant="secondary">{isMonthlySeries ? 'Monthly' : result.period_label ?? 'Period'} horizon</Badge>
                             </div>
                           </CardHeader>
                           <CardContent className="space-y-4">
                             <div className="grid gap-3 sm:grid-cols-2">
                               <div className="rounded-2xl border bg-gradient-to-br from-secondary to-background p-4">
-                                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">First Period</p>
+                                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">First {isMonthlySeries ? 'Month' : 'Period'}</p>
                                 <p className="mt-2 text-base font-semibold">{result.future_forecast[0]?.period ?? 'N/A'}</p>
                               </div>
                               <div className="rounded-2xl border bg-gradient-to-br from-muted/30 to-background p-4">
-                                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Last Period</p>
+                                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Last {isMonthlySeries ? 'Month' : 'Period'}</p>
                                 <p className="mt-2 text-base font-semibold">{result.future_forecast[result.future_forecast.length - 1]?.period ?? 'N/A'}</p>
                               </div>
                             </div>
@@ -685,9 +705,9 @@ export default function MlForecastTab() {
                               <Table>
                                 <TableHeader className="sticky top-0 bg-background">
                                   <TableRow>
-                                    <TableHead>Period</TableHead>
+                                    <TableHead>{isMonthlySeries ? 'Month' : 'Period'}</TableHead>
                                     <TableHead className="text-right">Forecast</TableHead>
-                                    <TableHead className="text-right">90% Range</TableHead>
+                                    <TableHead className="text-right">Estimated range</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>

@@ -296,18 +296,15 @@ def prepare_frame_for_ml_pipeline(
 
 
 def clean_data(df: pd.DataFrame, target_col: str, date_col: str, frequency: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Sort, trim leading zero target rows, drop null targets, and enforce minimum rows."""
+    """Sort observed periods, retain valid zeros, and enforce minimum rows."""
     config = get_config(frequency)
     rows_before = int(len(df))
     working = df.copy().sort_values(date_col).reset_index(drop=True)
     working[target_col] = pd.to_numeric(working[target_col], errors='coerce')
-    trim_limit = int(rows_before * (0.6 if frequency == 'weekly' else 0.4))
-    trim_index = 0
-    while trim_index < min(trim_limit, len(working)) and float(working.loc[trim_index, target_col] or 0.0) == 0.0:
-        trim_index += 1
-    clean = working.iloc[trim_index:].dropna(subset=[target_col]).reset_index(drop=True)
+    clean = working.dropna(subset=[target_col]).reset_index(drop=True)
     rows_remaining = int(len(clean))
-    report = {'rows_before': rows_before, 'rows_trimmed': int(trim_index), 'rows_remaining': rows_remaining}
+    report = {'rows_before': rows_before, 'rows_trimmed': 0, 'rows_remaining': rows_remaining,
+              'null_target_rows_removed': rows_before - rows_remaining}
     logger.info('ML forecast clean_data report: %s', report)
     if rows_remaining < config['min_rows']:
         raise ValueError(f'Insufficient data after trimming: {rows_remaining} rows')
@@ -463,7 +460,7 @@ def compute_all_metrics(actual: list[float] | np.ndarray, predicted: list[float]
     rmse = float(np.sqrt(mean_squared_error(actual_arr, predicted_arr)))
     non_zero = np.abs(actual_arr) > 1e-8
     mape = float(np.mean(np.abs((actual_arr[non_zero] - predicted_arr[non_zero]) / actual_arr[non_zero])) * 100.0) if np.any(non_zero) else 0.0
-    return {'mae': round(mae, 2), 'rmse': round(rmse, 2), 'mape': round(mape, 2), 'smape': round(compute_smape(actual_arr, predicted_arr), 2)}
+    return {'mae': mae, 'rmse': rmse, 'mape': mape, 'smape': compute_smape(actual_arr, predicted_arr)}
 
 
 def build_models_dict() -> dict[str, Any]:
@@ -488,7 +485,8 @@ def _fit_predict_prophet(train: pd.DataFrame, validation_dates: pd.Series, date_
     model = Prophet(seasonality_mode=config['prophet_mode'], yearly_seasonality=config['yearly_seasonality'], weekly_seasonality=False, daily_seasonality=False)
     model.fit(train.rename(columns={date_col: 'ds', target_col: 'y'})[['ds', 'y']])
     forecast = model.predict(pd.DataFrame({'ds': pd.to_datetime(validation_dates)}))
-    return [max(0.0, float(value)) for value in forecast['yhat'].tolist()]
+    signed = bool((pd.to_numeric(train[target_col], errors='coerce') < 0).any())
+    return [float(value) if signed else max(0.0, float(value)) for value in forecast['yhat'].tolist()]
 
 
 def _recursive_holdout_predictions(
@@ -507,10 +505,13 @@ def _recursive_holdout_predictions(
     estimator.fit(train[features], train[target])
     config = get_config(frequency)
     history = pd.to_numeric(train[target], errors='coerce').astype(float).tolist()
+    signed = any(value < 0 for value in history)
     predictions: list[float] = []
     for test_date in pd.to_datetime(test_dates):
         row = _build_future_feature_row(history, pd.Timestamp(test_date), frequency, config, features)
-        prediction = max(0.0, float(estimator.predict(row)[0]))
+        prediction = float(estimator.predict(row)[0])
+        if not signed:
+            prediction = max(0.0, prediction)
         predictions.append(prediction)
         history.append(prediction)
     return predictions
@@ -595,6 +596,7 @@ def forecast_future(model: Any, df: pd.DataFrame, features: list[str], target: s
     config = get_config(frequency)
     history = df[[date_col, target]].copy().sort_values(date_col).reset_index(drop=True)
     history_values = pd.to_numeric(history[target], errors='coerce').astype(float).tolist()
+    signed = any(value < 0 for value in history_values)
     forecasts: list[dict[str, Any]] = []
     next_date = pd.Timestamp(history.iloc[-1][date_col]) + config['offset']
     for _ in range(horizon):
@@ -603,8 +605,9 @@ def forecast_future(model: Any, df: pd.DataFrame, features: list[str], target: s
         else:
             row = _build_future_feature_row(history_values, next_date, frequency, config, features)
             prediction = float(model.predict(row)[0])
-        prediction = max(0.0, prediction)
-        forecasts.append({'period': next_date.strftime('%Y-%m-%d'), 'period_label': format_period_label(next_date, frequency), 'forecast_value': round(prediction, 2)})
+        if not signed:
+            prediction = max(0.0, prediction)
+        forecasts.append({'period': next_date.strftime('%Y-%m-%d'), 'period_label': format_period_label(next_date, frequency), 'forecast_value': prediction})
         history_values.append(prediction)
         next_date = next_date + config['offset']
     return forecasts
@@ -685,7 +688,8 @@ def _data_quality(clean_df: pd.DataFrame, target_col: str, date_col: str, freque
     expected_frequency = 'W-MON' if frequency == 'weekly' else 'MS'
     dates = pd.to_datetime(clean_df[date_col], errors='coerce').dropna().sort_values()
     expected = pd.date_range(dates.iloc[0], dates.iloc[-1], freq=expected_frequency) if len(dates) else pd.DatetimeIndex([])
-    missing_periods = max(0, len(expected) - len(dates.unique()))
+    missing_periods = max(0, len(expected) - len(dates.unique()),
+                          int(clean_df.attrs.get('missing_periods_before_imputation', 0)))
     gap_penalty = min(0.25, missing_periods / max(1, len(expected)))
     score = round(100.0 * ((0.40 * completeness) + (0.35 * period_score) + (0.15 * (1.0 - zero_penalty)) + (0.10 * (1.0 - gap_penalty))), 1)
     issues: list[str] = []
@@ -730,7 +734,7 @@ def _holdout_backtest(model: Any, feature_df: pd.DataFrame, features: list[str],
         estimator.fit(feature_df.iloc[:split][features], feature_df.iloc[:split][target_col])
         values = estimator.predict(feature_df.iloc[split:][features]).tolist()
     for offset, value in enumerate(values):
-        predictions[split + offset] = round(max(0.0, float(value)), 2)
+        predictions[split + offset] = float(value) if (feature_df[target_col] < 0).any() else max(0.0, float(value))
     return predictions
 
 
@@ -847,15 +851,15 @@ def write_all_outputs(
     residual_quantile = float(np.quantile(np.abs(np.asarray(holdout_actuals) - np.asarray(holdout_predictions)), 0.9)) if holdout_predictions else 0.0
     for step, row in enumerate(forecast, start=1):
         spread = residual_quantile * float(np.sqrt(step))
-        row['lower'] = round(max(0.0, float(row['forecast_value']) - spread), 2)
-        row['upper'] = round(float(row['forecast_value']) + spread, 2)
+        row['lower'] = float(row['forecast_value']) - spread
+        row['upper'] = float(row['forecast_value']) + spread
     forecast_line = []
     for _, row in clean_df.iterrows():
-        forecast_line.append({'period': pd.Timestamp(row[date_col]).strftime('%Y-%m-%d'), 'actual': round(float(row[target_col]), 2), 'backtest': None, 'forecast': None, 'type': 'actual'})
+        forecast_line.append({'period': pd.Timestamp(row[date_col]).strftime('%Y-%m-%d'), 'actual': float(row[target_col]), 'backtest': None, 'forecast': None, 'type': 'actual'})
     feature_dates = [pd.Timestamp(value).strftime('%Y-%m-%d') for value in feature_df[date_col].tolist()]
     holdout_start = len(feature_dates) - len(holdout_predictions)
     for offset, prediction in enumerate(holdout_predictions):
-        forecast_line.append({'period': feature_dates[holdout_start + offset], 'actual': None, 'backtest': round(float(prediction), 2), 'forecast': None, 'type': 'backtest'})
+        forecast_line.append({'period': feature_dates[holdout_start + offset], 'actual': None, 'backtest': float(prediction), 'forecast': None, 'type': 'backtest'})
     for row in forecast:
         forecast_line.append({
             'period': row['period'], 'actual': None, 'backtest': None,
@@ -968,8 +972,14 @@ def run_full_pipeline(
     feature_df, feature_list = engineer_features(clean_df, target_col, date_col, frequency, config, feature_groups)
     if len(feature_df) < max(3, config['cv_splits'] + 2):
         raise ValueError(f'Insufficient data after feature engineering: {len(feature_df)} rows')
+    # Reserve the final chronological holdout before selecting a candidate.
+    validated_test_percentage = max(10, min(50, int(test_percentage)))
+    split_idx = int(len(feature_df) * (100 - validated_test_percentage) / 100)
+    split_idx = max(1, min(split_idx, len(feature_df) - 1))
+    train_df = feature_df.iloc[:split_idx]
+    test_df = feature_df.iloc[split_idx:]
     models = build_models_dict()
-    results = walk_forward_validate(feature_df, feature_list, target_col, models, config['cv_splits'], frequency, date_col)
+    results = walk_forward_validate(train_df, feature_list, target_col, models, config['cv_splits'], frequency, date_col)
     
     # Select the requested model or the best completed candidate.
     selected_model_name = 'Gradient Boosting'
@@ -985,16 +995,6 @@ def run_full_pipeline(
 
     # Chronological holdout.  The requested split is used by both the model and
     # its baseline so the UI never reports a configuration it ignored.
-    validated_test_percentage = max(10, min(50, int(test_percentage)))
-    split_idx = int(len(feature_df) * (100 - validated_test_percentage) / 100)
-    if split_idx < 1:
-        split_idx = 1
-    if split_idx >= len(feature_df):
-        split_idx = len(feature_df) - 1
-
-    train_df = feature_df.iloc[:split_idx]
-    test_df = feature_df.iloc[split_idx:]
-
     chosen_model = models[selected_model_name]
     if isinstance(chosen_model, dict) and chosen_model.get('status') == 'failed':
         raise ValueError(f'{selected_model_name} is unavailable: {chosen_model.get("note", "unknown error")}')

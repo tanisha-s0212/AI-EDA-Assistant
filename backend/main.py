@@ -1142,9 +1142,10 @@ def train_all_ts_models(df: pd.DataFrame, target_col: str, date_col: str, freque
                     pred = baseline + pred
                     lower = None if lower is None else baseline + lower
                     upper = None if upper is None else baseline + upper
-                predictions.append(max(0.0, float(pred)))
-                lower_bounds.append(None if lower is None else max(0.0, float(lower)))
-                upper_bounds.append(None if upper is None else max(0.0, float(upper)))
+                signed = bool((pd.to_numeric(fold_train[target_col], errors='coerce') < 0).any())
+                predictions.append(float(pred) if signed else max(0.0, float(pred)))
+                lower_bounds.append(None if lower is None else (float(lower) if signed else max(0.0, float(lower))))
+                upper_bounds.append(None if upper is None else (float(upper) if signed else max(0.0, float(upper))))
                 model_meta.update(meta)
             metrics = compute_ts_metrics(y_test, np.array(predictions, dtype=float))
             results[model_name] = {
@@ -1250,13 +1251,14 @@ def generate_ts_future_forecast(best_model_name: str, clean_df: pd.DataFrame, ta
         upper_bounds = upper.tolist()
     fmt = '%Y-%m-%d' if frequency in {'daily', 'weekly'} else '%Y-%m'
     label_t = '{}' if frequency == 'daily' else ('Week of {}' if frequency == 'weekly' else 'Month of {}')
+    signed = bool((pd.to_numeric(clean_df[target_col], errors='coerce') < 0).any())
     return [
         {
             'period': label_t.format(d.strftime(fmt)),
-            'forecast': round(max(0.0, f), 2),
-            'predicted': round(max(0.0, f), 2),
-            'lower': round(max(0.0, l), 2),
-            'upper': round(max(0.0, u), 2),
+            'forecast': float(f) if signed else max(0.0, float(f)),
+            'predicted': float(f) if signed else max(0.0, float(f)),
+            'lower': float(l) if signed else max(0.0, float(l)),
+            'upper': float(u) if signed else max(0.0, float(u)),
         }
         for d, f, l, u in zip(future_dates, forecast_vals, lower_bounds, upper_bounds)
     ]
@@ -1300,7 +1302,7 @@ def generate_ts_insight(best_model_name: str, metrics: dict[str, Any], stationar
         quality_note = 'high volatility detected'
     risk_flag = None
     if stationarity.get('status') == 'non_stationary':
-        risk_flag = f'{target_label} values do not show a consistent pattern over time. Past patterns may not continue, so forecasts further ahead are less certain. Use the 95% forecast range to see the possible outcomes.'
+        risk_flag = f'{target_label} values do not show a consistent pattern over time. Past patterns may not continue, so forecasts further ahead are less certain. Review the approximate forecast range.'
     elif smape > 50:
         risk_flag = f'SMAPE {smape}% indicates high variance — use forecast range not point values.'
     insight_text = f'{best_model_name} selected for sales forecasting with {quality_note} (SMAPE: {smape}%, MAE: {round(mae / 1e6, 2)}M). Series stationarity: {stationarity.get("status", "unknown")}.'
@@ -1898,7 +1900,7 @@ def write_cached_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
 
 def write_cached_parquet_frame(dataset_id: str, frame: pd.DataFrame) -> Path:
     """Persist a cleaned/inferred pandas frame as Parquet for fast downstream Polars IO."""
-    target = dataset_file_path(dataset_id, '.parquet')
+    target = dataset_file_path(f'{dataset_id}-{uuid.uuid4().hex}', '.parquet')
     # Convert extension dtypes that confuse some parquet writers; keep values.
     serializable = frame.copy()
     for column in serializable.columns:
@@ -1974,7 +1976,8 @@ def friendly_format_error(error: Exception, file_kind: str = 'dataset') -> str:
 
 
 def detect_text_encoding(path: Path) -> str:
-    sample = path.read_bytes()[:131_072]
+    with path.open('rb') as handle:
+        sample = handle.read(131_072)
     if not sample:
         raise IngestionFormatError('This delimited file is empty. Upload a CSV or TSV with a header row and at least one data row.', issue='empty_file')
     for encoding in TEXT_ENCODINGS:
@@ -2006,7 +2009,8 @@ def detect_delimiter_from_sample(sample: str, fallback: str = ',') -> str:
 def sniff_delimited_options(path: Path) -> dict[str, Any]:
     encoding = detect_text_encoding(path)
     try:
-        sample = path.read_text(encoding=encoding, errors='replace')[:65_536]
+        with path.open('r', encoding=encoding, errors='replace') as handle:
+            sample = handle.read(65_536)
     except Exception as error:
         raise IngestionFormatError(f'Could not decode this CSV/TSV file with detected encoding {encoding}.') from error
     fallback = '\t' if path.suffix.lower() == '.tsv' else ','
@@ -2824,6 +2828,13 @@ class TrainRequest(BaseModel):
     time_order_column: str | None = None
 
 
+class FeatureReviewRequest(BaseModel):
+    data: list[dict[str, Any]] = Field(default_factory=list)
+    dataset_id: str | None = None
+    target_column: str
+    feature_columns: list[str]
+
+
 class PredictRequest(BaseModel):
     model_id: str
     dataset_id: str | None = None
@@ -2837,6 +2848,10 @@ class AssistantAskRequest(BaseModel):
     top_n: int = Field(default=10, ge=1, le=50)
     customer_id: str | None = None
     product_id: str | None = None
+    feature_columns: list[str] | None = None
+    confirm_training: bool = False
+    review_token: str | None = None
+    allow_default_inputs: bool = False
 
 
 class DatasetCacheRequest(BaseModel):
@@ -2848,6 +2863,18 @@ class DatasetSheetSelectionRequest(BaseModel):
     dataset_id: str
     selected_sheets: list[str] = Field(default_factory=list)
     merge_mode: Literal['single', 'stack'] = 'single'
+
+
+class DatasetUnderstandingRequest(BaseModel):
+    dataset_id: str
+    date_column: str
+    target_column: str
+    dimensions: list[str] = Field(default_factory=list, max_length=5)
+    grain: Literal['auto', 'monthly', 'records'] = 'auto'
+
+
+class DatasetQualitySummaryRequest(BaseModel):
+    dataset_id: str
 
 
 class LoginRequest(BaseModel):
@@ -3113,6 +3140,9 @@ class ReportPayload(BaseModel):
     lossForecast: list[dict[str, Any]] = Field(default_factory=list)
     profitForecast: list[dict[str, Any]] = Field(default_factory=list)
     lossSegments: list[dict[str, Any]] = Field(default_factory=list)
+    profitValidationReport: dict[str, Any] | None = None
+    lossSummary: dict[str, Any] | None = None
+    displayCurrency: str | None = None
     scenarios: dict[str, list[dict[str, Any]]] | None = None
     breakevenPeriod: str | None = None
     reportConfig: ReportConfigPayload = Field(default_factory=ReportConfigPayload)
@@ -3133,6 +3163,19 @@ class EdaPdfPayload(BaseModel):
     columns: list[ColumnInfo] = Field(default_factory=list)
     edaStats: EdaStats = Field(default_factory=EdaStats)
     advancedAnalysis: dict[str, Any] | None = None
+
+
+def financial_report_note(payload: ReportPayload) -> str:
+    validation = payload.profitValidationReport or {}
+    loss_summary = payload.lossSummary or {}
+    reasons = [str(value) for value in (validation.get('validation_reasons') or [])]
+    reasons.extend(str(value) for value in (loss_summary.get('validation_reasons') or []))
+    mapped = validation.get('mapped_columns') or {}
+    mappings = ', '.join(f'{key}: {value or "unavailable"}' for key, value in mapped.items()) or 'not supplied'
+    currency = payload.displayCurrency or 'not confirmed'
+    return ('Forecasted profit and loss are scenarios, not actual accounting results. '
+            f'Display currency: {currency}; verify the source currency. Mapped inputs: {mappings}. '
+            + ' '.join(reasons))
 
 
 REGRESSION_MODELS: dict[str, tuple[str, Any, dict[str, Any]]] = {
@@ -3175,7 +3218,10 @@ def safe_serialize(value: Any) -> Any:
     if isinstance(value, (datetime, date, dt_time)):
         return value.isoformat()
     if isinstance(value, Decimal):
-        return float(value)
+        if not value.is_finite():
+            return None
+        numeric = float(value)
+        return numeric if np.isfinite(numeric) and Decimal(str(numeric)) == value else str(value)
     if value is pd.NA or value is pd.NaT:
         return None
     if isinstance(value, (np.datetime64,)):
@@ -3273,7 +3319,14 @@ def persist_inferred_dataset_frame(dataset_id: str, source_entry: dict[str, Any]
     cached_path = write_cached_parquet_frame(dataset_id, frame)
     duplicate_rows = int(max(0, len(frame) - len(frame.drop_duplicates())))
     # Replace cache entry entirely: drop frame_path/csv_path/excel_path so clean/EDA never prefer joblib.
+    retained = {key: value for key, value in source_entry.items()
+                if key not in ('parquet_path', 'frame_path', 'csv_path', 'excel_path', '_storage_signature')}
+    source_path = source_entry.get('source_path') or next(
+        (source_entry.get(key) for key in ('parquet_path', 'frame_path', 'csv_path', 'excel_path') if source_entry.get(key)), None
+    )
     set_dataset_cache_entry(dataset_id, {
+        **retained,
+        'source_path': source_path,
         'parquet_path': str(cached_path),
         'filename': source_entry.get('filename') or 'dataset',
         'row_count': int(len(frame)),
@@ -4330,7 +4383,10 @@ def prepare_sales_series_from_parquet(dataset_entry: dict[str, Any], date_column
             full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
             series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
             series_frame['sales'] = series_frame['sales'].astype(float)
+            missing_periods = int(series_frame['sales'].isna().sum())
             series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
+            series_frame.attrs['missing_periods_before_imputation'] = missing_periods
+            series_frame.attrs['observed_periods'] = len(series_frame) - missing_periods
 
             if len(series_frame) >= minimum_periods:
                 attach_sales_series_frequency_attrs(
@@ -4455,7 +4511,11 @@ def aggregate_sales_series_at_frequency(
     full_range = pd.date_range(series_frame['period'].min(), series_frame['period'].max(), freq=freq)
     series_frame = series_frame.set_index('period').reindex(full_range).rename_axis('period').reset_index()
     series_frame['sales'] = series_frame['sales'].astype(float)
-    return repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
+    missing_periods = int(series_frame['sales'].isna().sum())
+    series_frame = repair_zero_period_values_with_seasonal_interpolation(series_frame, 'sales', repair_zeros=False)
+    series_frame.attrs['missing_periods_before_imputation'] = missing_periods
+    series_frame.attrs['observed_periods'] = len(series_frame) - missing_periods
+    return series_frame
 
 
 TS_MULTI_MODEL_MIN_PERIODS = 24
@@ -4677,10 +4737,11 @@ def recursive_forecast(model: LinearRegression, history: list[float], start_peri
     for _ in range(periods):
         features = build_forecast_feature_row(running_history, current_period, lag_periods)
         prediction = float(model.predict(pd.DataFrame([features]))[0])
-        prediction = max(prediction, 0.0)
+        if not any(value < 0 for value in history):
+            prediction = max(prediction, 0.0)
         forecasts.append({
             'period': format_forecast_period(current_period, period_label),
-            'predicted': round(prediction, 2),
+            'predicted': prediction,
         })
         running_history.append(prediction)
         current_period = current_period + pd.tseries.frequencies.to_offset(freq)
@@ -4742,9 +4803,9 @@ def calculate_forecast_metrics(actual: list[float], predicted: list[float]) -> d
     percentage_errors = [abs((a - p) / a) for a, p in zip(actual, predicted) if a != 0]
     mape = float(np.mean(percentage_errors) * 100) if percentage_errors else 0.0
     return {
-        'mae': round(mae, 2),
-        'rmse': round(rmse, 2),
-        'mape': round(mape, 2),
+        'mae': mae,
+        'rmse': rmse,
+        'mape': mape,
     }
 
 
@@ -4753,7 +4814,9 @@ def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -
     total = max(1, len(series_frame))
     missing_share = float(values.isna().sum() / total)
     zero_share = float((values.fillna(0) <= 0).sum() / total)
-    usable_periods = int(values.notna().sum())
+    observed_periods = int(series_frame.attrs.get('observed_periods', values.notna().sum()))
+    missing_periods = int(series_frame.attrs.get('missing_periods_before_imputation', values.isna().sum()))
+    usable_periods = min(int(values.notna().sum()), observed_periods)
     volatility = 0.0
     if usable_periods > 1 and float(abs(values.fillna(0).mean())) > 0:
         volatility = float(values.fillna(0).std() / abs(values.fillna(0).mean()))
@@ -4769,6 +4832,8 @@ def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -
         issues.append(f'{usable_periods} usable {period_label} periods found; production forecasting recommends at least {minimum_required}.')
     if missing_share > 0:
         issues.append(f'{missing_share:.1%} of aggregated target periods are missing.')
+    if missing_periods:
+        issues.append(f'{missing_periods} period(s) were missing before forecast preparation and were filled for modeling.')
     if zero_share > 0.25:
         issues.append(f'{zero_share:.1%} of aggregated target periods are zero or negative.')
 
@@ -4777,6 +4842,8 @@ def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -
         'status': 'pass' if score >= 70 and usable_periods >= minimum_required else 'warning' if usable_periods >= 6 else 'fail',
         'minimum_required_periods': minimum_required,
         'usable_periods': usable_periods,
+        'observed_periods': observed_periods,
+        'missing_periods': missing_periods,
         'missing_share': round(missing_share, 4),
         'zero_or_negative_share': round(zero_share, 4),
         'volatility': round(volatility, 4),
@@ -4787,21 +4854,21 @@ def build_forecast_data_quality(series_frame: pd.DataFrame, period_label: str) -
 def ensure_forecast_data_sufficiency(series_frame: pd.DataFrame, period_label: str, require_quality_gate: bool = True) -> dict[str, Any]:
     quality = build_forecast_data_quality(series_frame, period_label)
     minimum_required = 2 * seasonal_period_for_label(period_label)
-    if len(series_frame) < minimum_required:
-        needed = minimum_required - len(series_frame)
-        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_required} {period_label} rows after aggregation. Add {needed} more {period_label} row{"s" if needed != 1 else ""} and rerun the forecast.')
+    if quality['usable_periods'] < minimum_required:
+        needed = minimum_required - quality['usable_periods']
+        raise HTTPException(status_code=422, detail=f'Forecasting needs at least {minimum_required} observed {period_label} periods. Add {needed} more {period_label} period{"s" if needed != 1 else ""} and rerun the forecast.')
     if require_quality_gate and quality['status'] == 'fail':
         raise HTTPException(status_code=422, detail=f'Data quality gate failed: {"; ".join(quality["issues"]) or "insufficient usable signal"}.')
     return quality
 
 
 def naive_forecast_step(history: list[float]) -> float:
-    return max(0.0, float(history[-1]) if history else 0.0)
+    return float(history[-1]) if history else 0.0
 
 
 def seasonal_naive_forecast_step(history: list[float], season_length: int) -> float:
     if season_length > 1 and len(history) >= season_length:
-        return max(0.0, float(history[-season_length]))
+        return float(history[-season_length])
     return naive_forecast_step(history)
 
 
@@ -4929,14 +4996,14 @@ def statistical_forecast_step(history: list[float], season_length: int, model_ty
     else:
         prediction = (0.4 * recent_mean) + (0.6 * seasonal_value) + (0.4 * trend)
 
-    return max(0.0, float(prediction))
+    return float(prediction) if any(value < 0 for value in history) else max(0.0, float(prediction))
 
 
 def build_confidence_bounds(prediction: float, residual_std: float) -> tuple[float, float]:
     interval = 1.96 * residual_std
-    lower = max(0.0, prediction - interval)
-    upper = max(lower, prediction + interval)
-    return round(lower, 2), round(upper, 2)
+    lower = prediction - interval
+    upper = prediction + interval
+    return lower, upper
 
 
 def build_ml_forecast_feature_row(
@@ -5011,8 +5078,10 @@ def recursive_ml_forecast(
     current_period = pd.Timestamp(start_period)
     for _ in range(periods):
         features = build_ml_forecast_feature_row(running_history, current_period, lag_periods, feature_groups)
-        prediction = max(0.0, float(model.predict(pd.DataFrame([features]))[0]))
-        forecasts.append({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)})
+        prediction = float(model.predict(pd.DataFrame([features]))[0])
+        if not any(value < 0 for value in history):
+            prediction = max(0.0, prediction)
+        forecasts.append({'period': format_forecast_period(current_period, period_label), 'predicted': prediction})
         running_history.append(prediction)
         current_period = current_period + pd.tseries.frequencies.to_offset(freq)
     return forecasts
@@ -5097,7 +5166,7 @@ def fit_arima_family_forecast(history: list[float], forecast_periods: int, perio
             order = tuple(int(value) for value in auto_model.order)
             seasonal_order = tuple(int(value) for value in auto_model.seasonal_order) if seasonal else (0, 0, 0, 0)
             fitted = SARIMAX(endog, order=order, seasonal_order=seasonal_order, freq=mapped_freq, enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
-            predictions = [max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
+            predictions = [float(value) if any(item < 0 for item in history) else max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
             return predictions, {'order': order, 'seasonal_order': seasonal_order, 'selection': 'auto_arima', 'attempts': attempts}
         except (ValueError, np.linalg.LinAlgError) as error:
             attempts.append({'selection': 'auto_arima', 'error': str(error)})
@@ -5108,7 +5177,7 @@ def fit_arima_family_forecast(history: list[float], forecast_periods: int, perio
         fallback_order = (1, 1, 1)
         fallback_seasonal_order = (1, 1, 1, seasonal_period) if seasonal and seasonal_period > 1 else (0, 0, 0, 0)
         fitted = SARIMAX(endog, order=fallback_order, seasonal_order=fallback_seasonal_order, freq=mapped_freq, enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
-        predictions = [max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
+        predictions = [float(value) if any(item < 0 for item in history) else max(0.0, float(value)) for value in fitted.forecast(forecast_periods)]
         return predictions, {'order': fallback_order, 'seasonal_order': fallback_seasonal_order, 'selection': 'simplified_retry', 'attempts': attempts}
     except (ValueError, np.linalg.LinAlgError) as error:
         attempts.append({'selection': 'simplified_retry', 'error': str(error)})
@@ -5162,7 +5231,7 @@ def evaluate_statistical_candidate(
                 prophet_model.fit(prophet_frame)
                 future_dates = [pd.Timestamp(current_period) + (pd.tseries.frequencies.to_offset(freq) * index) for index in range(fold_periods)]
                 forecast = prophet_model.predict(pd.DataFrame({'ds': future_dates}))
-                fitted_predictions = [max(0.0, float(value)) for value in forecast['yhat'].tolist()]
+                fitted_predictions = [float(value) if any(item < 0 for item in history) else max(0.0, float(value)) for value in forecast['yhat'].tolist()]
             except Exception as error:
                 raise RuntimeError(f'Prophet training failed during walk-forward validation: {error}') from error
         elif model_type == 'sarima':
@@ -5185,8 +5254,8 @@ def evaluate_statistical_candidate(
             predictions.append(predicted)
             test_rows.append({
                 'period': format_forecast_period(current_period, period_label),
-                'actual': round(actual, 2),
-                'predicted': round(predicted, 2),
+                'actual': actual,
+                'predicted': predicted,
             })
             history.append(actual)
             current_period = current_period + pd.tseries.frequencies.to_offset(freq)
@@ -5231,7 +5300,7 @@ def evaluate_seasonal_naive_candidate(
             predictions.append(prediction)
             test_rows.append({
                 'period': format_forecast_period(current_period, period_label),
-                'actual': round(actual, 2), 'predicted': round(prediction, 2),
+                'actual': actual, 'predicted': prediction,
             })
             history.append(actual)
             current_period += pd.tseries.frequencies.to_offset(freq)
@@ -5288,7 +5357,7 @@ def evaluate_ml_candidate(
             predicted = float(point['predicted'])
             actuals.append(actual)
             predictions.append(predicted)
-            test_rows.append({**point, 'actual': round(actual, 2)})
+            test_rows.append({**point, 'actual': actual})
         last_model = model
         last_X = train_X
 
@@ -5333,7 +5402,7 @@ def build_future_for_selected_model(
             prediction = seasonal_naive_forecast_step(history, season_length)
             rows.append(append_interval({
                 'period': format_forecast_period(current_period, period_label),
-                'predicted': round(prediction, 2),
+                'predicted': prediction,
             }, residual_std, step))
             history.append(prediction)
             current_period += pd.tseries.frequencies.to_offset(freq)
@@ -5351,9 +5420,9 @@ def build_future_for_selected_model(
                 return [
                     {
                         'period': format_forecast_period(pd.Timestamp(row['ds']), period_label),
-                        'predicted': round(max(0.0, float(row['yhat'])), 2),
-                        'lower': round(max(0.0, float(row.get('yhat_lower', row['yhat']))), 2),
-                        'upper': round(max(0.0, float(row.get('yhat_upper', row['yhat']))), 2),
+                        'predicted': float(row['yhat']) if any(item < 0 for item in history) else max(0.0, float(row['yhat'])),
+                        'lower': float(row.get('yhat_lower', row['yhat'])) if any(item < 0 for item in history) else max(0.0, float(row.get('yhat_lower', row['yhat']))),
+                        'upper': float(row.get('yhat_upper', row['yhat'])) if any(item < 0 for item in history) else max(0.0, float(row.get('yhat_upper', row['yhat']))),
                     }
                     for _, row in forecast.iterrows()
                 ]
@@ -5365,7 +5434,7 @@ def build_future_for_selected_model(
                 selected['tuning'] = tuning_details
                 rows = []
                 for step, prediction in enumerate(predictions, start=1):
-                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std, step))
+                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': prediction}, residual_std, step))
                     current_period = current_period + pd.tseries.frequencies.to_offset(freq)
                 return rows
             except Exception as error:
@@ -5377,7 +5446,7 @@ def build_future_for_selected_model(
                 selected['tuning'] = tuning_details
                 rows = []
                 for step, prediction in enumerate(predictions, start=1):
-                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': round(prediction, 2)}, residual_std, step))
+                    rows.append(append_interval({'period': format_forecast_period(current_period, period_label), 'predicted': prediction}, residual_std, step))
                     current_period = current_period + pd.tseries.frequencies.to_offset(freq)
                 return rows
             except Exception as error:
@@ -5426,12 +5495,15 @@ def auto_select_forecast_model(
             try:
                 result = future.result()
                 metrics = result.get('metrics') or {}
-                if result.get('status') == 'completed' and float(metrics.get('mae') or 0) == 0.0 and float(metrics.get('rmse') or 0) == 0.0:
+                if result.get('status') == 'completed' and any(
+                    metrics.get(key) is None or not np.isfinite(float(metrics[key])) or float(metrics[key]) < 0
+                    for key in ('mae', 'rmse')
+                ):
                     result = {
                         **result,
                         'status': 'failed',
                         'metrics': None,
-                        'skip_reason': 'Training produced zero MAE and RMSE; metrics are unreliable, so this candidate was rejected.',
+                        'skip_reason': 'Validation metrics are missing or invalid.',
                     }
                 comparison.append(result)
             except Exception as error:
@@ -5441,7 +5513,6 @@ def auto_select_forecast_model(
     completed = [
         item for item in comparison
         if item.get('status') == 'completed'
-        and not (float((item.get('metrics') or {}).get('mae') or 0) == 0.0 and float((item.get('metrics') or {}).get('rmse') or 0) == 0.0)
     ]
     if not completed:
         raise HTTPException(status_code=422, detail='No forecast candidate could be trained with reliable validation metrics. Select a different target column or provide more history.')
@@ -5991,6 +6062,18 @@ def transform_features_for_bundle(features: dict[str, Any], bundle: dict[str, An
     return scaler.transform(encoded.astype(float))
 
 
+def chronological_split_position(dates: pd.Series, test_size: float) -> int:
+    """Keep records with the same timestamp entirely on one side of a holdout."""
+    ordered = pd.to_datetime(dates, errors='coerce', utc=True).reset_index(drop=True)
+    if ordered.isna().any() or len(ordered) < 3 or not ordered.is_monotonic_increasing:
+        raise ValueError('Chronological validation needs at least three ordered, valid dates.')
+    desired = max(1, len(ordered) - max(1, int(np.ceil(len(ordered) * test_size))))
+    split = int((ordered < ordered.iloc[desired]).sum())
+    if split < 2 or split >= len(ordered):
+        raise ValueError('Chronological validation needs separate earlier and later periods.')
+    return split
+
+
 def train_universal_model(request: TrainRequest, http_request: Request,
                           *, source_frame: pd.DataFrame | None = None) -> dict[str, Any]:
     selected_columns = list(dict.fromkeys([
@@ -6007,6 +6090,12 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             data_frame = normalize_dataframe(source_frame.loc[:, selected_columns].copy())
         else:
             data_frame = load_dataset_frame(request.dataset_id, request.data, selected_columns)
+        target_values = data_frame[request.target_column]
+        for feature in request.feature_columns:
+            feature_values = data_frame[feature]
+            equal_values = feature_values.eq(target_values).fillna(False) | (feature_values.isna() & target_values.isna())
+            if feature_values.notna().any() and bool(equal_values.all()):
+                raise HTTPException(status_code=422, detail=f'Feature "{feature}" duplicates the target and cannot be used for prediction.')
         if request.time_order_column:
             if request.time_order_column not in data_frame.columns:
                 raise ValueError(f'Time-order column "{request.time_order_column}" was not found.')
@@ -6025,7 +6114,12 @@ def train_universal_model(request: TrainRequest, http_request: Request,
 
     try:
         if request.time_order_column:
-            X, y, preprocessing, feature_names, warnings_list, label_encoder = prepare_universal_training_data(data_frame, request)
+            valid_target = data_frame[request.target_column].notna()
+            if request.problem_type == 'regression':
+                valid_target &= pd.to_numeric(data_frame[request.target_column], errors='coerce').replace([np.inf, -np.inf], np.nan).notna()
+            split_index = chronological_split_position(data_frame.loc[valid_target, request.time_order_column], request.test_size)
+            X, y, preprocessing, feature_names, warnings_list, label_encoder = prepare_universal_training_data(
+                data_frame, request, fit_indices=np.arange(split_index))
             y = pd.Series(y).reset_index(drop=True)
             X = np.asarray(X, dtype=float)
         else:
@@ -6046,8 +6140,7 @@ def train_universal_model(request: TrainRequest, http_request: Request,
     train_sample_limit = int(profile.get('train_sample_limit') or 0)
     training_sampled = False
     if request.time_order_column:
-        test_rows = max(1, int(np.ceil(rows_available * float(request.test_size))))
-        split_index = rows_available - test_rows
+        test_rows = rows_available - split_index
         if split_index < 2 or test_rows < 1:
             raise RuntimeError('Temporal supervised validation needs at least 2 earlier rows and 1 later row.')
         X_train, y_train = X[:split_index], y.iloc[:split_index]
@@ -6086,10 +6179,15 @@ def train_universal_model(request: TrainRequest, http_request: Request,
     cv_rows_evaluated = int(len(y))
     cv_folds_used = 0
     cv_sampled = False
+    candidate_selection_method = 'cross_validation'
+    final_evaluation_independent = False
+    selection_rows = 0
+    final_evaluation_rows = 0
     cv = None
     fitted_predictions = np.array([])
 
     if skip_cv:
+        candidate_selection_method = 'holdout'
         if not request.time_order_column:
             test_size = float(request.test_size)
             stratify_values = y if request.problem_type == 'classification' and y.nunique() > 1 else None
@@ -6104,47 +6202,107 @@ def train_universal_model(request: TrainRequest, http_request: Request,
                 train_indices, test_indices = train_test_split(
                     np.arange(len(y)), test_size=test_size, random_state=request.random_state
                 )
-            evaluation_X, evaluation_y, _, _, _, _ = prepare_universal_training_data(
-                data_frame, request, fit_indices=np.asarray(train_indices, dtype=int)
-            )
-            X_train = evaluation_X[np.asarray(train_indices, dtype=int)]
-            X_test = evaluation_X[np.asarray(test_indices, dtype=int)]
+            X_train = X_test = np.empty((0, 0), dtype=float)
             y_train = y.iloc[np.asarray(train_indices, dtype=int)].reset_index(drop=True)
             y_test = y.iloc[np.asarray(test_indices, dtype=int)].reset_index(drop=True)
-            if train_sample_limit > 0 and len(y_train) > train_sample_limit:
-                X_train, y_train = _sample_xy_arrays(
-                    X_train, y_train, train_sample_limit, request.random_state,
-                    stratify=request.problem_type == 'classification',
+        # Keep the final holdout out of candidate selection. Split only the
+        # earlier training partition into a fit slice and a selection slice.
+        selection_X = X_train
+        selection_y = y_train
+        final_X_eval = X_test
+        final_y_eval = y_test
+        if len(y_train) >= 60 and len(candidate_models) > 1:
+            if request.time_order_column:
+                selection_cut = max(1, int(len(y_train) * 0.8))
+                candidate_X = X_train[:selection_cut]
+                candidate_y = y_train.iloc[:selection_cut]
+                selection_X = X_train[selection_cut:]
+                selection_y = y_train.iloc[selection_cut:]
+                candidate_selection_method = 'separate_training_validation_split'
+            else:
+                stratify_values = y_train if request.problem_type == 'classification' and y_train.nunique() > 1 else None
+                candidate_indices, selection_indices = train_test_split(
+                    np.arange(len(y_train)), test_size=0.2, random_state=request.random_state,
+                    stratify=(stratify_values if stratify_values is not None and stratify_values.value_counts().min() >= 2 else None),
                 )
+                candidate_X = selection_X = np.empty((0, 0), dtype=float)
+                candidate_y = y_train.iloc[candidate_indices]
+                selection_y = y_train.iloc[selection_indices]
+                candidate_selection_method = 'separate_training_validation_split'
+        else:
+            candidate_X, candidate_y = X_train, y_train
+            if len(candidate_models) == 1:
+                candidate_selection_method = 'single_candidate'
+            elif len(candidate_models) > 1:
+                warnings_list.append('Too few training rows for a separate candidate-selection slice; model choice may be unstable.')
+        if request.time_order_column and candidate_selection_method == 'separate_training_validation_split':
+            candidate_positions = np.arange(len(candidate_X), dtype=int)
+            selection_fit_X, _, _, _, _, _ = prepare_universal_training_data(
+                data_frame, request, fit_indices=candidate_positions
+            )
+            selection_positions = np.arange(len(candidate_y), len(candidate_y) + len(selection_y), dtype=int)
+            candidate_X = selection_fit_X[candidate_positions]
+            selection_X = selection_fit_X[selection_positions]
+        elif not request.time_order_column:
+            local_candidate = (candidate_indices if candidate_selection_method == 'separate_training_validation_split'
+                               else np.arange(len(y_train), dtype=int))
+            local_selection = (selection_indices if candidate_selection_method == 'separate_training_validation_split'
+                               else local_candidate)
+            global_candidate = np.asarray(train_indices, dtype=int)[local_candidate]
+            global_selection = np.asarray(train_indices, dtype=int)[local_selection]
+            if train_sample_limit > 0 and len(global_candidate) > train_sample_limit:
+                sample_positions, _ = train_test_split(
+                    np.arange(len(global_candidate)), train_size=train_sample_limit / len(global_candidate),
+                    random_state=request.random_state,
+                    stratify=(y.iloc[global_candidate].to_numpy() if request.problem_type == 'classification'
+                              and y.iloc[global_candidate].nunique() > 1
+                              and y.iloc[global_candidate].value_counts().min() >= 2 else None),
+                )
+                global_candidate = global_candidate[np.asarray(sample_positions, dtype=int)]
+                candidate_y = y.iloc[global_candidate].reset_index(drop=True)
                 training_sampled = True
                 warnings_list.append(
-                    f'Holdout model selection used {len(y_train):,} training rows from the raw training split; '
-                    f'{len(y_test):,} later rows remained held out for validation.'
+                    f'Fast training candidate fitting sampled {len(global_candidate):,} training rows; '
+                    'the final evaluation holdout remained untouched.'
                 )
-        cv_rows_evaluated = int(len(y_test))
+            nested_X, _, _, _, _, _ = prepare_universal_training_data(
+                data_frame, request, fit_indices=global_candidate
+            )
+            candidate_X = nested_X[global_candidate]
+            selection_X = nested_X[global_selection]
+            selection_y = y.iloc[global_selection].reset_index(drop=True)
+            outer_X, _, _, _, _, _ = prepare_universal_training_data(
+                data_frame, request, fit_indices=np.asarray(train_indices, dtype=int)
+            )
+            X_train = outer_X[np.asarray(train_indices, dtype=int)]
+            X_test = outer_X[np.asarray(test_indices, dtype=int)]
+            final_X_eval = X_test
+        selection_rows = int(len(selection_y))
+        final_evaluation_rows = int(len(final_y_eval))
+        cv_rows_evaluated = final_evaluation_rows
         cv_folds_used = 1
         for model_name, estimator in candidate_models:
             try:
                 fitted = clone(estimator)
-                fitted.fit(X_train, y_train)
-                preds = fitted.predict(X_test)
+                fitted.fit(candidate_X, candidate_y)
+                preds = fitted.predict(selection_X)
                 if request.problem_type == 'regression':
-                    rmse_holdout = float(np.sqrt(mean_squared_error(y_test, preds)))
-                    r2_holdout = float(r2_score(y_test, preds))
+                    rmse_holdout = float(np.sqrt(mean_squared_error(selection_y, preds)))
+                    r2_holdout = float(r2_score(selection_y, preds))
                     summary = {
                         'rmse': {'mean': rmse_holdout, 'std': 0.0},
-                        'mae': {'mean': float(mean_absolute_error(y_test, preds)), 'std': 0.0},
+                        'mae': {'mean': float(mean_absolute_error(selection_y, preds)), 'std': 0.0},
                         'r2': {'mean': r2_holdout, 'std': 0.0},
                     }
                     ranking_score = -rmse_holdout
                 else:
-                    acc = float(accuracy_score(y_test, preds))
-                    f1 = float(f1_score(y_test, preds, average='weighted', zero_division=0))
+                    acc = float(accuracy_score(selection_y, preds))
+                    f1 = float(f1_score(selection_y, preds, average='weighted', zero_division=0))
                     summary = {
                         'accuracy': {'mean': acc, 'std': 0.0},
-                        'balanced_accuracy': {'mean': float(balanced_accuracy_score(y_test, preds)), 'std': 0.0},
-                        'precision_weighted': {'mean': float(precision_score(y_test, preds, average='weighted', zero_division=0)), 'std': 0.0},
-                        'recall_weighted': {'mean': float(recall_score(y_test, preds, average='weighted', zero_division=0)), 'std': 0.0},
+                        'balanced_accuracy': {'mean': float(balanced_accuracy_score(selection_y, preds)), 'std': 0.0},
+                        'precision_weighted': {'mean': float(precision_score(selection_y, preds, average='weighted', zero_division=0)), 'std': 0.0},
+                        'recall_weighted': {'mean': float(recall_score(selection_y, preds, average='weighted', zero_division=0)), 'std': 0.0},
                         'f1_weighted': {'mean': f1, 'std': 0.0},
                     }
                     ranking_score = acc
@@ -6163,12 +6321,34 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             warnings_list.append('Random cross-validation was skipped to preserve chronology; metrics use a chronological holdout.')
         else:
             warnings_list.append('Cross-validation was skipped for faster training; holdout metrics are reported instead.')
+        if candidate_selection_method in ('separate_training_validation_split', 'single_candidate', 'holdout'):
+            # Refit the chosen candidate on all pre-holdout data and score the
+            # untouched outer holdout once for the user-facing metrics.
+            refit = clone(best['estimator'])
+            refit.fit(X_train, y_train)
+            final_predictions = refit.predict(final_X_eval)
+            if request.problem_type == 'regression':
+                final_summary = {
+                    'rmse': {'mean': float(np.sqrt(mean_squared_error(final_y_eval, final_predictions))), 'std': 0.0},
+                    'mae': {'mean': float(mean_absolute_error(final_y_eval, final_predictions)), 'std': 0.0},
+                    'r2': {'mean': float(r2_score(final_y_eval, final_predictions)), 'std': 0.0},
+                }
+                final_score = -final_summary['rmse']['mean']
+            else:
+                final_summary = {
+                    'accuracy': {'mean': float(accuracy_score(final_y_eval, final_predictions)), 'std': 0.0},
+                    'balanced_accuracy': {'mean': float(balanced_accuracy_score(final_y_eval, final_predictions)), 'std': 0.0},
+                    'precision_weighted': {'mean': float(precision_score(final_y_eval, final_predictions, average='weighted', zero_division=0)), 'std': 0.0},
+                    'recall_weighted': {'mean': float(recall_score(final_y_eval, final_predictions, average='weighted', zero_division=0)), 'std': 0.0},
+                    'f1_weighted': {'mean': float(f1_score(final_y_eval, final_predictions, average='weighted', zero_division=0)), 'std': 0.0},
+                }
+                final_score = final_summary['accuracy']['mean']
+            best['scores'] = final_summary
+            best['ranking_score'] = final_score
+            best['fold_primary_scores'] = [final_score]
+            final_evaluation_independent = True
     else:
-        cv = get_cv_strategy(
-            len(y), int(profile.get('cv_folds') or request.cv_folds),
-            problem_type=request.problem_type, target=y,
-        )
-        cv_folds_used = int(getattr(cv, 'n_splits', request.cv_folds))
+        candidate_selection_method = f'{cv_folds_used}-fold cross-validation'
         raw_cv_frame = data_frame[[*request.feature_columns, request.target_column]].copy()
         raw_cv_target = raw_cv_frame[request.target_column]
         raw_cv_valid = raw_cv_target.notna()
@@ -6178,9 +6358,32 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         raw_cv_frame = raw_cv_frame.loc[raw_cv_valid].reset_index(drop=True)
         if len(raw_cv_frame) != len(y):
             raise RuntimeError('Training rows no longer align with raw features for cross-validation.')
-        y_cv = y.reset_index(drop=True)
+        y_all = y.reset_index(drop=True)
+        stratify_values = y_all if request.problem_type == 'classification' and y_all.nunique() > 1 else None
+        try:
+            cv_train_indices, final_test_indices = train_test_split(
+                np.arange(len(y_all)), test_size=float(request.test_size),
+                random_state=request.random_state,
+                stratify=(stratify_values if stratify_values is not None
+                          and stratify_values.value_counts().min() >= 2 else None),
+            )
+        except ValueError:
+            cv_train_indices, final_test_indices = train_test_split(
+                np.arange(len(y_all)), test_size=float(request.test_size), random_state=request.random_state,
+            )
+        final_train_frame = raw_cv_frame.iloc[np.asarray(cv_train_indices, dtype=int)].reset_index(drop=True)
+        final_test_frame = raw_cv_frame.iloc[np.asarray(final_test_indices, dtype=int)].reset_index(drop=True)
+        y_cv = y_all.iloc[np.asarray(cv_train_indices, dtype=int)].reset_index(drop=True)
+        selection_rows = int(len(y_cv))
+        final_evaluation_rows = int(len(final_test_frame))
+        cv = get_cv_strategy(
+            len(y_cv), int(profile.get('cv_folds') or request.cv_folds),
+            problem_type=request.problem_type, target=y_cv,
+        )
+        cv_folds_used = int(getattr(cv, 'n_splits', request.cv_folds))
+        raw_cv_frame = final_train_frame
         cv_sample_limit = int(profile.get('cv_sample_limit') or 0)
-        if cv_sample_limit > 0 and len(y) > cv_sample_limit:
+        if cv_sample_limit > 0 and len(y_cv) > cv_sample_limit:
             stratify_values = y_cv if request.problem_type == 'classification' and y_cv.nunique() > 1 and y_cv.value_counts().min() >= 2 else None
             sampled_positions, _ = train_test_split(
                 np.arange(len(y_cv)),
@@ -6244,6 +6447,44 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             except Exception as error:
                 model_failures.append(f'{model_name}: {error}')
                 logger.exception('Candidate model failed during training model=%s', model_name)
+
+        # Candidate selection uses CV within the training partition. Score the
+        # selected candidate once on a separate holdout with preprocessing fit
+        # only on the training partition.
+        evaluation_X, _, evaluation_prep, _, prep_warnings, _ = prepare_universal_training_data(
+            final_train_frame, request,
+        )
+        warnings_list.extend(prep_warnings)
+        evaluation_X = np.asarray(evaluation_X, dtype=float)
+        evaluation_y = y_all.iloc[np.asarray(cv_train_indices, dtype=int)].reset_index(drop=True)
+        evaluation_test_X = transform_feature_frame(final_test_frame[request.feature_columns], evaluation_prep)
+        evaluation_test_y = y_all.iloc[np.asarray(final_test_indices, dtype=int)].reset_index(drop=True)
+        evaluation_model = clone(best['estimator'])
+        evaluation_model.fit(evaluation_X, evaluation_y)
+        evaluation_predictions = evaluation_model.predict(evaluation_test_X)
+        best['selection_scores'] = dict(best['scores'])
+        if request.problem_type == 'regression':
+            best['scores'] = {
+                'rmse': {'mean': float(np.sqrt(mean_squared_error(evaluation_test_y, evaluation_predictions))), 'std': 0.0},
+                'mae': {'mean': float(mean_absolute_error(evaluation_test_y, evaluation_predictions)), 'std': 0.0},
+                'r2': {'mean': float(r2_score(evaluation_test_y, evaluation_predictions)), 'std': 0.0},
+            }
+            best['ranking_score'] = -best['scores']['rmse']['mean']
+        else:
+            best['scores'] = {
+                'accuracy': {'mean': float(accuracy_score(evaluation_test_y, evaluation_predictions)), 'std': 0.0},
+                'balanced_accuracy': {'mean': float(balanced_accuracy_score(evaluation_test_y, evaluation_predictions)), 'std': 0.0},
+                'precision_weighted': {'mean': float(precision_score(evaluation_test_y, evaluation_predictions, average='weighted', zero_division=0)), 'std': 0.0},
+                'recall_weighted': {'mean': float(recall_score(evaluation_test_y, evaluation_predictions, average='weighted', zero_division=0)), 'std': 0.0},
+                'f1_weighted': {'mean': float(f1_score(evaluation_test_y, evaluation_predictions, average='weighted', zero_division=0)), 'std': 0.0},
+            }
+            best['ranking_score'] = best['scores']['accuracy']['mean']
+        final_evaluation_independent = True
+        cv_rows_evaluated = int(len(final_test_frame))
+        warnings_list.append(
+            f'Model selection used {cv_folds_used}-fold cross-validation within the training partition; '
+            f'final metrics use a separate {len(final_test_frame):,}-row holdout.'
+        )
 
     if best is None:
         raise RuntimeError('Training failed for all candidate models. ' + ' | '.join(model_failures))
@@ -6333,7 +6574,10 @@ def train_universal_model(request: TrainRequest, http_request: Request,
     else:
         overfitting_status = 'healthy'
     overfitting_detected = overfitting_status == 'detected'
-    method_label = 'chronological holdout' if request.time_order_column else ('holdout' if skip_cv else f'{cv_folds_used}-fold cross-validation')
+    method_label = ('chronological holdout' if request.time_order_column else
+                    'cross-validation selection with independent holdout'
+                    if final_evaluation_independent and not skip_cv else
+                    'holdout' if skip_cv else f'{cv_folds_used}-fold cross-validation')
     overfitting_explanation = (
         f'Validation uses {method_label} on {cv_rows_evaluated:,} row(s). '
         f'Training-to-validation gap is {gap:.3f}; validation score variability is {validation_std:.3f}. '
@@ -6374,9 +6618,9 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         'model_type': best['name'].lower().replace(' ', '_'),
         'model_name': best['name'],
         'label_encoder': label_encoder,
-        'cv_score_mean': float(best['scores'][primary_metric]['mean']),
-        'cv_score_std': float(best['scores'][primary_metric]['std']),
-        'cv_scores': best['scores'],
+        'cv_score_mean': float(best.get('selection_scores', best['scores'])[primary_metric]['mean']),
+        'cv_score_std': float(best.get('selection_scores', best['scores'])[primary_metric]['std']),
+        'cv_scores': best.get('selection_scores', best['scores']),
         'rmse': training_rmse,
         'validation_rmse': (
             float(best['scores']['rmse']['mean'])
@@ -6427,8 +6671,8 @@ def train_universal_model(request: TrainRequest, http_request: Request,
         'primary': metrics_primary,
         'training': training_metrics,
         'cv_scores': [round(float(score), 6) for score in best.get('fold_primary_scores', [])],
-        'cv_mean': round(float(validation_scores[primary_metric]['mean']), 6),
-        'cv_std': round(validation_std, 6),
+        'cv_mean': round(float(best.get('selection_scores', validation_scores)[primary_metric]['mean']), 6),
+        'cv_std': round(float(best.get('selection_scores', validation_scores)[primary_metric]['std']), 6),
         'cv_folds_used': int(cv_folds_used or getattr(cv, 'n_splits', 0) or 0),
         'cv_rows_evaluated': int(cv_rows_evaluated),
     }
@@ -6466,6 +6710,10 @@ def train_universal_model(request: TrainRequest, http_request: Request,
             'time_order_column': request.time_order_column,
             'importance_rows_evaluated': int(len(y)),
             'importance_repeats': 0,
+            'candidate_selection_method': candidate_selection_method,
+            'final_evaluation_independent': final_evaluation_independent,
+            'selection_rows': int(selection_rows),
+            'final_evaluation_rows': int(final_evaluation_rows),
         },
     }
     record_activity(
@@ -6529,9 +6777,28 @@ def normalize_uploaded_bundle(raw_bundle: Any, filename: str) -> dict[str, Any]:
     }
 
 
+@router.post('/ml/feature-review')
+def review_manual_features(request: FeatureReviewRequest, http_request: Request) -> JSONResponse:
+    from ml_execute import select_features
+    from nl_analytics import profile_dataset
+    if request.dataset_id:
+        dataset_artifact_context(request.dataset_id, http_request)
+    columns = list(dict.fromkeys([request.target_column, *request.feature_columns]))
+    frame = load_dataset_frame(request.dataset_id, request.data, columns)
+    if request.target_column not in frame.columns:
+        raise HTTPException(status_code=422, detail='The selected target was not found.')
+    review = select_features(frame, profile_dataset(frame, request.dataset_id or ''), request.target_column,
+                             requested_features=request.feature_columns)
+    return JSONResponse(content=safe_serialize({'target': request.target_column, **review}))
+
+
 @router.post('/train')
 def train_model(request: TrainRequest, http_request: Request) -> JSONResponse:
     try:
+        if request.target_column in request.feature_columns:
+            raise HTTPException(status_code=422, detail='The target column cannot also be a prediction feature.')
+        if len(request.feature_columns) != len(set(request.feature_columns)):
+            raise HTTPException(status_code=422, detail='Prediction features must be unique.')
         logger.info(
             'Train request received problem_type=%s model_type=%s dataset_id=%s feature_count=%s training_mode=%s',
             request.problem_type,
@@ -6623,7 +6890,7 @@ def sales_forecast(request: SalesForecastRequest, http_request: Request) -> JSON
     history = [
         {
             'period': format_forecast_period(pd.Timestamp(row['period']), period_label),
-            'actual': round(float(row['sales']), 2),
+            'actual': float(row['sales']),
         }
         for _, row in series_frame.iterrows()
     ]
@@ -6733,7 +7000,7 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
     backtest = auto_result['test_forecast']
     future_forecast = auto_result['future_forecast']
 
-    history = [{'period': format_forecast_period(pd.Timestamp(row['period']), period_label), 'actual': round(float(row['sales']), 2)} for _, row in series_frame.iterrows()]
+    history = [{'period': format_forecast_period(pd.Timestamp(row['period']), period_label), 'actual': float(row['sales'])} for _, row in series_frame.iterrows()]
     metrics = selected['metrics']
     profile = build_dataset_profile(series_frame, period_label)
     baseline = auto_result['naive_baseline']
@@ -6748,9 +7015,9 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
     session_state = ensure_session_state(session_id)
     assumptions = [
         'SARIMA, ARIMA, and Prophet are compared with walk-forward validation before the best model is trained on the full series.',
-        'Every forecast point includes an empirical confidence interval based on walk-forward residual dispersion.',
+        'Forecast ranges are based on validation residual dispersion and are not calibrated prediction intervals.',
         f'{baseline["model_name"]} is evaluated on the same walk-forward windows as the selected model.',
-        'Forecast ranges are empirical 95% intervals from walk-forward residuals and widen for later forecast periods.',
+        'Forecast ranges widen for later forecast periods; their coverage has not been verified.',
     ]
 
     response = {
@@ -6786,7 +7053,7 @@ def forecast_time_series(request: TimeSeriesForecastRequest, http_request: Reque
             'status': validation_status,
             'model_beats_baseline': model_beats_baseline,
             'evaluation_method': 'Chronological walk-forward validation. Each forecast is generated using only data available before its validation period.',
-            'forecast_interval': 'Empirical 95% residual interval that widens with the forecast horizon.',
+            'forecast_interval': 'Approximate residual range that widens with the forecast horizon; coverage is not calibrated.',
             'reasons': validation_reasons or ['Data quality passed and the selected model beat the same-window baseline.'],
         },
         'assumptions_audit': assumptions,
@@ -6854,6 +7121,7 @@ def sales_readiness(request: SalesReadinessRequest) -> JSONResponse:
             'status': 'ready' if ready else 'needs_attention',
             'date_column': date_col,
             'target_column': target_col,
+            'period_label': df.attrs.get('period_label') or 'period',
             'period_count': periods,
             'minimum_periods_for_ts': min_required,
             'date_span_days': date_span_days,
@@ -7234,7 +7502,7 @@ def forecast_ml(request: MlForecastRequest, http_request: Request) -> JSONRespon
             'status': validation_status,
             'model_beats_baseline': model_beats_baseline,
             'evaluation_method': selected_model['evaluation_method'],
-            'forecast_interval': 'A 90% empirical absolute-error interval from the holdout residuals; it widens with forecast horizon.',
+            'forecast_interval': 'Approximate range based on holdout absolute errors; coverage is not calibrated.',
             'reasons': validation_reasons or ['Data quality passed and the selected model beat the same-window baseline.'],
         },
         'assumptions_audit': assumptions,
@@ -7300,7 +7568,7 @@ LOSS_COLUMN_PATTERNS = {
     'net_profit': re.compile(r'net_profit|profit_after|net_income|earnings', re.IGNORECASE),
     'margin_pct': re.compile(r'gross_margin_pct|gross_margin_percent|margin_pct|margin_percent|margin_rate', re.IGNORECASE),
     'category': re.compile(r'category|product|segment|sku|item', re.IGNORECASE),
-    'region': re.compile(r'region|market|territory|location|state|city', re.IGNORECASE),
+    'region': re.compile(r'region|market|territory|location|state|city|zone', re.IGNORECASE),
     'revenue': SALES_REVENUE_PATTERN,
     'date': SALES_DATE_PATTERN,
     'price': re.compile(r'price|unit_price|rate', re.IGNORECASE),
@@ -7702,7 +7970,7 @@ def fetch_upstream_forecasts(session_id: str, workflow_name: str = 'Loss Forecas
     if not ts_result or not ml_result:
         raise HTTPException(status_code=422, detail='Complete Time Series Forecasting and Machine Learning Forecasting before running Loss or Profit Forecast.')
 
-    clean_frame = get_cached_clean_frame(session_id).fillna(0)
+    clean_frame = get_cached_clean_frame(session_id)
     ts_future = forecast_periods_to_frame(ts_result.get('future_forecast', []), 'forecasted_revenue')
     ml_future = forecast_periods_to_frame(ml_result.get('future_forecast', []), 'ml_forecast_value')
     if ts_future.empty or ml_future.empty:
@@ -7732,6 +8000,39 @@ def fetch_upstream_forecasts(session_id: str, workflow_name: str = 'Loss Forecas
     merged.attrs['historical_cogs_total'] = float(cogs_series.sum())
     merged = merged.drop(columns=['ml_forecast_value'], errors='ignore')
     return merged, ts_result, ml_result, clean_frame
+
+
+def validate_financial_column_mapping(frame: pd.DataFrame, mapping: dict[str, str] | None) -> None:
+    """Reject incompatible accounting roles before deriving a scenario."""
+    selected = mapping or {}
+    roles = ('revenue', 'cogs', 'operating_expense', 'tax')
+    seen: dict[str, str] = {}
+    for role in roles:
+        column = selected.get(role)
+        if not column:
+            continue
+        if column not in frame.columns:
+            raise HTTPException(status_code=422, detail=f'Mapped {role} column "{column}" was not found.')
+        if column in seen:
+            raise HTTPException(status_code=422, detail=f'Column "{column}" cannot be both {seen[column]} and {role}.')
+        seen[column] = role
+        if role in ('cogs', 'operating_expense') and re.search(r'(?:^|_)(?:tax|gst|vat)(?:_|$)', column, re.I):
+            raise HTTPException(status_code=422, detail=f'Column "{column}" appears to be tax; map a verified cost instead.')
+
+
+def normalize_loss_driver(values: pd.Series, sign: str = 'auto') -> tuple[pd.Series, str]:
+    """Normalize a consistently signed loss measure without discarding returns."""
+    numeric = pd.to_numeric(values, errors='coerce').fillna(0.0).astype(float)
+    if sign not in ('auto', 'positive', 'negative'):
+        raise HTTPException(status_code=422, detail='Returns sign must be auto, positive, or negative.')
+    if sign == 'auto':
+        if (numeric > 0).any() and (numeric < 0).any():
+            raise HTTPException(status_code=422, detail='Returns contain both positive and negative values; confirm their sign convention.')
+        sign = 'negative' if (numeric < 0).any() else 'positive'
+    converted = -numeric if sign == 'negative' else numeric
+    if (converted < 0).any():
+        raise HTTPException(status_code=422, detail='Returns do not match the confirmed sign convention.')
+    return converted, f'Return values use the {sign} sign convention.'
 
 
 def mapped_or_matching_column(
@@ -7779,6 +8080,7 @@ def build_loss_base_frame(
         'Loss forecast uses upstream TS/ML future periods and historical loss-driver rates.',
     ]
     returns_column = mapped_or_matching_column(clean_frame, column_mapping, 'returns', LOSS_COLUMN_PATTERNS['returns'], numeric=True)
+    validate_financial_column_mapping(clean_frame, column_mapping)
     revenue_loss_column = mapped_or_matching_column(clean_frame, column_mapping, 'revenue_loss', LOSS_COLUMN_PATTERNS['revenue_loss'], numeric=True)
     mapped_inventory = (column_mapping or {}).get('inventory_value')
     inventory_value_columns = [mapped_inventory] if mapped_inventory in clean_frame.columns else matching_numeric_columns(clean_frame, LOSS_COLUMN_PATTERNS['inventory_value'])
@@ -7822,7 +8124,9 @@ def build_loss_base_frame(
     actual_cost, cogs_source, cogs_ratio, _cogs_is_fallback = resolve_cogs_series(work, revenue_column)
     gross_profit = (revenue - actual_cost).clip(lower=0)
     operating_cost, operating_source, operating_ratio, _opex_is_fallback = resolve_operating_expense_series(work, revenue_column, gross_profit)
-    returns = numeric_series(work, returns_column, 0.0).clip(lower=0)
+    returns, returns_note = normalize_loss_driver(numeric_series(work, returns_column, 0.0), (column_mapping or {}).get('returns_sign', 'auto'))
+    if returns_column:
+        audit_trail.append(returns_note)
     raw_revenue_loss = numeric_series(work, revenue_loss_column, 0.0).clip(lower=0)
     discount_amount_columns = [column for column in discount_columns if column_name_suggests_amount(column)]
     discount_rate_columns = [column for column in discount_columns if column not in discount_amount_columns]
@@ -8109,6 +8413,9 @@ def build_profit_rows(
     date_column = mapped_or_matching_column(clean_frame, column_mapping, 'date', LOSS_COLUMN_PATTERNS['date'])
     cogs_column = mapped_or_matching_column(clean_frame, column_mapping, 'cogs', LOSS_COLUMN_PATTERNS['cost'], numeric=True)
     opex_column = mapped_or_matching_column(clean_frame, column_mapping, 'operating_expense', LOSS_COLUMN_PATTERNS['operating_cost'], numeric=True)
+    validate_financial_column_mapping(clean_frame, column_mapping)
+    missing_costs = {role: int(pd.to_numeric(clean_frame[column], errors='coerce').isna().sum())
+                     for role, column in (('cogs', cogs_column), ('operating_expense', opex_column)) if column}
     if not revenue_column:
         raise HTTPException(status_code=422, detail='Profit Forecast requires a mapped revenue or sales amount column.')
     revenue_series = numeric_series(clean_frame, revenue_column, 0.0).clip(lower=0)
@@ -8128,6 +8435,7 @@ def build_profit_rows(
     else:
         _opex_series, opex_source, operating_expense_ratio, opex_is_fallback = resolve_operating_expense_series(clean_frame, revenue_column, gross_profit_series)
     illustrative_assumptions = bool(cogs_is_fallback or opex_is_fallback)
+    costs_explicitly_mapped = bool((column_mapping or {}).get('cogs') and (column_mapping or {}).get('operating_expense'))
     historical_cogs_ratios: list[float] = []
     seasonal_cogs_ratios: dict[int, float] = {}
     if date_column:
@@ -8237,15 +8545,22 @@ def build_profit_rows(
     )
     loss_caution = str((ensure_session_state(session_id).get('loss_summary') or {}).get('validation_status', '')).lower() == 'caution'
     reasons = [note for note in audit_trail if 'fallback' in note.lower() or 'standard' in note.lower()]
+    if not costs_explicitly_mapped:
+        reasons.append('Confirm the COGS and operating expense mappings; detected columns have not been explicitly verified.')
+    for role, count in missing_costs.items():
+        if count:
+            reasons.append(f'{role} has {count} missing or invalid value(s); cost totals may be incomplete.')
     if upstream_caution:
         reasons.append('One or more upstream revenue forecasts are marked Caution.')
     if loss_caution:
         reasons.append('The linked loss forecast is marked Caution.')
     validation = {
-        'validation_status': 'caution' if illustrative_assumptions or upstream_caution or loss_caution else 'ready',
+        'validation_status': 'caution' if illustrative_assumptions or not costs_explicitly_mapped or any(missing_costs.values()) or upstream_caution or loss_caution else 'ready',
         'validation_reasons': reasons,
         'assumption_mode': 'illustrative' if illustrative_assumptions else 'mapped',
         'mapped_columns': {'date': date_column, 'revenue': revenue_column, 'cogs': cogs_column, 'operating_expense': opex_column},
+        'costs_explicitly_mapped': costs_explicitly_mapped,
+        'missing_cost_values': missing_costs,
         'scenario_parameters': scenario_config,
         'reconciliation': 'Revenue − COGS − operating expenses − losses = net profit for every projected period.',
     }
@@ -8584,7 +8899,9 @@ def score_prediction_batch(frame: pd.DataFrame, model_id: str, dataset_id: str |
 
 def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
                               question: str, dataset_id: str | None,
-                              http_request: Request) -> dict[str, Any]:
+                              http_request: Request, feature_columns: list[str] | None = None,
+                              confirm_training: bool = False, review_token: str | None = None,
+                              allow_default_inputs: bool = False) -> dict[str, Any]:
     """Execute a regression/classification ml_plan via train_universal_model.
 
     Reuses the application's training service end to end (candidate models,
@@ -8613,12 +8930,48 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
         out.update({"status": "unsupported", "message": picked["issue"], "answer": picked["issue"]})
         return out
     target, problem_type = picked["target"], picked["problem_type"]
-    feats = select_features(frame, profile, target)
+    if feature_columns is None:
+        feature_clause = re.search(r'\b(?:from|using|based on|where)\b(.+)', question, re.I)
+        if feature_clause:
+            clause = re.sub(r'[^a-z0-9]+', ' ', feature_clause.group(1).lower()).strip()
+            if not re.match(r'^\s*where\b', feature_clause.group(0), re.I):
+                segments = re.split(r'\s*,\s*|\s+and\s+', feature_clause.group(1), flags=re.I)
+                named = [segment.strip().rstrip('?.') for segment in segments]
+                known = {str(name).lower() for name in frame.columns}
+                unknown = [part for part in named if re.fullmatch(r'[A-Za-z_]\w*', part) and part.lower() not in known]
+                if unknown:
+                    out = dict(plan)
+                    out.update({'status': 'clarify', 'message': 'Unknown input column(s): ' + ', '.join(unknown),
+                                'answer': 'Unknown input column(s): ' + ', '.join(unknown)})
+                    return out
+            mentioned = [str(name) for name in frame.columns if str(name) != target and (
+                re.search(r'(?<!\w)' + re.escape(str(name)) + r'(?!\w)', feature_clause.group(1), re.I)
+                or (re.search(r'[_ ]', str(name)) and re.search(
+                    r'(?<!\w)' + re.escape(re.sub(r'[^a-z0-9]+', ' ', str(name).lower()).strip()) + r'(?!\w)', clause)))]
+            if not mentioned:
+                out = dict(plan)
+                out.update({'status': 'clarify', 'message': 'Specify valid input column names for this model.',
+                            'answer': 'Specify valid input column names for this model.'})
+                return out
+            feature_columns = mentioned
+    feats = select_features(frame, profile, target, requested_features=feature_columns)
     if "issue" in feats and not feats.get("features"):
         out = dict(plan)
         out.update({"status": "unsupported", "message": feats["issue"], "answer": feats["issue"]})
         return out
     features = feats["features"]
+    from nl_analytics import dataset_signature
+    token_payload = {'dataset': dataset_signature(frame, dataset_id or ''), 'target': target,
+                     'features': features, 'task': problem_type}
+    expected_token = hashlib.sha256(json.dumps(token_payload, sort_keys=True).encode('utf-8')).hexdigest()
+    if not confirm_training or review_token != expected_token:
+        out = dict(plan)
+        out.update({'status': 'needs_confirmation', 'answer': 'Review the target and features before training.',
+                    'message': 'Review the target and features before training.',
+                    'ml_plan': {**base, 'target': target, 'features': features, 'task': problem_type,
+                                'excluded_features': feats.get('excluded', {}), 'warnings': feats.get('warnings', []),
+                                'review_token': expected_token, 'status': 'review'}})
+        return out
     # Bound in-memory assistant training for non-temporal data. When a date
     # column exists, keep chronological order and let the training service use
     # a chronological holdout instead of random row sampling.
@@ -8658,6 +9011,7 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
         return out
 
     single: dict[str, Any] | None = None
+    missing_prediction_inputs: list[str] = []
     try:
         bundle = load_model_bundle(trained["model_id"])
         with DATASET_CACHE_LOCK, MODEL_CACHE_LOCK:
@@ -8668,7 +9022,9 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
         raw_features = list((bundle.get("preprocessing") or {}).get("raw_feature_columns")
                             or bundle.get("feature_columns") or [])
         parsed = extract_feature_values(question, frame, raw_features)
-        if raw_features and parsed["values"]:
+        if raw_features and parsed["values"] and parsed['missing'] and not allow_default_inputs:
+            missing_prediction_inputs = list(parsed['missing'])
+        elif raw_features and parsed["values"]:
             imputers = (bundle.get("preprocessing") or {}).get("imputers", {}) or {}
             row: dict[str, Any] = {}
             defaulted: dict[str, Any] = {}
@@ -8715,6 +9071,10 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
                   "message": "The model trained, but the requested single-row prediction could not be produced."}
 
     summary = summarize_supervised_result(trained, target, features, problem_type, single)
+    if missing_prediction_inputs:
+        issue = 'Provide values for all prediction inputs: ' + ', '.join(missing_prediction_inputs) + '.'
+        summary['single_prediction_issue'] = issue
+        summary['answer'] += ' ' + issue
     optimization = trained.get("optimization", {}) or {}
     sampling_provenance["valid_rows_after_target_checks"] = int(
         optimization.get("training_rows_available") or 0)
@@ -8745,13 +9105,33 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
                             dataset_id: str | None, http_request: Request) -> dict[str, Any]:
     """Execute a forecasting ml_plan via the existing 3-model TS pipeline."""
     base = dict(plan.get("ml_plan") or {})
+    horizon = max(1, min(int(base.get("horizon") or 3), 36))
+    if base.get("group_by"):
+        message = (
+            f"Per-{base['group_by']} forecasting is not supported by the current forecasting runner. "
+            "It produces one overall time series; use the dedicated forecast tab for a single series, "
+            "or remove the grouping request."
+        )
+        out = dict(plan)
+        out.update({"status": "unsupported", "message": message, "answer": message})
+        return out
     available = list(frame.columns)
     column_info = build_column_info_from_frame(frame)
     try:
-        date_col, target_col = resolve_sales_columns(
-            available, frame=frame,
-            column_info=[{"name": c["name"], "role": c["role"], "uniqueCount": c["uniqueCount"]}
-                         for c in column_info])
+        requested_target = base.get("target")
+        requested_date = base.get("date_column")
+        date_col = requested_date if requested_date in available else None
+        target_col = requested_target if requested_target in available else None
+        if target_col and not pd.api.types.is_numeric_dtype(frame[target_col]):
+            raise ValueError(f"Forecast target '{target_col}' is not numeric.")
+        if not date_col or not target_col:
+            resolved_date, resolved_target = resolve_sales_columns(
+                available, date_column=requested_date, target_column=requested_target,
+                frame=frame,
+                column_info=[{"name": c["name"], "role": c["role"], "uniqueCount": c["uniqueCount"]}
+                             for c in column_info])
+            date_col = date_col or resolved_date
+            target_col = target_col or resolved_target
     except ValueError as error:
         out = dict(plan)
         out.update({"status": "unsupported", "message": str(error), "answer": str(error)})
@@ -8764,7 +9144,7 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
         monthly_aggregate = frequency == 'monthly' and grain.get('grain') == 'monthly_aggregate' and grain.get('period_column') == date_col
         stationarity = check_stationarity(series_frame["sales"], frequency)
         results, _y_train, _y_test, train, test, clean_df, _first = train_all_ts_models(
-            series_frame, "sales", "period", frequency, freq_period, 0.8, 3, monthly_aggregate=monthly_aggregate)
+            series_frame, "sales", "period", frequency, freq_period, 0.8, horizon, monthly_aggregate=monthly_aggregate)
     except (ValueError, HTTPException) as error:
         detail = error.detail if isinstance(error, HTTPException) else str(error)
         out = dict(plan)
@@ -8778,15 +9158,16 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
                 from ml_execute import run_fallback_forecast
                 frequency, _ = normalize_ts_frequency(None, None)
                 fb = run_fallback_forecast(frame, date_col, target_col,
-                                           frequency=frequency, horizon=3)
+                                           frequency=frequency, horizon=horizon)
                 if fb.get("status") == "success":
                     fb["ml_plan"] = {**base, "target": target_col,
-                                     "date_column": date_col, "status": "executed_fallback"}
+                                     "date_column": date_col, "horizon": horizon,
+                                     "status": "executed_fallback"}
                     fb["answer"] = (
                         f"Forecast for '{target_col}' ({len(fb['future_forecast'])} {fb['frequency']} "
                         f"step(s) ahead) using {fb['model']}: "
                         + "; ".join(f"{p.get('period')}: {p.get('forecast')} "
-                                     f"(95% interval {p.get('lower')} to {p.get('upper')})"
+                                     f"(estimated range {p.get('lower')} to {p.get('upper')})"
                                      for p in fb["future_forecast"])
                         + f". Holdout SMAPE {fb['metrics']['SMAPE']}% "
                           f"(reliability: {fb['reliability']}) vs seasonal-naive "
@@ -8811,11 +9192,11 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
         return out
     try:
         if monthly_aggregate:
-            best_name, best_metrics, reason, future = select_and_forecast_ts(results, clean_df, "sales", "period", frequency, freq_period, 3)
+            best_name, best_metrics, reason, future = select_and_forecast_ts(results, clean_df, "sales", "period", frequency, freq_period, horizon)
         else:
             best_name, best_metrics, reason = auto_select_ts_model(results)
             future = generate_ts_future_forecast(best_name, clean_df, "sales", "period",
-                                                 frequency, freq_period, 3)
+                                                 frequency, freq_period, horizon)
         # Seasonal-naive baseline on the same walk-forward test slice.
         baseline_smape = None
         try:
@@ -8839,7 +9220,7 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
                         f"{clean_df['period'].max() if 'period' in clean_df.columns else 'last observation'}")
         answer = (f"Forecast for '{target_col}' ({horizon_note}) using {best_name}: "
                   + "; ".join(f"{p.get('period')}: {p.get('forecast')} "
-                               f"(95% interval {p.get('lower')} to {p.get('upper')})" for p in future)
+                               f"(estimated range {p.get('lower')} to {p.get('upper')})" for p in future)
                   + f". Validation SMAPE {smape}% (reliability: {reliability})"
                   + (f" vs seasonal-naive {baseline_smape}%." if baseline_smape is not None else "."))
         out = dict(plan)
@@ -8850,12 +9231,11 @@ def _assistant_run_forecast(plan: dict[str, Any], frame: pd.DataFrame,
                     "model_comparison": comparison, "baseline_smape": baseline_smape,
                     "future_forecast": future, "stationarity": stationarity,
                     "selection_reason": reason, "reliability": reliability,
-                    "confidence": {"forecast_interval": "95% per-step intervals from the fitted "
-                                                        "model (widen with horizon).",
+                    "confidence": {"forecast_interval": "Approximate per-step model ranges; empirical coverage has not been verified.",
                                    "reliability": reliability,
                                    "evaluated_periods": len(test)},
                     "ml_plan": {**base, "target": target_col, "date_column": date_col,
-                                "status": "executed"},
+                                "horizon": horizon, "status": "executed"},
                     "answer": answer})
         return out
     except Exception as error:
@@ -8906,7 +9286,9 @@ def assistant_ask(request: AssistantAskRequest, http_request: Request) -> JSONRe
                     result = _assistant_run_forecast(result, frame, request.dataset_id, http_request)
                 elif ml_intent in ("regression", "classification"):
                     result = _assistant_run_supervised(result, frame, request.question,
-                                                       request.dataset_id, http_request)
+                                                       request.dataset_id, http_request,
+                                                       request.feature_columns, request.confirm_training, request.review_token,
+                                                       request.allow_default_inputs)
             except Exception as error:
                 logger.exception("Assistant ML execution failed")
                 result = dict(result)
@@ -9510,9 +9892,12 @@ def clean_cached_dataset(request: ParquetCleaningRequest) -> dict[str, Any]:
 
     parquet_buffer = io.BytesIO()
     frame.write_parquet(parquet_buffer)
-    updated_dataset_path = write_dataset_file(request.dataset_id, parquet_buffer.getvalue())
+    updated_dataset_path = write_dataset_file(f'{request.dataset_id}-{uuid.uuid4().hex}', parquet_buffer.getvalue())
     duplicate_rows = int(max(0, frame.height - frame.unique().height))
     set_dataset_cache_entry(request.dataset_id, {
+        **{key: value for key, value in dataset_entry.items()
+           if key not in ('parquet_path', 'frame_path', 'csv_path', 'excel_path', '_storage_signature')},
+        'source_path': dataset_entry.get('source_path') or dataset_entry.get('parquet_path'),
         'parquet_path': str(updated_dataset_path),
         'filename': dataset_entry['filename'],
         'row_count': int(frame.height),
@@ -9997,7 +10382,7 @@ def build_line_chart_image(
       if include_interval:
           lowers = [float(item.get('lower', item.get('predicted', 0)) or 0) for item in future_forecast]
           uppers = [float(item.get('upper', item.get('predicted', 0)) or 0) for item in future_forecast]
-          ax.fill_between(periods, lowers, uppers, color='#93c5fd', alpha=0.3, label='95% interval')
+          ax.fill_between(periods, lowers, uppers, color='#93c5fd', alpha=0.3, label='Estimated range')
 
     ax.set_title(title)
     ax.set_xticks(list(x_lookup.values()))
@@ -10101,7 +10486,7 @@ def _build_line_chart_base64(
             ax.fill_between(p,
                             [float(item.get('lower', item.get('predicted', 0)) or 0) for item in future_forecast],
                             [float(item.get('upper', item.get('predicted', 0)) or 0) for item in future_forecast],
-                            color='#93c5fd', alpha=0.3, label='95% interval')
+                            color='#93c5fd', alpha=0.3, label='Estimated range')
     ax.set_title(title)
     ax.set_xticks(list(x_lookup.values()))
     ax.set_xticklabels(all_periods, rotation=35, fontsize=8)
@@ -11632,7 +12017,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
             ['RMSE', fmt(metrics.get('rmse'))],
         ], [content_width * 0.25, content_width * 0.71])
         elements.append(Spacer(1, 8))
-        future_rows = [['Period', 'Forecast', 'Lower 95%', 'Upper 95%']]
+        future_rows = [['Period', 'Forecast', 'Lower estimate', 'Upper estimate']]
         future_rows.extend([[p.get('period', 'N/A'), fmt(p.get('predicted')), fmt(p.get('lower')), fmt(p.get('upper'))] for p in ts_result.get('future_forecast', [])])
         add_table(future_rows if len(future_rows) > 1 else future_rows + [['N/A', 'N/A', 'N/A', 'N/A']], [content_width * 0.25, content_width * 0.23, content_width * 0.23, content_width * 0.23])
         elements.append(Spacer(1, 8))
@@ -11746,6 +12131,7 @@ def build_dynamic_report_pdf(payload: ReportPayload) -> bytes:
     if not profit_rows_raw:
         skipped('Profit Forecast', 'Profit Forecast was not run.', 'Run Profit Forecast to generate scenario P&L projections.')
     else:
+        add_note('Financial scenario', financial_report_note(payload), '#fffbeb', '#f59e0b')
         revenue = sum(float(row.get('forecasted_revenue') or 0) for row in profit_rows_raw)
         cogs = sum(float(row.get('forecasted_cogs') or 0) for row in profit_rows_raw)
         gross = sum(float(row.get('gross_profit') or 0) for row in profit_rows_raw)
@@ -12031,6 +12417,7 @@ def get_dataset_preview(
     dataset_entry = DATASET_CACHE.get(dataset_id)
     if dataset_entry is None:
         raise HTTPException(status_code=404, detail='Cached dataset not found. Please upload the file again.')
+    dataset_artifact_context(dataset_id, http_request)
 
     preview_frame, is_polars_preview = load_cached_preview(dataset_entry, DATASET_PREVIEW_ROW_LIMIT)
     row_count = int(dataset_entry.get('row_count') or (preview_frame.height if is_polars_preview else len(preview_frame)))
@@ -12048,6 +12435,8 @@ def get_dataset_preview(
     response = {
         'datasetId': dataset_id,
         'fileName': dataset_entry.get('filename'),
+        'description': dataset_entry.get('description', ''),
+        'parseOptions': {key: dataset_entry.get(key) for key in ('separator', 'encoding', 'header_row')} if dataset_entry.get('csv_path') else None,
         'data': preview_rows,
         'columns': preview_columns,
         'rowCount': row_count,
@@ -12136,7 +12525,7 @@ def infer_dtypes(request: DtypeInferenceRequest, http_request: Request) -> JSONR
         raise HTTPException(status_code=400, detail=f'Dtype inference failed: {error}') from error
 
 
-async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)) -> JSONResponse:
+async def parse_dataset_file(http_request: Request, file: UploadFile = File(...), *, description: str = '', separator: str = '', encoding: str = '', header_row: int | None = None) -> JSONResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail='A dataset file is required.')
 
@@ -12155,6 +12544,7 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
         'column_count': 0,
         'columns': [],
         'duplicate_count': 0,
+        'description': description.strip()[:500],
     }
 
     try:
@@ -12170,7 +12560,26 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             column_info = build_column_info_from_polars_frame(frame)
             preview_duplicate_rows = int(max(0, frame.height - frame.unique().height))
         elif lower_file_name.endswith('.csv') or lower_file_name.endswith('.tsv'):
-            delimited_options = sniff_delimited_options(cached_path)
+            if separator and separator not in DELIMITERS:
+                raise HTTPException(status_code=400, detail='Unsupported delimiter.')
+            if encoding and encoding not in TEXT_ENCODINGS:
+                raise HTTPException(status_code=400, detail='Unsupported text encoding.')
+            if header_row is not None and not 0 <= header_row <= 1000:
+                raise HTTPException(status_code=400, detail='Header row must be between 0 and 1000.')
+            if encoding:
+                with cached_path.open('r', encoding=encoding, errors='strict') as handle:
+                    sample = handle.read(65_536)
+                detected_separator = detect_delimiter_from_sample(sample, fallback='\t' if file_suffix == '.tsv' else ',')
+                selected_separator = separator or detected_separator
+                delimited_options = {'encoding': encoding, 'separator': selected_separator, 'header_row': detect_delimited_header_row(sample, selected_separator)}
+            else:
+                delimited_options = sniff_delimited_options(cached_path)
+                if separator:
+                    delimited_options['separator'] = separator
+                    with cached_path.open('r', encoding=delimited_options['encoding'], errors='replace') as handle:
+                        delimited_options['header_row'] = detect_delimited_header_row(handle.read(65_536), separator)
+            if header_row is not None:
+                delimited_options['header_row'] = header_row
             frame = read_delimited_frame(cached_path, n_rows=DATASET_PREVIEW_ROW_LIMIT, options=delimited_options)
             total_rows = count_delimited_rows_from_path(cached_path, delimited_options)
             column_count = len(frame.columns)
@@ -12234,6 +12643,8 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
             'columnCount': int(column_count),
             'previewLoaded': preview_loaded,
             'previewLimit': DATASET_PREVIEW_ROW_LIMIT,
+            'description': dataset_entry.get('description', ''),
+            'parseOptions': {key: dataset_entry.get(key) for key in ('separator', 'encoding', 'header_row')} if dataset_entry.get('csv_path') else None,
             'sheetSelection': {
                 'availableSheets': dataset_entry.get('workbook_sheets') or [],
                 'selectedSheets': dataset_entry.get('selected_sheets') or [],
@@ -12266,8 +12677,8 @@ async def parse_dataset_file(http_request: Request, file: UploadFile = File(...)
 
 
 @router.post('/parse-dataset')
-async def parse_dataset(http_request: Request, file: UploadFile = File(...)) -> JSONResponse:
-    return await parse_dataset_file(http_request, file)
+async def parse_dataset(http_request: Request, file: UploadFile = File(...), description: str = Form(default=''), separator: str = Form(default=''), encoding: str = Form(default=''), header_row: int | None = Form(default=None)) -> JSONResponse:
+    return await parse_dataset_file(http_request, file, description=description, separator=separator, encoding=encoding, header_row=header_row)
 
 
 @router.post('/parse-parquet')
@@ -12363,6 +12774,102 @@ def parse_dataset_sheet_selection(request: DatasetSheetSelectionRequest, http_re
         },
     )
     return JSONResponse(content=response)
+
+
+@router.get('/dataset-sheet-preview')
+def dataset_sheet_preview(http_request: Request, dataset_id: str = Query(...), sheet: str = Query(...)) -> JSONResponse:
+    dataset_artifact_context(dataset_id, http_request)
+    entry = DATASET_CACHE[dataset_id]
+    if not entry.get('excel_path'):
+        raise HTTPException(status_code=400, detail='Sheet preview is only available for Excel workbooks.')
+    available = [str(item.get('name')) for item in entry.get('workbook_sheets') or []]
+    if sheet not in available:
+        raise HTTPException(status_code=400, detail='The selected worksheet is not available.')
+    frame = read_excel_sheet_frame(Path(str(entry['excel_path'])), sheet, n_rows=5)
+    return JSONResponse(content=safe_serialize({'sheet': sheet, 'columns': list(frame.columns), 'rows': frame.to_dict(orient='records')}))
+
+
+@router.post('/dataset-understanding')
+def dataset_understanding(request: DatasetUnderstandingRequest, http_request: Request) -> JSONResponse:
+    """Review selected columns against observed data without changing the dataset."""
+    from dataset_understanding import monthly_coverage
+
+    dataset_context = dataset_artifact_context(request.dataset_id, http_request)
+    entry = DATASET_CACHE[request.dataset_id]
+    selected = list(dict.fromkeys([request.date_column, request.target_column, *request.dimensions]))
+    if not request.date_column or not request.target_column or request.date_column == request.target_column:
+        raise HTTPException(status_code=422, detail='Choose different date and numeric target columns.')
+    frame = load_dataset_frame(request.dataset_id, [], selected)
+    numeric = pd.to_numeric(frame[request.target_column], errors='coerce')
+    non_null_target = int(frame[request.target_column].notna().sum())
+    if non_null_target == 0 or int((numeric.notna() & np.isfinite(numeric)).sum()) / non_null_target < 0.9:
+        raise HTTPException(status_code=422, detail='The selected target does not contain enough numeric values.')
+    date_frame = frame[[request.date_column]]
+    grain = infer_dataset_grain(date_frame)
+    monthly = grain.get('grain') == 'monthly_aggregate' and grain.get('period_column') == request.date_column
+    source_dates = frame[request.date_column]
+    if pd.api.types.is_numeric_dtype(source_dates) or (is_date_part_column(request.date_column) and not monthly):
+        raise HTTPException(status_code=422, detail='Select a complete date column, not a numeric date part.')
+    non_null_dates = int(source_dates.notna().sum())
+    parsed_dates = pd.to_datetime(source_dates, errors='coerce', utc=True)
+    if non_null_dates == 0 or int(parsed_dates.notna().sum()) / non_null_dates < 0.9:
+        raise HTTPException(status_code=422, detail='The selected date column does not contain enough valid dates.')
+    if request.grain == 'monthly' and not monthly:
+        raise HTTPException(status_code=422, detail='The selected date column does not show a validated monthly cadence. Choose another date column or use automatic grain detection.')
+    coverage = monthly_coverage(frame, request.date_column, request.target_column, request.dimensions) if monthly and request.grain != 'records' else None
+    current_context = dataset_artifact_context(request.dataset_id, http_request)
+    if current_context['dataset_version'] != dataset_context['dataset_version'] or current_context['dataset_fingerprint'] != dataset_context['dataset_fingerprint']:
+        raise HTTPException(status_code=409, detail='The dataset changed during review. Reload it and try again.')
+    grain_changed = False
+    if request.grain in {'auto', 'monthly', 'records'}:
+        desired = grain if request.grain != 'records' else {
+            'grain': 'unknown', 'period_column': None, 'frequency': None,
+            'confidence': 'user_confirmed', 'evidence': 'user selected record data or unknown grain',
+        }
+        with DATASET_CACHE_LOCK:
+            current_context = dataset_artifact_context(request.dataset_id, http_request)
+            if current_context['dataset_version'] != dataset_context['dataset_version'] or current_context['dataset_fingerprint'] != dataset_context['dataset_fingerprint']:
+                raise HTTPException(status_code=409, detail='The dataset changed during review. Reload it and try again.')
+            entry = DATASET_CACHE[request.dataset_id]
+            existing_grain = entry.get('grain_capability') or {}
+            if existing_grain.get('grain') != desired.get('grain') or existing_grain.get('period_column') != desired.get('period_column'):
+                set_dataset_cache_entry(request.dataset_id, {**entry, 'grain_capability': desired})
+                entry = DATASET_CACHE[request.dataset_id]
+                grain_changed = True
+    return JSONResponse(content=safe_serialize({
+        'dataset_id': request.dataset_id,
+        'dataset_version': entry.get('dataset_version'),
+        'grain_changed': grain_changed,
+        'rows_analyzed': len(frame),
+        'date_column': request.date_column, 'target_column': request.target_column,
+        'grain': grain if request.grain != 'records' else {'grain': 'unknown', 'confidence': 'user_confirmed'},
+        'coverage': coverage,
+        'description': entry.get('description', ''),
+    }))
+
+
+@router.post('/dataset-quality-summary')
+def dataset_quality_summary(request: DatasetQualitySummaryRequest, http_request: Request) -> JSONResponse:
+    """Calculate optional full-dataset quality statistics without changing data."""
+    context = dataset_artifact_context(request.dataset_id, http_request)
+    frame = load_full_dataset_frame(request.dataset_id, [])
+    columns = []
+    for name in frame.columns:
+        values = frame[name]
+        try:
+            unique_count = int(values.nunique(dropna=True))
+        except (TypeError, ValueError):
+            unique_count = None
+        columns.append({'name': str(name), 'null_count': int(values.isna().sum()), 'unique_count': unique_count})
+    try:
+        duplicate_rows = int(frame.duplicated().sum())
+    except (TypeError, ValueError):
+        duplicate_rows = None
+    current_context = dataset_artifact_context(request.dataset_id, http_request)
+    if current_context['dataset_version'] != context['dataset_version'] or current_context['dataset_fingerprint'] != context['dataset_fingerprint']:
+        raise HTTPException(status_code=409, detail='The dataset changed during the quality check. Reload it and try again.')
+    return JSONResponse(content=safe_serialize({'row_count': len(frame), 'missing_cells': int(frame.isna().sum().sum()),
+                                                'duplicate_rows': duplicate_rows, 'columns': columns}))
 
 
 @router.post('/clean-dataset')
@@ -12725,7 +13232,7 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
         )}
         {add_chart_img(ts_chart_b64, 'Time Series Forecast Chart')}
         {add_table_html(
-            ['Period', 'Forecast', 'Lower 95%', 'Upper 95%'],
+            ['Period', 'Forecast', 'Lower estimate', 'Upper estimate'],
             [[p.get('period', 'N/A'), fmt(p.get('predicted')), fmt(p.get('lower')), fmt(p.get('upper'))]
              for p in ts_result.get('future_forecast', [])[:12]]
         )}
@@ -12790,6 +13297,7 @@ def build_dynamic_report_html(payload: ReportPayload) -> bytes:
         total_net = sum(float(r.get('net_profit') or 0) for r in profit_rows)
         profit_section = f'''
         <h3>Profit Forecast & P&amp;L Projection</h3>
+        <p>{esc(financial_report_note(payload))}</p>
         {add_cards_html([
             ('Scenario', payload.reportConfig.scenario.title() if payload.reportConfig else 'Baseline'),
             ('Revenue', mny(total_rev)), ('Net Profit', mny(total_net)),
@@ -13387,6 +13895,7 @@ def build_dynamic_report_docx(payload: ReportPayload) -> bytes:
         add_chart(loss_chart, 'Loss Trend by Driver')
     if profit_rows:
         add_heading('Profit Forecast', level=2)
+        add_para(financial_report_note(payload))
         total_rev = sum(float(r.get('forecasted_revenue') or 0) for r in profit_rows)
         add_cards([('Revenue', mny(total_rev))])
         profit_chart = _build_profit_chart_base64(profit_scenarios, profit_rows)

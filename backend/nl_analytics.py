@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 import warnings
 import hashlib
+from difflib import SequenceMatcher
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
@@ -140,6 +142,10 @@ PRODUCT_TOKEN_SCORES: list[tuple[str, int]] = [
 # ---------------------------------------------------------------------------
 
 _PREDICT_VERBS = re.compile(r"\b(predict|prediction|estimate the future|will .* be|what will|forecast|project)\b", re.I)
+_FORECAST_VERBS = re.compile(r"\b(forecast|project)\b", re.I)
+_FORECAST_HORIZON = re.compile(
+    r"\b(next|coming|following)\s+(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|\w+)\s+)?"
+    r"(day|week|month|quarter|year|period)s?\b|\b(next|coming)\s+(day|week|month|quarter|year)\b", re.I)
 _CLASSIFY_HINTS = re.compile(r"\b(classify|classification|which class|what category will|churn|fraud|yes\/no|approve|default)\b", re.I)
 _ANOMALY_HINTS = re.compile(r"\b(anomal\w*|outlier|unusual|abnormal|fraud|weird)\b", re.I)
 _SEGMENT_HINTS = re.compile(r"\b(cluster|clustering|k-?means|group similar|find natural groups|segment customers|discover groups|segmentation|segment (rows|data|records|customers?|into))\b", re.I)
@@ -209,7 +215,7 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
     q = question or ""
     ql = q.lower()
     signals: dict[str, bool] = {
-        "future": bool(_FUTURE_HINTS.search(q)),
+        "future": bool(_FUTURE_HINTS.search(q) or _FORECAST_HORIZON.search(q)),
         "predict_verb": bool(_PREDICT_VERBS.search(q)),
         "classify": bool(_CLASSIFY_HINTS.search(q)),
         "anomaly": bool(_ANOMALY_HINTS.search(q)),
@@ -230,6 +236,7 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
     has_date = bool((profile or {}).get("datetime_columns") or (profile or {}).get("date_columns"))
     purchase_vocab = signals["next_buy"] or signals["recommend"] or signals["churn"] or signals["buyers"]
     has_classify_verb = bool(re.search(r"\bclassify\b|\bclassification\b", ql))
+    explicit_forecast = bool(_FORECAST_VERBS.search(q) or _FORECAST_HORIZON.search(q))
     supervised_framing = bool(re.search(r"\bfrom\b|\bwhere\b|\bwith\b|\bgiven\b|\binto\b|\bas\b", ql))
     # Bare "churn / at-risk" wording with no supervised framing belongs to purchase
     # churn analysis, not classifier training.
@@ -253,6 +260,11 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
         intent, conf, ops = "churn", 84, ["purchase_schema", "histories", "churn_scan"]
     elif signals["buyers"]:
         intent, conf, ops = "buyers", 84, ["purchase_schema", "histories", "buyers_rank"]
+    elif explicit_forecast and not signals["next_buy"]:
+        # Explicit horizon/forecast language takes precedence over a target
+        # mention; otherwise "Forecast temperature next month" is mistaken for
+        # row-level regression merely because temperature is a numeric column.
+        intent, conf, ops = "forecast", 85 if has_date else 60, ["forecast"]
     elif _supervised_hint(q, profile) and (
             signals["explain_q"] or signals["confidence_q"] or signals["predict_verb"]
             or has_classify_verb):
@@ -281,7 +293,9 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
     elif signals["timing"] and purchase_vocab:
         intent, conf, ops = "next_purchase", 80, ["purchase_schema", "histories", "predict_timing"]
     elif signals["future"] or (signals["predict_verb"] and (signals["trend"] or has_date)):
-        # "What will sales be next month?" with a date column -> forecasting.
+        # A date column alone does not turn a row-level prediction into a
+        # forecast. Explicit future language is required; otherwise prefer the
+        # supervised intent determined from the question's target/features.
         intent, conf, ops = ("forecast", 85, ["forecast"]) if has_date else ("regression", 60, ["regress"])
     elif signals["predict_verb"] and re.search(r"\b(regress|continuous|numeric|amount|value)\b", ql):
         intent, conf, ops = "regression", 78, ["regress"]
@@ -322,6 +336,24 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
     }
 
 
+_HORIZON_NUMBER_WORDS = {**_NUMBER_WORDS, "eleven": 11, "twelve": 12}
+
+
+def extract_forecast_horizon(question: str, default: int = 3, maximum: int = 36) -> int:
+    """Read a bounded future-step count without assuming a particular frequency."""
+    match = re.search(
+        r"\b(?:next|coming|following)\s+(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+        r"(?:days?|weeks?|months?|quarters?|years?|periods?)\b", question or "", re.I)
+    if match:
+        raw = match.group("count").lower()
+        count = int(raw) if raw.isdigit() else _HORIZON_NUMBER_WORDS.get(raw, default)
+    elif re.search(r"\b(?:next|coming|following)\s+(?:day|week|month|quarter|year)\b", question or "", re.I):
+        count = 1
+    else:
+        count = default
+    return max(1, min(int(count), maximum))
+
+
 # ---------------------------------------------------------------------------
 # Dataset profiling
 # ---------------------------------------------------------------------------
@@ -336,6 +368,11 @@ def _infer_role(series: pd.Series, name: str) -> str:
         if re.search(r"(^|_)(id|uuid|guid|code|number|no|seq|key)$", str(name).lower()) and series.nunique(dropna=True) == len(series):
             return "identifier"
         return "numeric"
+    values = series.dropna()
+    if len(values) and any(isinstance(value, Decimal) for value in values.head(200)) and all(
+        isinstance(value, (Decimal, int, float, np.number)) for value in values.head(200)
+    ):
+        return 'numeric'
     # Try datetime parse for object columns.
     try:
         with warnings.catch_warnings():
@@ -475,7 +512,8 @@ def resolve_dimension_column(frame: pd.DataFrame, profile: dict[str, Any],
     return scored[0][2] if scored and scored[0][0] > 0 else None
 
 
-def resolve_metric_column(frame: pd.DataFrame, profile: dict[str, Any], kind: str) -> str | None:
+def resolve_metric_column(frame: pd.DataFrame, profile: dict[str, Any], kind: str,
+                          *, allow_fallback: bool = True) -> str | None:
     """Resolve a metric column for a canonical kind; validates numeric role + variance."""
     tokens = METRIC_COLUMN_TOKENS.get(kind, [kind])
     numeric = {c["name"]: c for c in profile["columns"] if c["role"] == "numeric" and not c["is_empty"]}
@@ -507,7 +545,7 @@ def resolve_metric_column(frame: pd.DataFrame, profile: dict[str, Any], kind: st
         scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
         return scored[0][2]
     # Fallback for revenue-like kinds only: highest-variance numeric that is not an identifier/date part.
-    if kind in ("revenue", "profit", "cost"):
+    if allow_fallback and kind in ("revenue", "profit", "cost"):
         fallback = []
         for name, meta in numeric.items():
             if re.search(r"(^id$|_id$|year|month|day|quarter)", name.lower()):
@@ -558,6 +596,8 @@ def resolve_filter(frame: pd.DataFrame, profile: dict[str, Any], question: str) 
         name_tokens = set(_norm(c["name"]).split())
         for idx, word in enumerate(q_words):
             if word in name_tokens and idx + 1 < len(q_words):
+                if q_words[idx + 1] in {'by', 'for', 'where', 'with', 'and', 'or', 'of', 'in'}:
+                    continue
                 actual = _match_value(frame[c["name"]], q_words[idx + 1])
                 if actual is not None:
                     return {"column": c["name"], "value": actual,
@@ -594,7 +634,7 @@ def _match_value(series: pd.Series, hint: str) -> str | None:
         if _norm_nospace(v) == hn:
             return v
     for v in uniques:
-        if hn in _norm_nospace(v) or _norm_nospace(v) in hn:
+        if len(hn) >= 3 and len(_norm_nospace(v)) >= 3 and (hn in _norm_nospace(v) or _norm_nospace(v) in hn):
             return v
     return None
 
@@ -762,6 +802,140 @@ def _aggregation_for(frame: pd.DataFrame, profile: dict[str, Any], column: str, 
     return {"func": "sum", "assumption": f"sum of '{column}'"}
 
 
+_AGGREGATION_WORDS: dict[str, set[str]] = {
+    "sum": {"sum", "total", "aggregate", "combined", "altogether"},
+    "mean": {"mean", "average", "avg"},
+    "median": {"median", "midpoint"},
+    "min": {"minimum", "smallest", "least"},
+    "max": {"maximum", "largest", "greatest"},
+    "count": {"count", "number"},
+}
+
+
+def _column_mentions(question: str, profile: dict[str, Any], roles: set[str] | None = None) -> list[str]:
+    """Resolve literal schema mentions after linguistic normalization.
+
+    This is intentionally schema-first: it does not require a fixed list of
+    question templates and it never invents a column. Similarity is used only
+    for high-confidence single-token spelling variants; ambiguous matches are
+    returned to the caller for clarification.
+    """
+    normalized = f" {_norm(question)} "
+    candidates: list[tuple[int, str]] = []
+    for column in profile.get("columns", []):
+        if roles and column.get("role") not in roles:
+            continue
+        name = str(column["name"])
+        normalized_name = _norm(name)
+        if normalized_name and f" {normalized_name} " in normalized:
+            candidates.append((len(normalized_name.split()), name))
+    if candidates:
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [name for _, name in candidates]
+
+    # Conservative typo tolerance for a schema term: require a strong match
+    # and a clear margin over the next candidate. No fuzzy value matching.
+    tokens = _norm(question).split()
+    scored: list[tuple[float, str]] = []
+    for column in profile.get("columns", []):
+        if roles and column.get("role") not in roles:
+            continue
+        name_tokens = _norm(column["name"]).split()
+        if len(name_tokens) != 1:
+            continue
+        score = max((SequenceMatcher(None, token, name_tokens[0]).ratio() for token in tokens), default=0.0)
+        if score >= 0.90:
+            scored.append((score, str(column["name"])))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    if scored and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.08):
+        return [scored[0][1]]
+    return []
+
+
+def parse_grouped_aggregation(frame: pd.DataFrame, profile: dict[str, Any], question: str) -> dict[str, Any] | None:
+    """Parse a simple grouped aggregation from a free-text question.
+
+    The parser composes an operation from a requested aggregation, literal
+    measure, grouping cue, and schema columns. It does not infer a measure from
+    a business domain or execute unsupported expressions.
+    """
+    words = set(_norm(question).split())
+    aggregations = [name for name, terms in _AGGREGATION_WORDS.items() if words & terms]
+    if len(aggregations) != 1:
+        return None
+    measure_names = _column_mentions(question, profile, {"numeric"})
+    if len(measure_names) != 1:
+        return None
+    normalized = f" {_norm(question)} "
+    cue_match = re.search(r"\b(?:by|per|each|every)\b", normalized)
+    if not cue_match:
+        return None
+    grouping_tail = normalized[cue_match.end():]
+    grouping_names = [name for name in _column_mentions(grouping_tail, profile, {"categorical", "boolean"})]
+    if len(grouping_names) != 1:
+        return None
+    return {"type": "grouped_aggregation", "aggregation": aggregations[0],
+            "measure": measure_names[0], "group_by": grouping_names[0],
+            "filters": [], "sort_direction": None, "limit": None}
+
+
+def execute_grouped_aggregation(frame: pd.DataFrame, operation: dict[str, Any]) -> dict[str, Any]:
+    measure, group_by, aggregation = operation["measure"], operation["group_by"], operation["aggregation"]
+    valid = frame.loc[frame[group_by].notna()]
+    values = pd.to_numeric(valid[measure], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    valid = valid.assign(__measure=values).dropna(subset=["__measure"])
+    grouped = valid.groupby(group_by, dropna=True)["__measure"]
+    if aggregation == "sum":
+        result = grouped.sum(min_count=1)
+    elif aggregation == "mean":
+        result = grouped.mean()
+    elif aggregation == "median":
+        result = grouped.median()
+    elif aggregation == "min":
+        result = grouped.min()
+    elif aggregation == "max":
+        result = grouped.max()
+    elif aggregation == "count":
+        result = grouped.count()
+    else:
+        return {"status": "unsupported", "intent": "aggregation",
+                "message": f"Aggregation '{aggregation}' is not supported."}
+    operation = {**operation, "null_handling": "Rows missing the measure or group value are excluded."}
+    return {"status": "success", "intent": "aggregation", "operation": operation,
+            "grouped_result": {str(key): float(value) for key, value in result.items()},
+            "coverage": {"filtered_rows": int(len(valid)), "total_rows": int(len(frame))}}
+
+
+def _unmatched_filter_message(profile: dict[str, Any], question: str) -> str | None:
+    """Recognize a categorical field/value constraint that failed resolution."""
+    normalized = f" {_norm(question)} "
+    for column in profile.get("columns", []):
+        if column.get("role") not in ("categorical", "boolean"):
+            continue
+        name = _norm(column.get("name", ""))
+        if not name or f" {name} " not in normalized:
+            continue
+        if re.search(r"\b(?:each|every|per)\s+" + re.escape(name) + r"\b", normalized):
+            continue
+        # Common compositional forms: "in the X region", "region X", and
+        # "region is X". The value is still matched against live data below.
+        patterns = [
+            r"\b(?:in|within|for)\s+(?:the\s+)?([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})\s+" + re.escape(name) + r"\b",
+            r"\b" + re.escape(name) + r"\s+(?:is|equals|=|:)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,2})",
+            r"\b" + re.escape(name) + r"\s+([a-z0-9_-]+)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, normalized)
+            if not match:
+                continue
+            value_hint = match.group(1).strip()
+            if value_hint in {"each", "every", "the", "by", "for", "from", "where", "using",
+                              "highest", "lowest", "with", "and", "or", "as", "to", "of"}:
+                continue
+            return f"The requested value '{value_hint}' could not be matched to column '{column['name']}'. Check the value or choose one present in the dataset."
+    return None
+
+
 def _apply_filter(frame: pd.DataFrame, filt: dict[str, Any] | None) -> tuple[pd.DataFrame, dict[str, Any] | None]:
     if not filt:
         return frame, None
@@ -776,6 +950,16 @@ def execute_ranking_plan(frame: pd.DataFrame, profile: dict[str, Any], question:
                          top_n: int = 10) -> dict[str, Any]:
     """Multi-metric ranking: filter -> groupby each metric -> independent ranks."""
     filt = resolve_filter(frame, profile, question)
+    explicit_filter = re.search(r'\bwhere\s+([\w ]+?)\s*(?:=|:|\bis\b)\s*[\'"]?([^\'"]+)', question, re.I)
+    if explicit_filter:
+        column_hint = _norm(explicit_filter.group(1))
+        value_hint = explicit_filter.group(2).strip().rstrip('?.')
+        column = next((str(name) for name in frame.columns if _norm(name) == column_hint), None)
+        value = _match_value(frame[column], value_hint) if column else None
+        if column is None or value is None:
+            return {'status': 'clarify', 'intent': 'ranking',
+                    'message': 'The requested filter could not be matched. Check the column and value.'}
+        filt = {'column': column, 'value': value, 'matched_hint': value_hint}
     filtered, filter_info = _apply_filter(frame, filt)
     if filtered.empty:
         return {"status": "empty",
@@ -783,7 +967,12 @@ def execute_ranking_plan(frame: pd.DataFrame, profile: dict[str, Any], question:
                             + (f"Filter was {filt['column']} = '{filt['value']}'." if filt else "No filter resolved.")),
                 "filter": filt, "intent": "ranking"}
 
-    group_col = resolve_dimension_column(frame, profile, "product_line", question)
+    normalized_question = _norm(question)
+    subject = re.split(r'\b(?:by|for|where|with|using)\b', normalized_question, maxsplit=1)[0]
+    explicit_dimensions = [c['name'] for c in profile['columns']
+                           if c['role'] == 'categorical' and re.search(
+                               r'(?<!\w)' + re.escape(_norm(c['name'])) + r's?(?!\w)', subject)]
+    group_col = explicit_dimensions[0] if len(explicit_dimensions) == 1 else resolve_dimension_column(frame, profile, "product_line", question)
     if group_col is None:
         # Generic fallback: best low-cardinality categorical, preferring a
         # dimension actually named in the question.
@@ -801,6 +990,13 @@ def execute_ranking_plan(frame: pd.DataFrame, profile: dict[str, Any], question:
         group_col = cands[0]["name"]
 
     metric_kinds = detect_requested_metrics(question)
+    explicit_numeric = [name for name in profile['numeric_columns']
+                        if re.search(r'(?<!\w)' + re.escape(_norm(name)) + r'(?!\w)', normalized_question)]
+    if not metric_kinds and explicit_numeric:
+        if not re.search(r'\b(?:sum|total|average|mean|count|minimum|maximum)\b', normalized_question):
+            return {'status': 'unsupported', 'intent': 'ranking',
+                    'message': 'Specify how to aggregate the named measure, such as total or average.'}
+        metric_kinds = explicit_numeric
     if not metric_kinds:
         # Default: first numeric measure.
         nums = profile["numeric_columns"]
@@ -810,7 +1006,7 @@ def execute_ranking_plan(frame: pd.DataFrame, profile: dict[str, Any], question:
     resolved: list[dict[str, Any]] = []
     ambiguous: list[str] = []
     for kind in metric_kinds:
-        col = resolve_metric_column(frame, profile, kind)
+        col = kind if kind in explicit_numeric else resolve_metric_column(frame, profile, kind, allow_fallback=False)
         if col is None:
             if kind == "orders":
                 # No explicit order-count measure: fall back to row counts per group
@@ -821,7 +1017,12 @@ def execute_ranking_plan(frame: pd.DataFrame, profile: dict[str, Any], question:
                 continue
             ambiguous.append(kind)
             continue
-        resolved.append({"kind": kind, "column": col, "agg": _aggregation_for(frame, profile, col, kind)})
+        aggregation = _aggregation_for(frame, profile, col, kind)
+        if re.search(r'\b(?:average|mean)\b', normalized_question):
+            aggregation = {'func': 'mean', 'assumption': f"mean of '{col}' (requested)"}
+        elif kind in explicit_numeric and re.search(r'\b(?:sum|total)\b', normalized_question):
+            aggregation = {'func': 'sum', 'assumption': f"sum of '{col}' (requested)"}
+        resolved.append({"kind": kind, "column": col, "agg": aggregation})
 
     if not resolved:
         return {"status": "unsupported",
@@ -845,32 +1046,55 @@ def execute_ranking_plan(frame: pd.DataFrame, profile: dict[str, Any], question:
             elif func == "count":
                 g = filtered.groupby(group_col, dropna=True).size()
             elif func == "weighted_mean":
-                w = filtered.groupby(group_col, dropna=True)[agg["weight"]].sum(min_count=1)
-                s = (filtered[col] * filtered[agg["weight"]]).groupby(filtered[group_col], dropna=True).sum(min_count=1)
+                valid = filtered[col].notna() & filtered[agg['weight']].notna()
+                pair = filtered.loc[valid]
+                if (pair[agg['weight']] < 0).any():
+                    raise ValueError('Weighted averages require nonnegative weights.')
+                w = pair.groupby(group_col, dropna=True)[agg["weight"]].sum(min_count=1)
+                s = (pair[col] * pair[agg["weight"]]).groupby(pair[group_col], dropna=True).sum(min_count=1)
                 g = (s / w.replace(0, np.nan)).dropna()
             else:
                 g = filtered.groupby(group_col, dropna=True)[col].sum(min_count=1)
         except Exception as exc:
             tables[kind] = {"error": str(exc)}
             continue
-        ranked = g.sort_values(ascending=False)
+        ascending = bool(re.search(r'\b(?:lowest|bottom|smallest|least|ascending)\b', normalized_question))
+        requested = re.search(r'\b(?:top|bottom|highest|lowest|largest|smallest)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b', normalized_question)
+        count = requested.group(1) if requested else None
+        limit = min(50, max(1, int(count) if count and count.isdigit() else _NUMBER_WORDS.get(count, top_n)))
+        g = g.dropna()
+        order = sorted(g.index, key=lambda idx: (g.loc[idx] if ascending else -g.loc[idx], str(idx)))
+        ranked = g.loc[order]
         # Tie handling: dense rank, report ties explicitly.
-        ranks = ranked.rank(method="dense", ascending=False).astype(int)
-        rows = [{"group": str(idx), "value": round(float(val), 2), "rank": int(ranks.loc[idx]),
-                 "tied": bool((ranked == val).sum() > 1)}
-                for idx, val in ranked.head(top_n).items()]
+        rows = []
+        dense_rank = 0
+        prior_value = None
+        for idx, val in ranked.head(limit).items():
+            if prior_value is None or val != prior_value:
+                dense_rank += 1
+            rows.append({"group": str(idx), "value": float(val), "rank": dense_rank,
+                         "tied": bool((ranked == val).sum() > 1),
+                         **({'exact_value': str(val)} if isinstance(val, Decimal) else {})})
+            prior_value = val
         tables[kind] = {"column": col, "agg": func, "assumption": agg.get("assumption"),
-                        "rows": rows, "groups_ranked": int(len(ranked))}
+                        "rows": rows, "groups_ranked": int(len(ranked)),
+                        "direction": "ascending" if ascending else "descending"}
         if len(ranked):
             top_val = float(ranked.iloc[0])
             tied = ranked[ranked == ranked.iloc[0]].index.tolist()
-            winners[kind] = {"group": str(ranked.index[0]), "value": round(top_val, 2),
+            winners[kind] = {"group": str(ranked.index[0]), "value": top_val,
                              "tied_with": [str(t) for t in tied[1:]]}
 
     return {
         "status": "success", "intent": "ranking",
         "filter": filt, "filter_info": filter_info,
         "group_by": group_col, "metrics": resolved,
+        "operation": {"type": "ranking",
+                      "measures": [{"kind": item["kind"], "column": item["column"],
+                                    "aggregation": item["agg"]["func"]} for item in resolved],
+                      "group_by": group_col, "filters": [filt] if filt else [],
+                      "sort_direction": "ascending" if re.search(r'\b(?:lowest|bottom|smallest|least|ascending)\b', normalized_question) else "descending",
+                      "limit": limit},
         "ambiguous_metrics": ambiguous, "tables": tables, "winners": winners,
         "coverage": {"filtered_rows": int(len(filtered)), "total_rows": int(len(frame)),
                      "time_coverage": profile.get("time_coverage")},
@@ -947,6 +1171,9 @@ def execute_simple(frame: pd.DataFrame, profile: dict[str, Any], question: str,
                 corr = None
         return {"status": "success", "intent": intent, "filter": filt, "filter_info": filter_info,
                 "summary": summary, "grouped": grouped, "correlations": corr,
+                "operation": {"type": intent, "columns": list(summary),
+                              "filters": [filt] if filt else [],
+                              "assumptions": []},
                 "coverage": {"filtered_rows": int(len(filtered)), "total_rows": int(len(frame))}}
     return {"status": "unsupported", "intent": intent,
             "message": f"Intent '{intent}' is not executable deterministically on this dataset."}
@@ -1250,6 +1477,13 @@ def answer_question(frame: pd.DataFrame, question: str, dataset_id: str = "",
         return execute_purchase(frame, profile, question, intent, routing,
                                 context=context, top_n=top_n)
 
+    unresolved_filter = (None if resolve_filter(frame, profile, question)
+                         else _unmatched_filter_message(profile, question))
+    if unresolved_filter:
+        return {"status": "clarify", "intent": intent, "routing": routing,
+                "message": unresolved_filter, "answer": unresolved_filter,
+                "profile": _slim(profile)}
+
     if intent in ("anomaly", "segmentation"):
         # Executed in-engine via ml_execute (seeded sklearn, no training service needed).
         from ml_execute import run_anomaly_detection, run_segmentation
@@ -1277,12 +1511,77 @@ def answer_question(frame: pd.DataFrame, question: str, dataset_id: str = "",
             return {"status": "unsupported", "intent": intent, "routing": routing, "profile": _slim(profile),
                     "message": "Predictive modelling needs at least one numeric target; none detected.",
                     "answer": "Predictive modelling needs at least one numeric target; none detected."}
-        target = resolve_metric_column(frame, profile, "revenue") or (profile["numeric_columns"] or [None])[0]
+        explicit_target = _supervised_hint(question, profile)
+        target = explicit_target.get("column") if explicit_target else None
+        target_reason = "explicit target named in the question" if target else None
+        date_column = None
+        if intent == "forecast":
+            requested_dates = _column_mentions(question, profile, {"datetime"})
+            if len(requested_dates) == 1:
+                date_column = requested_dates[0]
+            elif len(profile["datetime_columns"]) == 1:
+                date_column = profile["datetime_columns"][0]
+            elif len(profile["datetime_columns"]) > 1:
+                message = ("Which date column should define the forecast timeline? Available date columns: "
+                           + ", ".join(profile["datetime_columns"]) + ".")
+                return {"status": "clarify", "intent": intent, "routing": routing,
+                        "profile": _slim(profile), "needs": ["date_column"],
+                        "message": message, "answer": message}
+        if intent == "forecast" and target:
+            target_meta = next((column for column in profile["columns"] if column["name"] == target), {})
+            if target_meta.get("role") != "numeric":
+                message = f"Forecast target '{target}' is not a numeric measure. Choose a numeric column to forecast."
+                return {"status": "unsupported", "intent": intent, "routing": routing,
+                        "profile": _slim(profile), "message": message, "answer": message}
+        forecast_group_columns: list[str] = []
+        if intent == "forecast":
+            normalized_forecast_question = f" {_norm(question)} "
+            for column in profile["columns"]:
+                if column.get("role") not in {"categorical", "boolean"}:
+                    continue
+                name = _norm(column["name"])
+                if not name:
+                    continue
+                if re.search(r"\b(?:by|per|for each|within each)\s+" + re.escape(name) + r"\b",
+                             normalized_forecast_question):
+                    forecast_group_columns.append(str(column["name"]))
+            forecast_group_columns = list(dict.fromkeys(forecast_group_columns))
+            if len(forecast_group_columns) > 1:
+                message = ("This forecast names more than one grouping dimension. "
+                           "Choose one dimension or request a single overall forecast.")
+                return {"status": "clarify", "intent": intent, "routing": routing,
+                        "profile": _slim(profile), "needs": ["group_by"],
+                        "message": message, "answer": message}
+        if intent == "forecast" and not target:
+            requested_metrics = detect_requested_metrics(question)
+            metric_kind = requested_metrics[0] if len(requested_metrics) == 1 else None
+            if metric_kind:
+                target = resolve_metric_column(frame, profile, metric_kind, allow_fallback=False)
+                if target:
+                    target_reason = f"mapped the requested {metric_kind} measure to an available column"
+            if not target and len(profile["numeric_columns"]) == 1:
+                target = profile["numeric_columns"][0]
+                target_reason = "the dataset has a single numeric column"
+            if not target:
+                available = ", ".join(profile["numeric_columns"]) or "none"
+                message = f"Which numeric column should I forecast? Available numeric columns: {available}."
+                return {"status": "clarify", "intent": intent, "routing": routing,
+                        "profile": _slim(profile), "needs": ["target"],
+                        "message": message, "answer": message}
+        if intent != "forecast" and not target:
+            # The assistant runner performs its own target suitability checks;
+            # this plan value is a review suggestion, not an execution target.
+            target = resolve_metric_column(frame, profile, "revenue")
+            target_reason = "schema-based target suggestion; requires user review" if target else None
         features = [c for c in list(frame.columns)[:30] if c != target
                     and not re.search(r"(^id$|_id$|uuid)", str(c), re.I)]
         return {"status": "ml_required", "intent": intent, "routing": routing,
                 "profile": _slim(profile),
-                "ml_plan": {"target": target, "features": features[:12],
+                "ml_plan": {"target": target, "target_reason": target_reason,
+                            **({"date_column": date_column} if intent == "forecast" and date_column else {}),
+                            **({"group_by": forecast_group_columns[0]} if forecast_group_columns else {}),
+                            **({"horizon": extract_forecast_horizon(question)} if intent == "forecast" else {}),
+                            "features": features[:12],
                             "task": ("forecast" if intent == "forecast"
                                      else "classification" if _target_looks_categorical(frame, target)
                                      else "regression"),
@@ -1294,6 +1593,16 @@ def answer_question(frame: pd.DataFrame, question: str, dataset_id: str = "",
                            "run it through the existing training/forecast workflow.")}
 
 
+    operation = parse_grouped_aggregation(frame, profile, question) if intent != "ranking" else None
+    if operation:
+        result = execute_grouped_aggregation(frame, operation)
+        result["routing"] = routing
+        result["profile"] = _slim(profile)
+        result["answer"] = (
+            f"Computed {operation['aggregation']} of '{operation['measure']}' grouped by "
+            f"'{operation['group_by']}' using {result['coverage']['filtered_rows']} valid rows."
+        )
+        return result
     if intent == "ranking":
         result = execute_ranking_plan(frame, profile, question, top_n=top_n)
     else:
@@ -1325,7 +1634,7 @@ def _render_answer(result: dict[str, Any], question: str) -> str:
     status = result.get("status")
     if status == "empty":
         return result.get("message", "No matching records.")
-    if status in ("unsupported", "error"):
+    if status in ("unsupported", "error", "clarify"):
         return result.get("message", "This question cannot be answered from the dataset.")
     if result.get("intent") == "ranking":
         parts = []
@@ -1337,10 +1646,10 @@ def _render_answer(result: dict[str, Any], question: str) -> str:
         for kind, table in (result.get("tables") or {}).items():
             if "rows" not in table or not table["rows"]:
                 continue
-            top = table["rows"][0]
-            parts.append(f"Highest {kind} ({table.get('column')}, {table.get('agg')}): "
-                         f"{top['group']} = {top['value']}"
-                         + (" (tie)" if top.get("tied") else "") + ".")
+            label = 'Lowest' if table.get('direction') == 'ascending' else 'Highest'
+            entries = ', '.join(f"{row['group']} = {row.get('exact_value', row['value'])}" + (' (tie)' if row.get('tied') else '')
+                                for row in table['rows'])
+            parts.append(f"{label} {kind} ({table.get('column')}, {table.get('agg')}): {entries}.")
         winners = result.get("winners") or {}
         if len(winners) >= 2:
             AVC = ", ".join(f"{k}: {v['group']}" for k, v in winners.items())

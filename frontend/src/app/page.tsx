@@ -97,6 +97,8 @@ type AuthResponse = {
 type DatasetPreviewResponse = {
   datasetId: string;
   fileName: string | null;
+  description?: string;
+  parseOptions?: { separator?: string | null; encoding?: string | null; header_row?: number | null } | null;
   data: Array<Record<string, string | number | boolean | null>>;
   columns: Array<{
     name: string;
@@ -932,6 +934,8 @@ export default function HomePage() {
         const currentState = useAppStore.getState();
         useAppStore.setState({
           fileName: result.fileName ?? currentState.fileName,
+          datasetDescription: result.description ?? currentState.datasetDescription,
+          datasetParseOptions: result.parseOptions ?? currentState.datasetParseOptions,
           datasetId: result.datasetId,
           rawData: result.data,
           cleanedData: currentState.cleaningDone ? result.data : null,

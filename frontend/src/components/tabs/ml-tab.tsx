@@ -292,7 +292,7 @@ function getAutoTarget(columns: ColumnInfo[]): { target: string; reason: string 
   return null;
 }
 
-function getAutoFeatures(columns: ColumnInfo[], target: string): string[] {
+function getAvailableFeatures(columns: ColumnInfo[], target: string): string[] {
   const preferredPatterns = ['cogs', 'cost', 'plant_region', 'product_line', 'region', 'category', 'segment', 'quantity', 'discount', 'profit', 'price', 'amount', 'revenue'];
   const candidates = columns
     .filter((c) => c.name !== target && !isIdLikeColumn(c) && c.role !== 'datetime')
@@ -303,7 +303,11 @@ function getAutoFeatures(columns: ColumnInfo[], target: string): string[] {
     return preferredPatterns.some((p) => lower === p || lower.endsWith(p) || lower.includes(`_${p}`));
   });
   const remaining = candidates.filter((name) => !preferred.includes(name));
-  return [...preferred, ...remaining].slice(0, 8);
+  return [...preferred, ...remaining];
+}
+
+function getAutoFeatures(columns: ColumnInfo[], target: string): string[] {
+  return getAvailableFeatures(columns, target).slice(0, 8);
 }
 
 function formatMetricValue(value: number): string {
@@ -331,12 +335,13 @@ function parseModelAnalysis(analysis: string) {
 function buildModelSuggestionExplanation(params: {
   selectedTarget: string;
   targetProblemType: ProblemType;
+  detectedType: ProblemType;
   confidence: number;
   selectedFeatures: string[];
   columns: ColumnInfo[];
   recommendedModel: ModelDef | null;
 }) {
-  const { selectedTarget, targetProblemType, confidence, selectedFeatures, columns, recommendedModel } = params;
+  const { selectedTarget, targetProblemType, detectedType, confidence, selectedFeatures, columns, recommendedModel } = params;
   const targetColumn = columns.find((column) => column.name === selectedTarget);
   const numericFeatures = selectedFeatures.filter((feature) => columns.find((column) => column.name === feature)?.role === 'numeric').length;
   const categoricalFeatures = selectedFeatures.filter((feature) => {
@@ -345,7 +350,7 @@ function buildModelSuggestionExplanation(params: {
   }).length;
 
   return [
-    `The uploaded dataset is currently being treated as a ${targetProblemType} problem because "${selectedTarget}" looks like a ${targetColumn?.role ?? 'candidate'} target with ${confidence}% detection confidence.`,
+    `The selected target "${selectedTarget}" is ${targetColumn?.role ?? 'a candidate'}; the selected problem type is ${targetProblemType}. The rule-based type suggestion is ${detectedType} (${confidence}% indicator, not model accuracy).`,
     `${selectedFeatures.length} feature${selectedFeatures.length === 1 ? '' : 's'} are selected for training, including ${numericFeatures} numeric and ${categoricalFeatures} categorical/boolean field${categoricalFeatures === 1 ? '' : 's'}.`,
     recommendedModel
       ? `${recommendedModel.name} is recommended as the starting model because ${recommendedModel.whyRecommended.toLowerCase()}`
@@ -524,12 +529,15 @@ export default function MlTab() {
 
   // Wizard state
   const [currentStep, setCurrentStep] = useState(mlWorkflowStep);
+  const [workflowView, setWorkflowView] = useState<'assistant' | 'manual'>('assistant');
 
   // Step 1 state
   const [selectedTarget, setSelectedTarget] = useState<string>('');
   const [detectedType, setDetectedType] = useState<ProblemType>('regression');
   const [confidence, setConfidence] = useState(0);
   const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
+  const [manualFeatureReview, setManualFeatureReview] = useState<{ key: object; warnings: string[]; issue?: string; excluded: Record<string, string> } | null>(null);
+  const [acceptedFeatureReview, setAcceptedFeatureReview] = useState<object | null>(null);
   const [recommendationReason, setRecommendationReason] = useState('');
   const [targetProblemType, setTargetProblemType] = useState<ProblemType>('regression');
 
@@ -569,8 +577,10 @@ export default function MlTab() {
   const [mlQuestion, setMlQuestion] = useState('');
   const [mlCustomerId, setMlCustomerId] = useState('');
   const [mlAssistantReply, setMlAssistantReply] = useState('');
-  const [mlAssistantTables, setMlAssistantTables] = useState<Record<string, { column?: string; agg?: string; rows?: { group: string; value: number; rank: number }[] }> | null>(null);
+  const [mlAssistantTables, setMlAssistantTables] = useState<Record<string, { column?: string; agg?: string; rows?: { group: string; value: number; rank: number; exact_value?: string }[] }> | null>(null);
   const [mlAssistantMeta, setMlAssistantMeta] = useState<string>('');
+  const [assistantReview, setAssistantReview] = useState<{ target: string; task: string; features: string[]; reviewToken: string; warnings: string[]; excluded: Record<string, string> } | null>(null);
+  const [allowAssistantDefaults, setAllowAssistantDefaults] = useState(false);
   const [mlPrediction, setMlPrediction] = useState<{
     customer?: string; output_label?: string; method?: string;
     ranked?: { product: string; score: number; evidence?: { times_bought_by_customer?: number; last_bought?: string | null; also_bought_with?: string[]; reason?: string } }[];
@@ -583,6 +593,7 @@ export default function MlTab() {
   } | null>(null);
   const [mlExecution, setMlExecution] = useState<{
     model?: string; model_id?: string; target?: string; features?: string[];
+    isSupervised?: boolean; problemType?: 'regression' | 'classification'; single_prediction_issue?: string;
     metrics?: Record<string, number | null>; evaluation?: { rows?: number; method?: string; cv_folds?: number };
     feature_importance?: { name: string; importance: number }[];
     single_prediction?: { inputs?: Record<string, string | number>; prediction?: string | number; error_band?: [number, number]; error_band_note?: string; probabilities?: Record<string, number> | null; probability_note?: string | null; confidence?: number | null; top_class?: string; probability_class?: string | null; ece?: number | null; ece_note?: string; default_note?: string } | null;
@@ -599,6 +610,24 @@ export default function MlTab() {
   const [isAskingAssistant, setIsAskingAssistant] = useState(false);
   const datasetSignatureRef = useRef<{ signature: string; data: unknown }>({ signature: '', data: null });
   const userOverrodeTargetRef = useRef(false);
+  const userOverrodeFeaturesRef = useRef(false);
+  const userOverrodeProblemTypeRef = useRef(false);
+  const suggestedTarget = useMemo(() => getAutoTarget(columns), [columns]);
+
+  const manualReviewKey = useMemo(() => ({ data, datasetId, selectedTarget, selectedFeatures }), [data, datasetId, selectedTarget, selectedFeatures]);
+  useEffect(() => {
+    if (!data || !selectedTarget || selectedFeatures.length === 0) return;
+    let active = true;
+    apiClient.post('/ml/feature-review', {
+      dataset_id: datasetId ?? null, data: datasetId ? [] : data,
+      target_column: selectedTarget, feature_columns: selectedFeatures,
+    }).then(({ data: review }) => {
+      if (active) setManualFeatureReview({ key: manualReviewKey, warnings: review.warnings ?? [], issue: review.issue, excluded: review.excluded ?? {} });
+    }).catch(() => {
+      if (active) setManualFeatureReview({ key: manualReviewKey, warnings: [], issue: 'Feature review is unavailable. Try again before training.', excluded: {} });
+    });
+    return () => { active = false; };
+  }, [data, datasetId, selectedTarget, selectedFeatures, manualReviewKey]);
 
   const updateMlStep = useCallback((nextStep: number | ((prev: number) => number)) => {
     setCurrentStep((prev) => {
@@ -633,6 +662,8 @@ export default function MlTab() {
       const dataWasReplacedInSession = previousData !== null && previousData !== data;
       datasetSignatureRef.current = { signature: datasetSignature, data };
       userOverrodeTargetRef.current = false;
+      userOverrodeFeaturesRef.current = false;
+      userOverrodeProblemTypeRef.current = false;
       setSelectedModel('');
       setTrainResults(null);
       setTrainingMode('fast');
@@ -686,14 +717,14 @@ export default function MlTab() {
       hasUpdates = true;
     }
 
-    if (featuresChanged) {
+    if (featuresChanged && (isNewDataset || !userOverrodeFeaturesRef.current)) {
       setSelectedFeatures(features);
       hasUpdates = true;
     }
 
     if (targetCol) {
       const detection = detectProblemType(targetCol, data);
-      if (targetProblemType !== detection.type) {
+      if (targetProblemType !== detection.type && (isNewDataset || !userOverrodeProblemTypeRef.current)) {
         setTargetProblemType(detection.type);
         hasUpdates = true;
       }
@@ -714,6 +745,7 @@ export default function MlTab() {
 
   const handleTargetChange = useCallback((newTarget: string) => {
     userOverrodeTargetRef.current = true;
+    userOverrodeProblemTypeRef.current = false;
     setSelectedTarget(newTarget);
     const targetCol = columns.find(c => c.name === newTarget);
     if (targetCol && data) {
@@ -722,14 +754,16 @@ export default function MlTab() {
       setDetectedType(detection.type);
       setConfidence(detection.confidence);
     }
-    const features = getAutoFeatures(columns, newTarget);
-    setSelectedFeatures(features);
+    setSelectedFeatures(previous => userOverrodeFeaturesRef.current
+      ? previous.filter(feature => getAvailableFeatures(columns, newTarget).includes(feature))
+      : getAutoFeatures(columns, newTarget));
     setRecommendationReason(`Target manually set to "${newTarget}" (${targetCol?.role || 'unknown'} type).`);
     setSelectedModel('');
     setTrainResults(null);
   }, [columns, data]);
 
   const toggleFeature = useCallback((feature: string) => {
+    userOverrodeFeaturesRef.current = true;
     setSelectedFeatures(prev =>
       prev.includes(feature) ? prev.filter(f => f !== feature) : [...prev, feature]
     );
@@ -749,11 +783,12 @@ export default function MlTab() {
   const modelSuggestionExplanation = useMemo(() => buildModelSuggestionExplanation({
     selectedTarget,
     targetProblemType,
+    detectedType,
     confidence,
     selectedFeatures,
     columns,
     recommendedModel,
-  }), [selectedTarget, targetProblemType, confidence, selectedFeatures, columns, recommendedModel]);
+  }), [selectedTarget, targetProblemType, detectedType, confidence, selectedFeatures, columns, recommendedModel]);
 
   const optimizationSummary = trainResults?.optimization;
   const cvWasSkipped = Boolean(optimizationSummary && (optimizationSummary.cv_rows_evaluated ?? 0) === 0);
@@ -779,6 +814,9 @@ export default function MlTab() {
       toast({ title: 'Configuration Error', description: 'Please complete target and feature selection first.', variant: 'destructive' });
       return null;
     }
+    if (!manualFeatureReview || manualFeatureReview.key !== manualReviewKey) throw new Error('Wait for the selected features to be reviewed before training.');
+    if (manualFeatureReview.issue) throw new Error(manualFeatureReview.issue);
+    if (manualFeatureReview.warnings.length && acceptedFeatureReview !== manualReviewKey) throw new Error('Review and confirm the feature warnings before training.');
 
     const payload = {
       data: datasetId ? [] : data,
@@ -813,7 +851,7 @@ export default function MlTab() {
       (err as Error & { detail?: string }).detail = getApiErrorDetail(error) ?? undefined;
       throw err;
     }
-  }, [data, datasetId, selectedTarget, selectedFeatures, targetProblemType, testSize, randomState, cvFolds, trainingMode, timeOrderColumn, toast]);
+  }, [data, datasetId, selectedTarget, selectedFeatures, targetProblemType, testSize, randomState, cvFolds, trainingMode, timeOrderColumn, toast, manualFeatureReview, manualReviewKey, acceptedFeatureReview]);
 
   // ─── Train selected model (Step 4) ───────────────────────────────────────
 
@@ -1034,7 +1072,7 @@ export default function MlTab() {
   }, []);
 
   
-  const handleAskAssistant = useCallback(async () => {
+  const handleAskAssistant = useCallback(async (confirmTraining = false) => {
     const question = mlQuestion.trim();
     if (!question) {
       toast({ title: 'Enter a problem', description: 'Describe the modeling problem, training quality concern, or prediction behavior you want help with.', variant: 'destructive' });
@@ -1043,6 +1081,7 @@ export default function MlTab() {
 
     // Prefer the dataset-aware backend engine (deterministic analytics + executed predictions).
     if (datasetId) {
+      if (!confirmTraining) setAssistantReview(null);
       setIsAskingAssistant(true);
       setMlAssistantTables(null);
       setMlAssistantMeta('');
@@ -1056,15 +1095,17 @@ export default function MlTab() {
           top_n: 10,
           customer_id: mlCustomerId.trim() || null,
           product_id: null,
+          ...(confirmTraining && assistantReview ? { confirm_training: true, review_token: assistantReview.reviewToken, feature_columns: assistantReview.features, allow_default_inputs: allowAssistantDefaults } : {}),
         });
         const result = response.data as {
           status?: string; intent?: string; answer?: string; message?: string;
           routing?: { intent?: string; confidence?: number };
           filter?: { column?: string; value?: string } | null;
-          group_by?: string; tables?: Record<string, { column?: string; agg?: string; assumption?: string; rows?: { group: string; value: number; rank: number }[] }>;
+          group_by?: string; tables?: Record<string, { column?: string; agg?: string; assumption?: string; rows?: { group: string; value: number; rank: number; exact_value?: string }[] }>;
+          operation?: { type?: string; aggregation?: string; measure?: string; group_by?: string; filters?: unknown[]; sort_direction?: string | null; limit?: number | null };
           winners?: Record<string, { group: string; value: number }>;
           coverage?: { filtered_rows?: number; total_rows?: number };
-          ml_plan?: { target?: string; task?: string; note?: string } | null;
+          ml_plan?: { target?: string; task?: string; note?: string; features?: string[]; review_token?: string; warnings?: string[]; excluded_features?: Record<string, string> } | null;
           customer?: string; output_label?: string; needs?: string[];
           prediction?: { customer?: string; label?: string; method?: string; ranked?: { product: string; score: number; evidence?: { times_bought_by_customer?: number; last_bought?: string | null; also_bought_with?: string[]; reason?: string } }[] };
           timing?: { status?: string; predicted_next_date?: string; range?: { lower?: string | null; upper?: string | null }; reason?: string };
@@ -1074,6 +1115,7 @@ export default function MlTab() {
           at_risk?: { customer: string; days_since_last: number; typical_interval_days: number; last_purchase: string }[];
           provenance?: { method?: string; validation?: { validated?: boolean; chosen_method?: string; metrics?: Record<string, { hit_rate_at_3?: number; mrr?: number }> } };
           model?: string; model_id?: string; target?: string; features?: string[];
+          single_prediction_issue?: string;
           metrics?: Record<string, number | null>; evaluation?: { rows?: number; method?: string; cv_folds?: number };
           feature_importance?: { name: string; importance: number }[];
           single_prediction?: { inputs?: Record<string, string | number>; prediction?: string | number; error_band?: [number, number]; error_band_note?: string; probabilities?: Record<string, number> | null; probability_note?: string | null; confidence?: number | null; top_class?: string; probability_class?: string | null; ece?: number | null; ece_note?: string; default_note?: string } | null;
@@ -1088,15 +1130,26 @@ export default function MlTab() {
           warnings?: string[];
         };
         const answerText = result.answer || result.message || 'No answer returned.';
+        if (result.status === 'needs_confirmation' && result.ml_plan?.review_token && result.ml_plan.target) {
+          setAssistantReview({ target: result.ml_plan.target, task: result.ml_plan.task ?? 'prediction', features: result.ml_plan.features ?? [], reviewToken: result.ml_plan.review_token, warnings: result.ml_plan.warnings ?? [], excluded: result.ml_plan.excluded_features ?? {} });
+        } else {
+          setAssistantReview(null);
+        }
         const intentLabel = result.routing?.intent || result.intent || 'unknown';
         const metaParts = [`intent: ${intentLabel}`];
-        if (result.routing?.confidence !== undefined) metaParts.push(`confidence: ${result.routing.confidence}%`);
+        if (result.routing?.confidence !== undefined) metaParts.push(`intent match score: ${result.routing.confidence}% (not prediction confidence)`);
         if (result.filter?.column) metaParts.push(`filter: ${result.filter.column} = '${result.filter.value}'`);
         if (result.group_by) metaParts.push(`grouped by: ${result.group_by}`);
+        if (result.operation) {
+          const parts = [result.operation.aggregation, result.operation.measure && `of ${result.operation.measure}`,
+            result.operation.group_by && `by ${result.operation.group_by}`].filter(Boolean);
+          if (parts.length) metaParts.push(`calculation: ${parts.join(' ')}`);
+        }
         if (result.coverage) metaParts.push(`rows: ${result.coverage.filtered_rows ?? '?'} / ${result.coverage.total_rows ?? '?'}`);
-        if (result.ml_plan?.target) metaParts.push(`ML target: ${result.ml_plan.target} (${result.ml_plan.task ?? 'predict'})`);
-        if (result.model) metaParts.push(`model: ${result.model}`);
-        if (result.evaluation?.rows !== undefined) metaParts.push(`evaluated on ${result.evaluation.rows} rows (${result.evaluation.method ?? 'validation'})`);
+        const isSupervised = result.status === 'success' && Boolean(result.model) && (result.intent === 'regression' || result.intent === 'classification');
+        if (!isSupervised && result.ml_plan?.target) metaParts.push(`ML target: ${result.ml_plan.target} (${result.ml_plan.task ?? 'predict'})`);
+        if (!isSupervised && result.model) metaParts.push(`model: ${result.model}`);
+        if (!isSupervised && result.evaluation?.rows !== undefined) metaParts.push(`evaluated on ${result.evaluation.rows} rows (${result.evaluation.method ?? 'validation'})`);
         if (result.reliability) metaParts.push(`reliability: ${result.reliability}`);
         if (result.fallback_note) metaParts.push('fallback method');
         if (result.provenance?.method) metaParts.push(`method: ${result.provenance.method}`);
@@ -1125,6 +1178,9 @@ export default function MlTab() {
         if (result.model || result.future_forecast || result.anomalies || result.clusters) {
           setMlExecution({
             model: result.model, model_id: result.model_id, target: result.target,
+            isSupervised,
+            problemType: result.intent === 'classification' ? 'classification' : 'regression',
+            single_prediction_issue: result.single_prediction_issue,
             features: result.features, metrics: result.metrics, evaluation: result.evaluation,
             feature_importance: result.feature_importance,
             single_prediction: result.single_prediction ?? null,
@@ -1212,7 +1268,7 @@ export default function MlTab() {
     }
 
     setMlAssistantReply(response.join('\n\n'));
-  }, [data, datasetId, mlCustomerId, mlQuestion, selectedFeatures.length, selectedModel, selectedTarget, targetProblemType, toast, recommendedModel, trainResults]);
+  }, [data, datasetId, mlCustomerId, mlQuestion, selectedFeatures.length, selectedModel, selectedTarget, targetProblemType, toast, recommendedModel, trainResults, assistantReview, allowAssistantDefaults]);
 
   const canAdvanceMlStep =
     currentStep === 1
@@ -1351,10 +1407,30 @@ export default function MlTab() {
         </div>
       </motion.div>
 
-      
-      {/* Step Indicator */}
-      <StepIndicator currentStep={currentStep} />
+      <div role="tablist" aria-label="ML workflow" className="flex w-fit gap-1 rounded-xl border bg-muted/40 p-1">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workflowView === 'assistant'}
+          aria-controls="ml-assistant-panel"
+          className={cn('rounded-lg px-4 py-2 text-sm font-medium transition-colors', workflowView === 'assistant' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+          onClick={() => setWorkflowView('assistant')}
+        >
+          Ask Assistant
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workflowView === 'manual'}
+          aria-controls="ml-manual-panel"
+          className={cn('rounded-lg px-4 py-2 text-sm font-medium transition-colors', workflowView === 'manual' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+          onClick={() => setWorkflowView('manual')}
+        >
+          Train Manually
+        </button>
+      </div>
 
+      {workflowView === 'assistant' && <div id="ml-assistant-panel" role="tabpanel" aria-label="Ask Assistant">
       <Card className="border border-primary/20 bg-gradient-to-br from-primary/6 to-secondary/70">
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
@@ -1366,7 +1442,7 @@ export default function MlTab() {
         <CardContent className="space-y-3">
           <Textarea
             value={mlQuestion}
-            onChange={(e) => setMlQuestion(e.target.value)}
+            onChange={(e) => { setMlQuestion(e.target.value); setAssistantReview(null); setAllowAssistantDefaults(false); }}
             placeholder="Example: What product will customer C123 buy next? Or: Which product lines have the highest sales for OEM?"
             className="min-h-24 resize-y bg-background/80"
           />
@@ -1384,7 +1460,7 @@ export default function MlTab() {
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
             <Button
-              onClick={handleAskAssistant}
+              onClick={() => handleAskAssistant()}
               disabled={isAskingAssistant}
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
@@ -1398,9 +1474,21 @@ export default function MlTab() {
           {mlAssistantMeta && (
             <p className="text-xs text-muted-foreground">{mlAssistantMeta}</p>
           )}
-          {mlAssistantReply && (
+          {mlAssistantReply && !mlExecution?.isSupervised && (
             <div className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground whitespace-pre-wrap">
               {mlAssistantReply}
+            </div>
+          )}
+          {assistantReview && (
+            <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
+              <p className="font-medium">Review model training</p>
+              <p>Target: {assistantReview.target} ({assistantReview.task})</p>
+              <p>Features: {assistantReview.features.join(', ')}</p>
+              {assistantReview.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+              {Object.entries(assistantReview.excluded).map(([name, reason]) => <p key={name}>Excluded {name}: {reason}</p>)}
+              <p>Review whether each feature is available when the prediction will be made.</p>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={allowAssistantDefaults} onChange={(event) => setAllowAssistantDefaults(event.target.checked)} />Allow training-derived defaults for missing prediction inputs</label>
+              <Button onClick={() => handleAskAssistant(true)} disabled={isAskingAssistant}>Confirm and train</Button>
             </div>
           )}
           {mlAssistantTables && Object.entries(mlAssistantTables).map(([metric, table]) => (
@@ -1421,7 +1509,7 @@ export default function MlTab() {
                     <tr key={`${metric}-${row.group}`} className="border-b last:border-0">
                       <td className="px-4 py-1.5">{row.rank}</td>
                       <td className="px-4 py-1.5">{row.group}</td>
-                      <td className="px-4 py-1.5 text-right tabular-nums">{row.value.toLocaleString()}</td>
+                      <td className="px-4 py-1.5 text-right tabular-nums">{row.exact_value ?? row.value.toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1430,12 +1518,44 @@ export default function MlTab() {
           ))}
           {mlExecution && (
             <div className="space-y-3 rounded-lg border bg-background/70 p-4">
+              {mlExecution.isSupervised && <p className="text-sm font-semibold">Assistant training result</p>}
               {mlExecution.model && (
                 <p className="text-sm font-medium">
                   {mlExecution.model}
                   {mlExecution.target && <span className="text-muted-foreground"> · target: {mlExecution.target}</span>}
                   {mlExecution.model_id && <span className="ml-2 text-xs text-muted-foreground">model_id: {mlExecution.model_id}</span>}
                 </p>
+              )}
+              {mlExecution.isSupervised && mlExecution.features && (
+                <p className="text-xs text-muted-foreground">Training features: {mlExecution.features.join(', ') || 'unavailable'}</p>
+              )}
+              {mlExecution.isSupervised && mlExecution.model_id && mlExecution.target && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const metricValues = Object.fromEntries(
+                      Object.entries(mlExecution.metrics ?? {}).filter((entry): entry is [string, number] =>
+                        typeof entry[1] === 'number' && Number.isFinite(entry[1])),
+                    );
+                    useAppStore.setState({
+                      modelId: mlExecution.model_id ?? null,
+                      modelTrained: true,
+                      targetColumn: mlExecution.target ?? null,
+                      problemType: mlExecution.problemType ?? 'regression',
+                      selectedFeatures: mlExecution.features ?? [],
+                      selectedModel: mlExecution.model ?? null,
+                      modelMetrics: metricValues,
+                      featureImportance: mlExecution.feature_importance ?? null,
+                      uploadedModel: null,
+                      predictionResult: null,
+                      predictionAnalysis: null,
+                      predictionProbabilities: null,
+                    });
+                    useAppStore.getState().setActiveTab('prediction');
+                  }}
+                >
+                  Use this model in Prediction
+                </Button>
               )}
               {mlExecution.fallback_note && (
                 <p className="text-xs text-amber-600 dark:text-amber-400">{mlExecution.fallback_note}</p>
@@ -1464,7 +1584,7 @@ export default function MlTab() {
                   {mlExecution.evaluation && (
                     <p className="pt-1 text-[11px] text-muted-foreground">
                       Evaluated on {mlExecution.evaluation.rows ?? '?'} rows via {mlExecution.evaluation.method ?? 'validation'}
-                      {mlExecution.evaluation.cv_folds ? ` (${mlExecution.evaluation.cv_folds} folds)` : ''}. Lower error is better; these are not confidence percentages.
+                      {mlExecution.evaluation.cv_folds ? ` (${mlExecution.evaluation.cv_folds} folds)` : ''}. These metrics are not confidence percentages.
                     </p>
                   )}
                 </div>
@@ -1509,6 +1629,9 @@ export default function MlTab() {
                     <p className="text-xs text-muted-foreground">{mlExecution.single_prediction.probability_note}</p>
                   )}
                 </div>
+              )}
+              {mlExecution.isSupervised && !mlExecution.single_prediction && (
+                <p className="text-xs text-muted-foreground">{mlExecution.single_prediction_issue || 'No single-row prediction was made. Provide input values in the Prediction tab to score a row.'}</p>
               )}
               {mlExecution.future_forecast && mlExecution.future_forecast.length > 0 && (
                 <div className="overflow-x-auto">
@@ -1602,6 +1725,12 @@ export default function MlTab() {
               )}
               {mlExecution.warnings && mlExecution.warnings.length > 0 && (
                 <p className="text-xs text-amber-600 dark:text-amber-400">{mlExecution.warnings.slice(0, 2).join(' ')}</p>
+              )}
+              {mlExecution.isSupervised && mlAssistantReply && (
+                <details className="text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">Full assistant response</summary>
+                  <p className="mt-2 whitespace-pre-wrap">{mlAssistantReply}</p>
+                </details>
               )}
             </div>
           )}
@@ -1730,6 +1859,22 @@ export default function MlTab() {
           )}
         </CardContent>
       </Card>
+      </div>}
+
+      {workflowView === 'manual' && <div id="ml-manual-panel" role="tabpanel" aria-label="Train Manually" className="space-y-6">
+      <StepIndicator currentStep={currentStep} />
+
+      {manualFeatureReview?.key === manualReviewKey && (manualFeatureReview.issue || manualFeatureReview.warnings.length > 0) && (
+        <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
+          <p className="font-medium">Review selected training features</p>
+          {manualFeatureReview.issue && <p>{manualFeatureReview.issue}</p>}
+          {Object.entries(manualFeatureReview.excluded).map(([name, reason]) => <p key={name}>{name}: {reason}</p>)}
+          {manualFeatureReview.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+          {manualFeatureReview.warnings.length > 0 && !manualFeatureReview.issue && (
+            <label className="flex items-center gap-2"><input type="checkbox" checked={acceptedFeatureReview === manualReviewKey} onChange={(event) => setAcceptedFeatureReview(event.target.checked ? manualReviewKey : null)} />I reviewed the feature warnings and availability at prediction time.</label>
+          )}
+        </div>
+      )}
 
       {/* Step Content */}
       <AnimatePresence mode="wait">
@@ -1743,60 +1888,6 @@ export default function MlTab() {
           {/* ─── STEP 1: Target & Problem Detection ──────────────────────── */}
           {currentStep === 1 && (
             <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
-              {/* Auto Detection Card */}
-              <motion.div variants={itemVariants}>
-                <Card className="border border-primary/20 bg-gradient-to-br from-primary/6 to-secondary/70">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-                        <Sparkles className="h-4 w-4 text-primary" />
-                      </div>
-                      <CardTitle className="text-lg">Smart Recommendation</CardTitle>
-                    </div>
-                    <CardDescription>AI-powered target detection and feature selection</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {/* Problem Type Detection */}
-                    <div className="flex items-center gap-3">
-                      <div className={cn(
-                        'flex h-10 w-10 items-center justify-center rounded-xl',
-                        detectedType === 'regression' ? 'bg-primary/10' : 'bg-secondary',
-                      )}>
-                        {detectedType === 'regression'
-                          ? <TrendingUp className="h-5 w-5 text-primary" />
-                          : <Tag className="h-5 w-5 text-secondary-foreground" />
-                        }
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium capitalize">{detectedType}</p>
-                          <Badge variant="outline" className={cn(
-                            'text-xs',
-                            confidence >= 80 ? 'border-primary/20 bg-primary/10 text-primary'
-                              : confidence >= 60 ? 'border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                              : 'border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-400',
-                          )}>
-                            {confidence}% confidence
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {detectedType === 'regression'
-                            ? 'Numeric target detected — model will predict continuous values'
-                            : 'Categorical target detected — model will classify into categories'}
-                        </p>
-                      </div>
-                    </div>
-
-                    {recommendationReason && (
-                      <div className="flex gap-2 p-3 rounded-lg bg-muted/50">
-                        <Lightbulb className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-                        <p className="text-xs text-muted-foreground">{recommendationReason}</p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </motion.div>
-
               {/* Target & Features Selection */}
               <div className="grid gap-6 md:grid-cols-2">
                 {/* Target Column */}
@@ -1805,13 +1896,19 @@ export default function MlTab() {
                     <CardHeader className="pb-3">
                       <div className="flex items-center gap-2">
                         <Target className="h-4 w-4 text-primary" />
-                        <CardTitle className="text-base">Target Column</CardTitle>
+                        <CardTitle className="text-base">Manual Model Setup: Target Column</CardTitle>
                       </div>
-                      <CardDescription>Select the variable to predict</CardDescription>
+                      <CardDescription>Review the suggestion or choose the variable to predict.</CardDescription>
                     </CardHeader>
-                    <CardContent>
+                    <CardContent className="space-y-3">
+                      {suggestedTarget && (
+                        <div className="rounded-lg bg-muted/50 p-3 text-sm">
+                          <p className="font-medium">Suggested target: {suggestedTarget.target}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{suggestedTarget.reason}</p>
+                        </div>
+                      )}
                       <Select value={selectedTarget} onValueChange={handleTargetChange}>
-                        <SelectTrigger className="w-full">
+                        <SelectTrigger className="w-full" aria-label="Target column">
                           <SelectValue placeholder="Select target column..." />
                         </SelectTrigger>
                         <SelectContent className="max-h-64">
@@ -1826,6 +1923,7 @@ export default function MlTab() {
                           ))}
                         </SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">This selection applies to manual training, independently of the assistant result above.</p>
                     </CardContent>
                   </Card>
                 </motion.div>
@@ -1838,12 +1936,13 @@ export default function MlTab() {
                         <BrainCircuit className="h-4 w-4 text-primary" />
                         <CardTitle className="text-base">Problem Type</CardTitle>
                       </div>
-                      <CardDescription>Auto-detected based on target column</CardDescription>
+                      <CardDescription>Suggested for the selected target; you can change it.</CardDescription>
                     </CardHeader>
-                    <CardContent>
+                    <CardContent className="space-y-3">
+                      <p className="text-xs text-muted-foreground">Detected: {detectedType} ({confidence}% rule-based type score; not model accuracy or a calibrated probability).</p>
                       <div className="flex gap-3">
                         <button
-                          onClick={() => setTargetProblemType('regression')}
+                          onClick={() => { userOverrodeProblemTypeRef.current = true; setTargetProblemType('regression'); }}
                           className={cn(
                             'flex-1 rounded-lg border-2 p-3 text-center transition-all',
                             targetProblemType === 'regression'
@@ -1856,7 +1955,7 @@ export default function MlTab() {
                           <p className="text-xs text-muted-foreground">Predict numbers</p>
                         </button>
                         <button
-                          onClick={() => setTargetProblemType('classification')}
+                          onClick={() => { userOverrodeProblemTypeRef.current = true; setTargetProblemType('classification'); }}
                           className={cn(
                             'flex-1 rounded-lg border-2 p-3 text-center transition-all',
                             targetProblemType === 'classification'
@@ -1890,17 +1989,18 @@ export default function MlTab() {
                         className="text-xs text-muted-foreground"
                         onClick={() => {
                           const allFeatures = getAutoFeatures(columns, selectedTarget);
+                          userOverrodeFeaturesRef.current = true;
                           setSelectedFeatures(allFeatures);
                         }}
                       >
                         Reset All
                       </Button>
                     </div>
-                    <CardDescription>Choose features for model training (excludes target & ID columns)</CardDescription>
+                    <CardDescription>Review the suggested features and select the inputs available at prediction time. Target, ID, and date columns are excluded.</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="max-h-64 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
-                      {getAutoFeatures(columns, selectedTarget).map(feature => {
+                      {getAvailableFeatures(columns, selectedTarget).map(feature => {
                         const col = columns.find(c => c.name === feature);
                         const isSelected = selectedFeatures.includes(feature);
                         return (
@@ -3021,6 +3121,7 @@ export default function MlTab() {
           )}
         </motion.div>
       </AnimatePresence>
+      </div>}
 
 
       {/* Custom scrollbar styles */}

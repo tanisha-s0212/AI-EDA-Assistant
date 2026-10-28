@@ -343,39 +343,12 @@ def _core_chat_context() -> str:
 def core_chat_respond(message: str, ui_mode: str = 'ask', provider: str = 'auto') -> dict[str, Any]:
     ui_mode = ui_mode if ui_mode in SUPPORTED_MODES else 'ask'
     model_mode = _model_mode(ui_mode)
-    provider = provider.lower()
-    messages = [
-        {
-            'role': 'system',
-            'content': (
-                'You are the embedded Agentic Core for this FastAPI backend. '
-                'Respond only in JSON format with this structure: '
-                '{ "next_action": string, "execution_plan": [{step: int, task: string, api_call: string}], '
-                '"validation": string, "reasoning": string }. '
-                'Never use markdown asterisks or bold syntax. '
-                'Use the local workflow context, do not reveal API keys, and keep answers concise.'
-            ),
-        },
-        {'role': 'user', 'content': f'User request:\n{message}\n\nLocal context:\n{_core_chat_context()}'},
-    ]
-    providers = [provider] if provider in SUPPORTED_PROVIDERS else [
-        CoreSettings.primary_provider,
-        *CoreSettings.fallback_providers,
-        'longcat',
-        'gemini',
-        'groq',
-    ]
-    errors = []
-    for index, current_provider in enumerate(dict.fromkeys(providers)):
-        try:
-            answer = call_provider(current_provider, messages, model_mode)
-            return {'answer': answer, 'provider': current_provider, 'mode': model_mode, 'fallback_used': index > 0}
-        except ProviderError as exc:
-            errors.append(f'{current_provider}: {exc}')
+    # This application is intentionally LLM-free. Do not consult configured
+    # provider keys or make a network request from the Agentic Core chat route.
     answer = (
-        'The configured cloud model providers are unavailable for this request, so I am answering from local workflow context.\n\n'
-        f'{_core_chat_context()}\n\nProvider status summary:\n'
-        + '\n'.join(f'- {error}' for error in errors)
+        'Free-form Agentic Core chat is disabled because this application uses '
+        'deterministic, non-LLM workflows. Ask data questions in ML Assistant '
+        'or run a supported analysis from its dedicated tab.'
     )
     return {'answer': answer, 'provider': 'local', 'mode': model_mode, 'fallback_used': False}
 

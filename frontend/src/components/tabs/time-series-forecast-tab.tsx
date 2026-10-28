@@ -63,13 +63,14 @@ export default function TimeSeriesForecastTab() {
   const cleanedData = useAppStore((state) => state.cleanedData);
   const columns = useAppStore((state) => state.columns);
   const datasetId = useAppStore((state) => state.datasetId);
+  const confirmedMapping = useAppStore((state) => state.confirmedSalesMapping);
   const modelTrained = useAppStore((state) => state.modelTrained);
   const storedResult = useAppStore((state) => state.timeSeriesForecastResult);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const data = cleanedData ?? rawData ?? [];
 
-  const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric'), [columns]);
-  const dateColumns = useMemo(() => columns.filter(isForecastDateColumnCandidate), [columns]);
+  const numericColumns = useMemo(() => columns.filter((column) => column.role === 'numeric' || column.name === confirmedMapping?.targetColumn), [columns, confirmedMapping]);
+  const dateColumns = useMemo(() => columns.filter((column) => isForecastDateColumnCandidate(column) || column.name === confirmedMapping?.dateColumn), [columns, confirmedMapping]);
   const preferredDateColumn = useMemo(() => getPreferredDateColumn(columns), [columns]);
   const smartTargetColumn = useMemo(() => getSmartTargetColumn(columns, data as DataRow[]), [columns, data]);
 
@@ -94,11 +95,16 @@ export default function TimeSeriesForecastTab() {
   const stationarityInFlightRef = useRef(false);
 
   useEffect(() => {
-    if ((!dateColumn || isDatePartColumn(dateColumn)) && preferredDateColumn) {
+    setDateColumn(confirmedMapping?.dateColumn ?? '');
+    setTargetColumn(confirmedMapping?.targetColumn ?? '');
+  }, [datasetId, confirmedMapping]);
+
+  useEffect(() => {
+    if ((!dateColumn || (isDatePartColumn(dateColumn) && !dateColumns.some((column) => column.name === dateColumn))) && preferredDateColumn) {
       setDateColumn(preferredDateColumn);
     }
     if (!targetColumn && smartTargetColumn) setTargetColumn(smartTargetColumn);
-  }, [columns, dateColumn, targetColumn, preferredDateColumn, smartTargetColumn]);
+  }, [columns, dateColumns, dateColumn, targetColumn, preferredDateColumn, smartTargetColumn]);
 
   useEffect(() => {
     if (storedResult) {
@@ -692,12 +698,13 @@ export default function TimeSeriesForecastTab() {
                   <Card>
                     <CardHeader>
                       <CardTitle>Historical Vs Forecast</CardTitle>
-                      <CardDescription>The shaded band shows the 95% confidence interval.</CardDescription>
+                      <CardDescription>The shaded band is an approximate forecast range; coverage is not calibrated.</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ForecastSeriesChart
                         data={chartData.length > 0 ? chartData : multiChartData}
                         showConfidence
+                        confidenceLabel="estimated"
                         heightClassName="h-80"
                       />
                     </CardContent>
@@ -709,7 +716,7 @@ export default function TimeSeriesForecastTab() {
                   <Card>
                     <CardHeader>
                       <CardTitle>Future Forecast Table</CardTitle>
-                      <CardDescription>Future forecast values with 95% confidence intervals.</CardDescription>
+                      <CardDescription>Future forecast values with approximate ranges.</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <Table>
@@ -717,8 +724,8 @@ export default function TimeSeriesForecastTab() {
                           <TableRow>
                             <TableHead>Period</TableHead>
                             <TableHead>Forecast</TableHead>
-                            <TableHead>Lower 95%</TableHead>
-                            <TableHead>Upper 95%</TableHead>
+                            <TableHead>Lower estimate</TableHead>
+                            <TableHead>Upper estimate</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -749,8 +756,8 @@ export default function TimeSeriesForecastTab() {
                           <TableRow>
                             <TableHead>Period</TableHead>
                             <TableHead>Forecast</TableHead>
-                            <TableHead>Lower 95%</TableHead>
-                            <TableHead>Upper 95%</TableHead>
+                            <TableHead>Lower estimate</TableHead>
+                            <TableHead>Upper estimate</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>

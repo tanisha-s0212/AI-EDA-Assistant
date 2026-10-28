@@ -20,6 +20,7 @@ Tradeoffs and limits:
 import pandas as pd
 import numpy as np
 import re
+from decimal import Decimal
 
 
 LARGE_COL_CUTOFF = 100000
@@ -349,6 +350,20 @@ def infer_universal_dtypes(df):
                 cast_log.append(log)
                 continue
 
+            # Existing numeric values are already typed. Re-parsing them through
+            # text and narrowing by a relative tolerance can change measurements
+            # and totals even when every individual change appears small.
+            if pd.api.types.is_numeric_dtype(col_raw.dtype) or any(
+                isinstance(value, Decimal) for value in sample_raw
+            ):
+                log['cast_type'] = 'unchanged'
+                log['accepted'] = True
+                log['inference_mode'] = 'existing_numeric_preserved'
+                log['coverage_note'] = 'existing numeric values and precision preserved'
+                log = _finalize_log(log, col_raw, df_out[column])
+                cast_log.append(log)
+                continue
+
             bool_parsed, bool_valid = _bool_candidate(norm)
             bool_coverage = float(bool_valid.sum() / non_null_count)
             if bool_coverage >= BOOL_ACCEPT_THRESHOLD:
@@ -366,6 +381,13 @@ def infer_universal_dtypes(df):
             parsed_num, valid_num, percent_mask, paren_neg = _numeric_candidate(norm)
             num_coverage = float(valid_num.sum() / non_null_count)
             percent_coverage = float((valid_num & percent_mask).sum() / non_null_count)
+            if NUMERIC_ACCEPT_THRESHOLD <= num_coverage < 1.0:
+                log['cast_type'] = 'rejected'
+                log['rejection_reason'] = 'numeric_conversion_would_discard_values'
+                log['coverage_note'] = 'mixed numeric values preserved without conversion'
+                log = _finalize_log(log, col_raw, df_out[column])
+                cast_log.append(log)
+                continue
             if num_coverage >= NUMERIC_ACCEPT_THRESHOLD:
                 out_num = parsed_num / 100.0 if percent_coverage >= PERCENT_ACCEPT_THRESHOLD else parsed_num
                 finite = out_num.dropna()
@@ -376,7 +398,7 @@ def infer_universal_dtypes(df):
                     df_out[column] = out_num.round().astype(dtype_name)
                     cast_name = "integer"
                 else:
-                    dtype_name = _float_dtype(out_num)
+                    dtype_name = 'float64'
                     df_out[column] = out_num.astype(dtype_name)
                     cast_name = "float"
                 log["cast_type"] = cast_name

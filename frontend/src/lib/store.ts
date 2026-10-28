@@ -242,6 +242,9 @@ export interface ModelInfo {
 
 export interface DatasetWorkspaceState {
   fileName: string | null;
+  datasetDescription?: string;
+  datasetParseOptions?: { separator?: string | null; encoding?: string | null; header_row?: number | null } | null;
+  confirmedSalesMapping?: { dateColumn: string; targetColumn: string; dimensions: string[]; grain: 'auto' | 'monthly' | 'records' } | null;
   datasetId: string | null;
   previewLoaded: boolean;
   loadedRowCount: number;
@@ -388,6 +391,9 @@ const AGENTIC_ENABLED = process.env.NEXT_PUBLIC_AGENTIC_ENABLED !== 'false';
 function createEmptyDatasetState(): DatasetWorkspaceState {
   return {
     fileName: null,
+    datasetDescription: '',
+    datasetParseOptions: null,
+    confirmedSalesMapping: null,
     datasetId: null,
     previewLoaded: false,
     loadedRowCount: 0,
@@ -450,6 +456,9 @@ function stripTransientDatasetState<T extends DatasetWorkspaceState>(dataset: T)
 
 const datasetStateKeys: Array<keyof DatasetWorkspaceState> = [
   'fileName',
+  'datasetDescription',
+  'datasetParseOptions',
+  'confirmedSalesMapping',
   'datasetId',
   'previewLoaded',
   'loadedRowCount',

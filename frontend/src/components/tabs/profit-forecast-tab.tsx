@@ -179,8 +179,8 @@ export default function ProfitForecastTab() {
 
   const kpiCards: { label: string; value: string; delta: string | null; Icon: LucideIcon }[] = [
     { label: 'Forecasted Revenue', value: formatCurrency(summary.selected.revenue), delta: scenario === 'baseline' ? null : deltaText(summary.selected.revenue, summary.baseline.revenue, formatNumber), Icon: Wallet },
-    { label: 'Gross Profit', value: formatCurrency(summary.selected.grossProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossProfit, summary.baseline.grossProfit, formatNumber), Icon: TrendingUp },
-    { label: 'Net Profit', value: formatCurrency(summary.selected.netProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netProfit, summary.baseline.netProfit, formatNumber), Icon: Landmark },
+    { label: 'Projected Gross Profit', value: formatCurrency(summary.selected.grossProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossProfit, summary.baseline.grossProfit, formatNumber), Icon: TrendingUp },
+    { label: 'Projected Net Profit', value: formatCurrency(summary.selected.netProfit), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netProfit, summary.baseline.netProfit, formatNumber), Icon: Landmark },
     { label: 'Gross Margin %', value: formatPercentValue(summary.selected.grossMargin), delta: scenario === 'baseline' ? null : deltaText(summary.selected.grossMargin, summary.baseline.grossMargin, formatNumber), Icon: Scale },
     { label: 'Net Margin %', value: formatPercentValue(summary.selected.netMargin), delta: scenario === 'baseline' ? null : deltaText(summary.selected.netMargin, summary.baseline.netMargin, formatNumber), Icon: Scale },
   ];
@@ -267,7 +267,7 @@ export default function ProfitForecastTab() {
         <Scale className="h-4 w-4" />
         <AlertTitle>Scenario Confirmation Required</AlertTitle>
         <AlertDescription className="space-y-3">
-          <p>Profit forecasting uses confirmed scenario multipliers, mapped revenue/cost fields, loss forecast output, and an audited P&L calculation trail.</p>
+          <p>Profit forecasts are scenarios, not actual accounting results. Confirm the currency and mapped revenue and cost fields before using them.</p>
           <label className="flex items-center gap-2 text-sm font-medium">
             <Checkbox checked={confirmedAssumptions} onCheckedChange={(checked) => setConfirmedAssumptions(Boolean(checked))} />
             I confirm the scenario parameters and calculation assumptions for this run.

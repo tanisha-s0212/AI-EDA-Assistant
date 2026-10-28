@@ -351,14 +351,23 @@ def select_supervised_target(frame: pd.DataFrame, profile: dict[str, Any],
 
 
 def select_features(frame: pd.DataFrame, profile: dict[str, Any], target: str,
-                    max_features: int = 12) -> dict[str, Any]:
+                    max_features: int = 12, requested_features: list[str] | None = None) -> dict[str, Any]:
     """Leakage-safe features: drop target, identifiers, datetimes, constants,
     empties, and near-duplicate names of the target. Ordered stable."""
     excluded: dict[str, str] = {}
     kept: list[str] = []
+    warnings: list[str] = []
+    requested = list(dict.fromkeys(requested_features)) if requested_features is not None else None
+    if requested is not None:
+        unknown = [name for name in requested if name not in frame.columns or name == target]
+        if unknown:
+            return {'features': [], 'excluded': {name: 'Unknown feature or target column.' for name in unknown},
+                    'issue': 'Requested features must exist and must not include the target.'}
     tnorm = _norm(target).replace(" ", "")
     for c in profile.get("columns", []):
         name = c["name"]
+        if requested is not None and name not in requested:
+            continue
         if name == target:
             continue
         if c.get("is_empty") or c.get("is_constant"):
@@ -377,13 +386,44 @@ def select_features(frame: pd.DataFrame, profile: dict[str, Any], target: str,
         if cnorm and (cnorm == tnorm or tnorm in cnorm or cnorm in tnorm):
             excluded[name] = "name-overlaps-target (leakage guard)"
             continue
+        feature_values = frame[name]
+        target_values = frame[target]
+        equal_values = feature_values.eq(target_values).fillna(False) | (feature_values.isna() & target_values.isna())
+        if feature_values.notna().any() and bool(equal_values.all()):
+            excluded[name] = 'Values duplicate the target (direct leakage).'
+            continue
+        if pd.api.types.is_numeric_dtype(feature_values) and pd.api.types.is_numeric_dtype(target_values):
+            correlation = feature_values.corr(target_values)
+            if pd.notna(correlation) and abs(float(correlation)) >= 0.999:
+                warnings.append(f"'{name}' is highly correlated with the target; verify it is available at prediction time.")
         kept.append(name)
     # Prefer categoricals + numerics actually present; cap for speed, stable order.
-    kept = kept[:max_features]
+    kept = [name for name in requested if name in kept] if requested is not None else kept[:max_features]
+    if requested is not None and excluded:
+        return {'features': [], 'excluded': excluded, 'warnings': warnings,
+                'issue': 'Some requested features are unsuitable. Review the excluded features.'}
     if not kept:
         return {"features": [], "excluded": excluded,
                 "issue": "No usable features remain after leakage guards."}
-    return {"features": kept, "excluded": excluded}
+    # An exact arithmetic relationship is evidence for review, not proof that
+    # the features are unavailable when a prediction is made.
+    numeric_names = [name for name in kept if pd.api.types.is_numeric_dtype(frame[name])][:12]
+    if pd.api.types.is_numeric_dtype(frame[target]):
+        for index, left in enumerate(numeric_names):
+            for right in numeric_names[index + 1:]:
+                values = frame[[target, left, right]].dropna().head(20000)
+                if len(values) < 5:
+                    continue
+                actual = values[target].to_numpy(dtype=float)
+                a = values[left].to_numpy(dtype=float)
+                b = values[right].to_numpy(dtype=float)
+                if np.isfinite(actual).all() and np.isfinite(a).all() and np.isfinite(b).all() and (
+                    np.allclose(actual, a + b, rtol=1e-9, atol=1e-12)
+                    or np.allclose(actual, a - b, rtol=1e-9, atol=1e-12)
+                    or np.allclose(actual, b - a, rtol=1e-9, atol=1e-12)
+                ):
+                    warnings.append(f"The target may be derived from '{left}' and '{right}'; verify those inputs are available before the outcome.")
+    return {"features": kept, "excluded": excluded, "warnings": warnings}
 
 
 def extract_feature_values(question: str, frame: pd.DataFrame,

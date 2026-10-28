@@ -122,6 +122,31 @@ def test_mapped_revenue_loss_still_uses_historical_mean(client: TestClient):
         DATASET_CACHE.pop(session_id, None)
 
 
+def test_loss_segments_include_zone_as_region_dimension(client: TestClient):
+    """A geographic zone column must populate the Region view as well as category."""
+    session_id = 'loss_region_zone_segments'
+    n = 40
+    frame = pd.DataFrame({
+        'order_date': pd.date_range('2018-01-01', periods=n, freq='D'),
+        'sales': [200.0] * n,
+        'item_code': ['ITEM-A' if index % 2 == 0 else 'ITEM-B' for index in range(n)],
+        'zone': ['EAST' if index % 4 < 2 else 'WEST' for index in range(n)],
+    })
+    try:
+        _seed(session_id, frame, [200.0] * 3)
+        response = client.post('/api/loss-forecast/run', json={
+            'session_id': session_id,
+            'forecast_periods': 3,
+            'confirmed_assumptions': True,
+        })
+        assert response.status_code == 200, response.text
+        segments = response.json()['segments']
+        assert {item['segment_type'] for item in segments} >= {'category', 'region'}
+        assert {item['segment'] for item in segments if item['segment_type'] == 'region'} == {'EAST', 'WEST'}
+    finally:
+        DATASET_CACHE.pop(session_id, None)
+
+
 def test_explicit_driver_mapping_and_range_metadata_are_returned(client: TestClient):
     """A user mapping must override name matching and ranges must state their basis."""
     session_id = 'loss_explicit_mapping_and_range'

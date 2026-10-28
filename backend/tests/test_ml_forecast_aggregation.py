@@ -147,7 +147,7 @@ def test_optimized_recursive_forecast_matches_original_features(frequency, date_
         legacy.append({
             "period": next_date.strftime("%Y-%m-%d"),
             "period_label": f"Week of {next_date.strftime('%Y-%m-%d')}" if frequency == "weekly" else f"Month of {next_date.strftime('%Y-%m')}",
-            "forecast_value": round(prediction, 2),
+            "forecast_value": prediction,
         })
         history = pd.concat([history, pd.DataFrame([{date_col: next_date, target: prediction}])], ignore_index=True)
         next_date += config["offset"]

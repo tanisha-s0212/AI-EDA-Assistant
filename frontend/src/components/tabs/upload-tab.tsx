@@ -49,6 +49,8 @@ type ParseDatasetResponse = {
   columnCount?: number;
   previewLoaded: boolean;
   previewLimit?: number;
+  description?: string;
+  parseOptions?: { separator?: string; encoding?: string; header_row?: number } | null;
   sheetSelection?: SheetSelectionPayload;
 };
 
@@ -289,6 +291,8 @@ function buildFreshDatasetState(
   columns: ColumnInfo[],
   options?: {
     datasetId?: string | null;
+    datasetDescription?: string;
+    datasetParseOptions?: ParseDatasetResponse['parseOptions'];
     totalRows?: number;
     previewLoaded?: boolean;
     loadedRowCount?: number;
@@ -299,6 +303,9 @@ function buildFreshDatasetState(
 ): DatasetWorkspaceDraft {
   return {
     fileName,
+    datasetDescription: options?.datasetDescription ?? '',
+    datasetParseOptions: options?.datasetParseOptions ?? null,
+    confirmedSalesMapping: null,
     datasetId: options?.datasetId ?? null,
     previewLoaded: options?.previewLoaded ?? false,
     loadedRowCount: options?.loadedRowCount ?? data.length,
@@ -357,6 +364,15 @@ export default function UploadTab() {
   const handledUploadRequestRef = useRef(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [description, setDescription] = useState('');
+  const [separator, setSeparator] = useState('auto');
+  const [encoding, setEncoding] = useState('auto');
+  const [headerRow, setHeaderRow] = useState('');
+  const [lastFile, setLastFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const [sheetPreview, setSheetPreview] = useState<{ sheet: string; columns: string[]; rows: DataRow[] } | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [pendingWorkbook, setPendingWorkbook] = useState<{ fileName: string; datasetId: string; sheetSelection: SheetSelectionPayload } | null>(null);
   const [sheetSelection, setSheetSelection] = useState<string[]>([]);
@@ -372,6 +388,8 @@ export default function UploadTab() {
       fileName: string,
       options?: {
         datasetId?: string | null;
+        datasetDescription?: string;
+        datasetParseOptions?: ParseDatasetResponse['parseOptions'];
         totalRows?: number;
         previewLoaded?: boolean;
         loadedRowCount?: number;
@@ -443,6 +461,11 @@ export default function UploadTab() {
       }
 
       setIsProcessing(true);
+      setUploadError(null);
+      setUploadPercent(0);
+      setLastFile(file);
+      const controller = new AbortController();
+      abortRef.current = controller;
       const ext = file.name.split('.').pop()?.toLowerCase();
 
       const supportedExtensions = ['csv', 'tsv', 'xlsx', 'xls', 'parquet'];
@@ -453,14 +476,22 @@ export default function UploadTab() {
           variant: 'destructive',
         });
         setIsProcessing(false);
+        abortRef.current = null;
         return;
       }
 
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('description', description);
+      if (separator !== 'auto') formData.append('separator', separator === 'tab' ? '\t' : separator);
+      if (encoding !== 'auto') formData.append('encoding', encoding);
+      if (headerRow.trim()) formData.append('header_row', headerRow.trim());
 
       try {
-        const { data: result } = await apiClient.post<ParseDatasetResponse>('/parse-dataset', formData);
+        const { data: result } = await apiClient.post<ParseDatasetResponse>('/parse-dataset', formData, {
+          signal: controller.signal,
+          onUploadProgress: (event) => setUploadPercent(event.total ? Math.round((event.loaded / event.total) * 100) : null),
+        });
 
         if (!result) {
           toast({
@@ -493,6 +524,8 @@ export default function UploadTab() {
         if (result.data && result.data.length > 0) {
           await pushToStore(result.data as DataRow[], file.name, {
             datasetId: result.datasetId ?? null,
+            datasetDescription: result.description ?? description,
+            datasetParseOptions: result.parseOptions,
             totalRows: result.rowCount,
             previewLoaded: !!result.previewLoaded,
             loadedRowCount: result.loadedRowCount ?? result.data.length,
@@ -516,15 +549,18 @@ export default function UploadTab() {
           });
         }
       } catch (error) {
+        const message = controller.signal.aborted ? 'Upload cancelled.' : getApiErrorMessage(error, 'Failed to send file to server for parsing.');
+        setUploadError(message);
         toast({
           title: 'Upload parsing error',
-          description: getApiErrorMessage(error, 'Failed to send file to server for parsing.'),
+          description: message,
           variant: 'destructive',
         });
       }
       setIsProcessing(false);
+      abortRef.current = null;
     },
-    [pushToStore, toast],
+    [pushToStore, toast, description, separator, encoding, headerRow],
   );
 
   // ── Demo Data ────────────────────────────────────────────────────────────
@@ -629,6 +665,7 @@ export default function UploadTab() {
 
       await pushToStore(result.data as DataRow[], pendingWorkbook.fileName, {
         datasetId: result.datasetId ?? pendingWorkbook.datasetId,
+        datasetDescription: description,
         totalRows: result.rowCount,
         previewLoaded: !!result.previewLoaded,
         loadedRowCount: result.loadedRowCount ?? result.data.length,
@@ -650,7 +687,7 @@ export default function UploadTab() {
     } finally {
       setIsApplyingSheetSelection(false);
     }
-  }, [pendingWorkbook, pushToStore, sheetMergeMode, sheetSelection, toast]);
+  }, [pendingWorkbook, pushToStore, sheetMergeMode, sheetSelection, toast, description]);
 
   useEffect(() => {
     if (uploadPickerRequestId === 0 || uploadPickerRequestId === handledUploadRequestRef.current) return;
@@ -700,6 +737,8 @@ export default function UploadTab() {
     ],
     [],
   );
+  const selectedSheetSchemas = (pendingWorkbook?.sheetSelection?.availableSheets ?? []).filter((sheet) => sheetSelection.includes(sheet.name));
+  const sheetSchemaMismatch = sheetMergeMode === 'stack' && selectedSheetSchemas.length > 1 && selectedSheetSchemas.some((sheet) => JSON.stringify(sheet.columns ?? []) !== JSON.stringify(selectedSheetSchemas[0].columns ?? []));
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -851,17 +890,28 @@ export default function UploadTab() {
                       <p className="mt-1 text-xs text-muted-foreground">
                         {sheet.rowCount.toLocaleString()} rows | {sheet.columnCount.toLocaleString()} cols
                       </p>
+                      <p className="mt-1 text-xs text-muted-foreground">Columns: {(sheet.columns ?? []).join(', ')}</p>
                     </button>
                   );
                 })}
               </div>
+              <div className="space-y-2">
+                <Button type="button" variant="outline" disabled={!sheetSelection[0]} onClick={() => {
+                  const sheet = sheetSelection[0];
+                  void apiClient.get('/dataset-sheet-preview', { params: { dataset_id: pendingWorkbook.datasetId, sheet } })
+                    .then((response) => setSheetPreview(response.data))
+                    .catch((error) => toast({ title: 'Sheet preview failed', description: getApiErrorMessage(error, 'Unable to preview sheet.'), variant: 'destructive' }));
+                }}>Preview selected sheet</Button>
+                {sheetPreview && <div className="overflow-auto rounded border p-2 text-xs"><p className="font-semibold">{sheetPreview.sheet}: first {sheetPreview.rows.length} rows</p><table className="mt-2"><thead><tr>{sheetPreview.columns.map((column) => <th className="px-2 text-left" key={column}>{column}</th>)}</tr></thead><tbody>{sheetPreview.rows.map((row, index) => <tr key={index}>{sheetPreview.columns.map((column) => <td className="px-2" key={column}>{String(row[column] ?? '—')}</td>)}</tr>)}</tbody></table></div>}
+              </div>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs text-muted-foreground">
-                  {sheetMergeMode === 'stack'
+                  {sheetSchemaMismatch ? 'Selected sheets have different column names or order. Select matching sheets to stack.' : sheetMergeMode === 'stack'
                     ? 'Stack mode requires selected sheets to have matching column structure.'
                     : 'Single mode uses one sheet. Skipping selection uses the first non-empty sheet.'}
                 </p>
                 <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={() => { setPendingWorkbook(null); setSheetSelection([]); setSheetPreview(null); }} disabled={isApplyingSheetSelection}>Cancel selection</Button>
                   <Button
                     type="button"
                     variant="outline"
@@ -870,7 +920,7 @@ export default function UploadTab() {
                   >
                     Use First Sheet
                   </Button>
-                  <Button type="button" onClick={() => void handleApplySheetSelection()} disabled={isApplyingSheetSelection || sheetSelection.length === 0}>
+                  <Button type="button" onClick={() => void handleApplySheetSelection()} disabled={isApplyingSheetSelection || sheetSelection.length === 0 || sheetSchemaMismatch}>
                     {isApplyingSheetSelection ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                     Continue With Selected Sheets
                   </Button>
@@ -880,6 +930,16 @@ export default function UploadTab() {
           </Card>
         </motion.div>
       )}
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Dataset details and text parsing</CardTitle><CardDescription>Optional settings for this upload. Leave text settings on automatic unless detection needs correction.</CardDescription></CardHeader>
+        <CardContent><fieldset disabled={isProcessing || Boolean(pendingWorkbook)} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="text-sm">Description <input className="mt-1 w-full rounded border bg-background p-2" value={description} maxLength={500} onChange={(event) => setDescription(event.target.value)} placeholder="Optional dataset description" /></label>
+          <label className="text-sm">Delimiter <select className="mt-1 w-full rounded border bg-background p-2" value={separator} onChange={(event) => setSeparator(event.target.value)}><option value="auto">Automatic</option><option value=",">Comma</option><option value="tab">Tab</option><option value=";">Semicolon</option><option value="|">Pipe</option></select></label>
+          <label className="text-sm">Encoding <select className="mt-1 w-full rounded border bg-background p-2" value={encoding} onChange={(event) => setEncoding(event.target.value)}><option value="auto">Automatic</option><option value="utf-8">UTF-8</option><option value="utf-8-sig">UTF-8 with BOM</option><option value="utf-16">UTF-16</option><option value="cp1252">Windows-1252</option><option value="latin1">Latin-1</option></select></label>
+          <label className="text-sm">Header row (zero-based) <input className="mt-1 w-full rounded border bg-background p-2" type="number" min={0} max={1000} value={headerRow} onChange={(event) => setHeaderRow(event.target.value)} placeholder="Automatic" /></label>
+        </fieldset></CardContent>
+      </Card>
 
       {/* ── Upload Zone ───────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
@@ -969,7 +1029,7 @@ export default function UploadTab() {
                         <div className="text-center">
                           <p className="text-lg font-semibold">Parsing your file...</p>
                           <p className="text-sm text-muted-foreground mt-1">
-                            Analyzing columns and data types
+                            {uploadPercent === null ? 'Uploading...' : uploadPercent < 100 ? `Uploading ${uploadPercent}%` : 'Upload complete; parsing and analyzing columns...'}
                           </p>
                         </div>
                       </motion.div>
@@ -1039,6 +1099,9 @@ export default function UploadTab() {
           )}
         </AnimatePresence>
       </motion.div>
+
+      {isProcessing && <div className="flex items-center gap-3"><Button variant="outline" onClick={() => abortRef.current?.abort()}>Cancel request</Button><span className="text-xs text-muted-foreground">Server parsing may continue if upload already finished.</span></div>}
+      {uploadError && !isProcessing && <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-destructive"><span>{uploadError}</span>{lastFile && <Button variant="outline" onClick={() => void processFile(lastFile)}>Retry upload</Button>}</div>}
 
       {/* ── Demo Data Button ──────────────────────────────────────────────── */}
       {/* ── Format Info Cards ─────────────────────────────────────────────── */}

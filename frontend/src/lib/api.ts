@@ -62,8 +62,16 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
         return responseData.detail;
       }
 
+      if ('detail' in responseData && typeof responseData.detail === 'object' && responseData.detail !== null && 'message' in responseData.detail && typeof responseData.detail.message === 'string') {
+        return responseData.detail.message;
+      }
+
       if ('error' in responseData && typeof responseData.error === 'string') {
         return responseData.error;
+      }
+
+      if ('error' in responseData && typeof responseData.error === 'object' && responseData.error !== null && 'message' in responseData.error && typeof responseData.error.message === 'string') {
+        return responseData.error.message;
       }
     }
 

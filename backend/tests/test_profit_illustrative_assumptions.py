@@ -178,6 +178,25 @@ def test_profit_illustrative_false_when_cost_and_opex_mapped(client: TestClient)
         DATASET_CACHE.pop(session_id, None)
 
 
+def test_missing_mapped_costs_are_reported_as_incomplete(client: TestClient):
+    session_id = 'profit_missing_mapped_costs'
+    frame = pd.DataFrame({'order_date': pd.date_range('2018-01-01', periods=40, freq='D'),
+                          'sales': [200.] * 40, 'cogs': [110.] * 39 + [None],
+                          'operating_expense': [20.] * 40})
+    try:
+        _seed_session(session_id, frame, future_revenue=3000.)
+        response = client.post('/api/profit-forecast/run', json={
+            'session_id': session_id, 'forecast_periods': 5, 'confirmed_assumptions': True,
+            'column_mapping': {'revenue': 'sales', 'date': 'order_date', 'cogs': 'cogs',
+                               'operating_expense': 'operating_expense'}})
+        assert response.status_code == 200, response.text
+        validation = response.json()['validation_report']
+        assert validation['validation_status'] == 'caution'
+        assert any('missing' in reason.lower() for reason in validation['validation_reasons'])
+    finally:
+        DATASET_CACHE.pop(session_id, None)
+
+
 def test_profit_illustrative_true_when_only_opex_fallback(client: TestClient):
     """Partial fallback: mapped COGS + hard OpEx fallback → illustrative True; audit shows both."""
     session_id = 'profit_illustrative_opex_only_fallback'

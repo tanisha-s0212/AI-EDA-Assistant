@@ -473,6 +473,7 @@ function PredictionForm({
             <div>
               <CardTitle className="text-base">Prediction Input</CardTitle>
               <CardDescription>Inputs start with the last dataset row. Review the values and fill any missing fields before predicting.</CardDescription>
+              <p className="mt-2 text-xs text-muted-foreground">This estimates the model target for one record. Use ML Assistant for totals and rankings, and forecasting for future periods.</p>
             </div>
           </div>
         </CardHeader>
@@ -950,8 +951,6 @@ export default function PredictionTab() {
   const [schema, setSchema] = useState<PredictionSchema | null>(null);
   const [schemaError, setSchemaError] = useState('');
   const [predictionWarnings, setPredictionWarnings] = useState<string[]>([]);
-  const contextRef = useRef('');
-  contextRef.current = `${modelId}:${store.datasetId}`;
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -1109,7 +1108,11 @@ export default function PredictionTab() {
       toast({ title: 'Invalid input', description: (error as Error).message, variant: 'destructive' });
       return;
     }
-    const requestContext = contextRef.current;
+    const requestContext = `${modelId}:${store.datasetId}`;
+    const contextChanged = () => {
+      const current = useAppStore.getState();
+      return `${current.modelId}:${current.datasetId}` !== requestContext;
+    };
     setProcessedPreview(processedFeatures);
 
     setIsPredicting(true);
@@ -1117,7 +1120,7 @@ export default function PredictionTab() {
     try {
       const response = await apiClient.post('/predict', { model_id: modelId, dataset_id: store.datasetId, features: processedFeatures });
       const result: PredictResponse = response.data;
-      if (contextRef.current !== requestContext) return;
+      if (contextChanged()) return;
       if (result.status === 'failed') {
         toast({
           title: 'Prediction Error',
@@ -1173,7 +1176,7 @@ export default function PredictionTab() {
         description: `Result: ${predictionValue}`,
       });
     } catch (error) {
-      if (contextRef.current !== requestContext) return;
+      if (contextChanged()) return;
       if (clearStaleModelState(error)) {
         toast({ title: 'Model expired', description: 'The dataset changed. Train the model again before predicting.', variant: 'destructive' });
         return;
