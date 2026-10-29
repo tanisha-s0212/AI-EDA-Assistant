@@ -36,6 +36,35 @@ def test_assistant_requires_review_before_training(monkeypatch):
     assert result['ml_plan']['features'] == ['sensor_a']
 
 
+@pytest.mark.parametrize(('question', 'expected_features'), [
+    ('Which segment is most likely for a record with this taxable and tax amount?', {'taxable_amt', 'tax_amt'}),
+    ('Classify the segment using quantity and gross amount.', {'qty', 'gross_amt'}),
+    ('Predict the segment using discount and free quantity.', {'disc_amt', 'free_qty'}),
+    ('Assign the segment based on gross, taxable, and tax amounts.', {'gross_amt', 'taxable_amt', 'tax_amt'}),
+])
+def test_assistant_analyzes_categorical_target_and_natural_feature_terms(monkeypatch, question, expected_features):
+    monkeypatch.setattr(main, 'record_activity', lambda **kwargs: None)
+    monkeypatch.setattr(main, 'ACTIVITY_DB_AVAILABLE', False)
+    rows = [
+        {'segment': ['ALPHA', 'BETA', 'GAMMA', 'DELTA'][i % 4],
+         'taxable_amt': 100 + i * 10, 'tax_amt': 10 + i * 2,
+         'gross_amt': 200 + i * 5, 'qty': 5 + i, 'disc_amt': i % 5,
+         'free_qty': i % 3, 'unmentioned_metric': 500 - i}
+        for i in range(40)
+    ]
+    response = TestClient(main.app, raise_server_exceptions=False).post('/api/assistant/ask', json={
+        'data': rows,
+        'question': question,
+    })
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['status'] == 'needs_confirmation', result.get('answer')
+    assert result['ml_plan']['target'] == 'segment'
+    assert result['ml_plan']['task'] == 'classification'
+    assert set(result['ml_plan']['features']) == expected_features
+
+
 @pytest.mark.parametrize('question', ['Predict outcome from unknown_sensor', 'Predict outcome from sensor and unknown_sensor'])
 def test_unknown_named_features_do_not_trigger_automatic_selection(monkeypatch, question):
     monkeypatch.setattr(main, 'record_activity', lambda **kwargs: None)

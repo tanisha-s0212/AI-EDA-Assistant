@@ -195,7 +195,7 @@ def _supervised_hint(question: str, profile: dict[str, Any] | None) -> dict[str,
     by_norm = {_norm(c): c for c in columns}
     # Verb object: "predict X from ...", "classify Y ...", "forecast Z ...".
     m = re.search(
-        r"\b(predict|forecast|classify|estimate|project)\s+(?:the\s+)?([a-z_][a-z0-9_ ]{0,40}?)"
+        r"\b(predict|forecast|classify|estimate|project|assign|label|identify|determine)\s+(?:(?:the|a|an)\s+)?([a-z_][a-z0-9_ ]{0,40}?)"
         r"\s+(from|using|based on|with|given|where|for\b|$)", q, re.I)
     if m and _norm(m.group(2)) in by_norm:
         return {"column": by_norm[_norm(m.group(2))]}
@@ -208,6 +208,22 @@ def _supervised_hint(question: str, profile: dict[str, Any] | None) -> dict[str,
     if m2 and _norm(m2.group(3)) in by_norm:
         return {"column": by_norm[_norm(m2.group(3))]}
     return None
+
+
+def _row_classification_target(question: str, profile: dict[str, Any] | None) -> str | None:
+    """Resolve a categorical target in an open-ended row-classification question.
+
+    The target comes from the active schema. This catches questions framed as
+    "which <field> is likely for a record" without binding the parser to a
+    particular industry or column name.
+    """
+    q = question or ""
+    if not (re.search(r"\b(?:which|what)\b", q, re.I)
+            and re.search(r"\b(?:likely|probable|prediction|predicted)\b", q, re.I)
+            and re.search(r"\b(?:record|row|case|observation|entry)\b", q, re.I)):
+        return None
+    targets = _column_mentions(q, profile or {}, roles={"categorical", "boolean"})
+    return targets[0] if len(targets) == 1 else None
 
 
 def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -236,6 +252,7 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
     has_date = bool((profile or {}).get("datetime_columns") or (profile or {}).get("date_columns"))
     purchase_vocab = signals["next_buy"] or signals["recommend"] or signals["churn"] or signals["buyers"]
     has_classify_verb = bool(re.search(r"\bclassify\b|\bclassification\b", ql))
+    row_classification_target = _row_classification_target(q, profile)
     explicit_forecast = bool(_FORECAST_VERBS.search(q) or _FORECAST_HORIZON.search(q))
     supervised_framing = bool(re.search(r"\bfrom\b|\bwhere\b|\bwith\b|\bgiven\b|\binto\b|\bas\b", ql))
     # Bare "churn / at-risk" wording with no supervised framing belongs to purchase
@@ -248,6 +265,8 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
         intent, conf, ops = "anomaly", 80, ["anomaly_scan"]
     elif signals["segmentation"]:
         intent, conf, ops = "segmentation", 75, ["cluster"]
+    elif row_classification_target and not churn_word_only:
+        intent, conf, ops = "classification", 80, ["classify"]
     elif signals["classify"] and not churn_word_only and (
             has_classify_verb or signals["predict_verb"] or supervised_framing):
         # "Classify X ..." / "Classify X from A, B" / "... where ..." requests a
@@ -267,7 +286,7 @@ def classify_intent(question: str, profile: dict[str, Any] | None = None) -> dic
         intent, conf, ops = "forecast", 85 if has_date else 60, ["forecast"]
     elif _supervised_hint(q, profile) and (
             signals["explain_q"] or signals["confidence_q"] or signals["predict_verb"]
-            or has_classify_verb):
+            or has_classify_verb or bool(re.search(r"\b(?:assign|label|identify|determine)\b", ql))):
         # Multi-intent with an explicit supervised task ("predict X ... and explain",
         # "confidence of the X model"): the supervised execution comes first; its
         # summary already carries confidence, intervals, and feature importance.
@@ -1477,7 +1496,11 @@ def answer_question(frame: pd.DataFrame, question: str, dataset_id: str = "",
         return execute_purchase(frame, profile, question, intent, routing,
                                 context=context, top_n=top_n)
 
-    unresolved_filter = (None if resolve_filter(frame, profile, question)
+    row_classification_target = _row_classification_target(question, profile)
+    explicit_supervised_target = _supervised_hint(question, profile)
+    resolved_filter = resolve_filter(frame, profile, question)
+    supervised_classification = routing["intent"] == "classification" and explicit_supervised_target is not None
+    unresolved_filter = (None if resolved_filter or row_classification_target or supervised_classification
                          else _unmatched_filter_message(profile, question))
     if unresolved_filter:
         return {"status": "clarify", "intent": intent, "routing": routing,
@@ -1511,7 +1534,9 @@ def answer_question(frame: pd.DataFrame, question: str, dataset_id: str = "",
             return {"status": "unsupported", "intent": intent, "routing": routing, "profile": _slim(profile),
                     "message": "Predictive modelling needs at least one numeric target; none detected.",
                     "answer": "Predictive modelling needs at least one numeric target; none detected."}
-        explicit_target = _supervised_hint(question, profile)
+        explicit_target = explicit_supervised_target
+        if explicit_target is None and row_classification_target:
+            explicit_target = {"column": row_classification_target}
         target = explicit_target.get("column") if explicit_target else None
         target_reason = "explicit target named in the question" if target else None
         date_column = None

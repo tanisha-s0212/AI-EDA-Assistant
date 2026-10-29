@@ -529,7 +529,6 @@ export default function MlTab() {
 
   // Wizard state
   const [currentStep, setCurrentStep] = useState(mlWorkflowStep);
-  const [workflowView, setWorkflowView] = useState<'assistant' | 'manual'>('assistant');
 
   // Step 1 state
   const [selectedTarget, setSelectedTarget] = useState<string>('');
@@ -579,8 +578,7 @@ export default function MlTab() {
   const [mlAssistantReply, setMlAssistantReply] = useState('');
   const [mlAssistantTables, setMlAssistantTables] = useState<Record<string, { column?: string; agg?: string; rows?: { group: string; value: number; rank: number; exact_value?: string }[] }> | null>(null);
   const [mlAssistantMeta, setMlAssistantMeta] = useState<string>('');
-  const [assistantReview, setAssistantReview] = useState<{ target: string; task: string; features: string[]; reviewToken: string; warnings: string[]; excluded: Record<string, string> } | null>(null);
-  const [allowAssistantDefaults, setAllowAssistantDefaults] = useState(false);
+  const [assistantSetupVisible, setAssistantSetupVisible] = useState(false);
   const [mlPrediction, setMlPrediction] = useState<{
     customer?: string; output_label?: string; method?: string;
     ranked?: { product: string; score: number; evidence?: { times_bought_by_customer?: number; last_bought?: string | null; also_bought_with?: string[]; reason?: string } }[];
@@ -671,6 +669,7 @@ export default function MlTab() {
       setMlAssistantReply('');
       setMlAssistantMeta('');
       setMlAssistantTables(null);
+      setAssistantSetupVisible(false);
       setMlPrediction(null);
       setMlExecution(null);
       if (hasDifferentSavedModel || dataWasReplacedInSession) {
@@ -1072,7 +1071,7 @@ export default function MlTab() {
   }, []);
 
   
-  const handleAskAssistant = useCallback(async (confirmTraining = false) => {
+  const handleAskAssistant = useCallback(async () => {
     const question = mlQuestion.trim();
     if (!question) {
       toast({ title: 'Enter a problem', description: 'Describe the modeling problem, training quality concern, or prediction behavior you want help with.', variant: 'destructive' });
@@ -1081,7 +1080,6 @@ export default function MlTab() {
 
     // Prefer the dataset-aware backend engine (deterministic analytics + executed predictions).
     if (datasetId) {
-      if (!confirmTraining) setAssistantReview(null);
       setIsAskingAssistant(true);
       setMlAssistantTables(null);
       setMlAssistantMeta('');
@@ -1095,7 +1093,6 @@ export default function MlTab() {
           top_n: 10,
           customer_id: mlCustomerId.trim() || null,
           product_id: null,
-          ...(confirmTraining && assistantReview ? { confirm_training: true, review_token: assistantReview.reviewToken, feature_columns: assistantReview.features, allow_default_inputs: allowAssistantDefaults } : {}),
         });
         const result = response.data as {
           status?: string; intent?: string; answer?: string; message?: string;
@@ -1130,11 +1127,6 @@ export default function MlTab() {
           warnings?: string[];
         };
         const answerText = result.answer || result.message || 'No answer returned.';
-        if (result.status === 'needs_confirmation' && result.ml_plan?.review_token && result.ml_plan.target) {
-          setAssistantReview({ target: result.ml_plan.target, task: result.ml_plan.task ?? 'prediction', features: result.ml_plan.features ?? [], reviewToken: result.ml_plan.review_token, warnings: result.ml_plan.warnings ?? [], excluded: result.ml_plan.excluded_features ?? {} });
-        } else {
-          setAssistantReview(null);
-        }
         const intentLabel = result.routing?.intent || result.intent || 'unknown';
         const metaParts = [`intent: ${intentLabel}`];
         if (result.routing?.confidence !== undefined) metaParts.push(`intent match score: ${result.routing.confidence}% (not prediction confidence)`);
@@ -1147,6 +1139,27 @@ export default function MlTab() {
         }
         if (result.coverage) metaParts.push(`rows: ${result.coverage.filtered_rows ?? '?'} / ${result.coverage.total_rows ?? '?'}`);
         const isSupervised = result.status === 'success' && Boolean(result.model) && (result.intent === 'regression' || result.intent === 'classification');
+        const plannedTarget = result.ml_plan?.target ?? result.target;
+        const plannedTask = result.ml_plan?.task ?? (result.intent === 'classification' || result.intent === 'regression' ? result.intent : undefined);
+        const plannedTargetColumn = columns.find((column) => column.name === plannedTarget);
+        if ((plannedTask === 'regression' || plannedTask === 'classification') && plannedTarget && plannedTargetColumn) {
+          const targetDetection = detectProblemType(plannedTargetColumn, data ?? []);
+          const availableFeatures = new Set(getAvailableFeatures(columns, plannedTarget));
+          const plannedFeatures = (result.ml_plan?.features ?? result.features ?? [])
+            .filter((feature): feature is string => typeof feature === 'string' && availableFeatures.has(feature));
+          userOverrodeTargetRef.current = true;
+          userOverrodeFeaturesRef.current = true;
+          userOverrodeProblemTypeRef.current = true;
+          setSelectedTarget(plannedTarget);
+          setSelectedFeatures(plannedFeatures.length > 0 ? plannedFeatures : getAutoFeatures(columns, plannedTarget));
+          setTargetProblemType(plannedTask);
+          setDetectedType(targetDetection.type);
+          setConfidence(targetDetection.confidence);
+          setSelectedModel('');
+          setTrainResults(null);
+          updateMlStep(1);
+          setAssistantSetupVisible(true);
+        }
         if (!isSupervised && result.ml_plan?.target) metaParts.push(`ML target: ${result.ml_plan.target} (${result.ml_plan.task ?? 'predict'})`);
         if (!isSupervised && result.model) metaParts.push(`model: ${result.model}`);
         if (!isSupervised && result.evaluation?.rows !== undefined) metaParts.push(`evaluated on ${result.evaluation.rows} rows (${result.evaluation.method ?? 'validation'})`);
@@ -1268,7 +1281,7 @@ export default function MlTab() {
     }
 
     setMlAssistantReply(response.join('\n\n'));
-  }, [data, datasetId, mlCustomerId, mlQuestion, selectedFeatures.length, selectedModel, selectedTarget, targetProblemType, toast, recommendedModel, trainResults, assistantReview, allowAssistantDefaults]);
+  }, [data, datasetId, mlCustomerId, mlQuestion, selectedFeatures.length, selectedModel, selectedTarget, targetProblemType, toast, recommendedModel, trainResults, columns, updateMlStep]);
 
   const canAdvanceMlStep =
     currentStep === 1
@@ -1387,6 +1400,8 @@ export default function MlTab() {
 
   return (
     <div className="space-y-6">
+      {assistantSetupVisible && <StepIndicator currentStep={currentStep} />}
+
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -1407,30 +1422,7 @@ export default function MlTab() {
         </div>
       </motion.div>
 
-      <div role="tablist" aria-label="ML workflow" className="flex w-fit gap-1 rounded-xl border bg-muted/40 p-1">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={workflowView === 'assistant'}
-          aria-controls="ml-assistant-panel"
-          className={cn('rounded-lg px-4 py-2 text-sm font-medium transition-colors', workflowView === 'assistant' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
-          onClick={() => setWorkflowView('assistant')}
-        >
-          Ask Assistant
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={workflowView === 'manual'}
-          aria-controls="ml-manual-panel"
-          className={cn('rounded-lg px-4 py-2 text-sm font-medium transition-colors', workflowView === 'manual' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
-          onClick={() => setWorkflowView('manual')}
-        >
-          Train Manually
-        </button>
-      </div>
-
-      {workflowView === 'assistant' && <div id="ml-assistant-panel" role="tabpanel" aria-label="Ask Assistant">
+      <div id="ml-assistant-panel" aria-label="ML Assistant">
       <Card className="border border-primary/20 bg-gradient-to-br from-primary/6 to-secondary/70">
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
@@ -1442,7 +1434,7 @@ export default function MlTab() {
         <CardContent className="space-y-3">
           <Textarea
             value={mlQuestion}
-            onChange={(e) => { setMlQuestion(e.target.value); setAssistantReview(null); setAllowAssistantDefaults(false); }}
+            onChange={(e) => { setMlQuestion(e.target.value); setAssistantSetupVisible(false); }}
             placeholder="Example: What product will customer C123 buy next? Or: Which product lines have the highest sales for OEM?"
             className="min-h-24 resize-y bg-background/80"
           />
@@ -1465,7 +1457,7 @@ export default function MlTab() {
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {isAskingAssistant ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-              {isAskingAssistant ? 'Analyzing…' : 'Analyze Problem'}
+              {isAskingAssistant ? 'Analyzing…' : 'Analyze Question'}
             </Button>
             <p className="text-xs text-muted-foreground sm:pt-2">
               Descriptive questions run deterministic analytics; next-purchase questions execute validated recommendations on the active dataset.
@@ -1477,18 +1469,6 @@ export default function MlTab() {
           {mlAssistantReply && !mlExecution?.isSupervised && (
             <div className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground whitespace-pre-wrap">
               {mlAssistantReply}
-            </div>
-          )}
-          {assistantReview && (
-            <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
-              <p className="font-medium">Review model training</p>
-              <p>Target: {assistantReview.target} ({assistantReview.task})</p>
-              <p>Features: {assistantReview.features.join(', ')}</p>
-              {assistantReview.warnings.map((warning) => <p key={warning}>{warning}</p>)}
-              {Object.entries(assistantReview.excluded).map(([name, reason]) => <p key={name}>Excluded {name}: {reason}</p>)}
-              <p>Review whether each feature is available when the prediction will be made.</p>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={allowAssistantDefaults} onChange={(event) => setAllowAssistantDefaults(event.target.checked)} />Allow training-derived defaults for missing prediction inputs</label>
-              <Button onClick={() => handleAskAssistant(true)} disabled={isAskingAssistant}>Confirm and train</Button>
             </div>
           )}
           {mlAssistantTables && Object.entries(mlAssistantTables).map(([metric, table]) => (
@@ -1859,11 +1839,16 @@ export default function MlTab() {
           )}
         </CardContent>
       </Card>
-      </div>}
+      </div>
 
-      {workflowView === 'manual' && <div id="ml-manual-panel" role="tabpanel" aria-label="Train Manually" className="space-y-6">
-      <StepIndicator currentStep={currentStep} />
-
+      {assistantSetupVisible && <div id="ml-manual-panel" className="space-y-6">
+      {assistantSetupVisible && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="p-4 text-sm text-muted-foreground">
+            The question identified a supervised prediction task. Review or change the target, problem type, and features below before training.
+          </CardContent>
+        </Card>
+      )}
       {manualFeatureReview?.key === manualReviewKey && (manualFeatureReview.issue || manualFeatureReview.warnings.length > 0) && (
         <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
           <p className="font-medium">Review selected training features</p>
@@ -1896,12 +1881,12 @@ export default function MlTab() {
                     <CardHeader className="pb-3">
                       <div className="flex items-center gap-2">
                         <Target className="h-4 w-4 text-primary" />
-                        <CardTitle className="text-base">Manual Model Setup: Target Column</CardTitle>
+                        <CardTitle className="text-base">Target Column</CardTitle>
                       </div>
                       <CardDescription>Review the suggestion or choose the variable to predict.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                      {suggestedTarget && (
+                      {suggestedTarget && !assistantSetupVisible && (
                         <div className="rounded-lg bg-muted/50 p-3 text-sm">
                           <p className="font-medium">Suggested target: {suggestedTarget.target}</p>
                           <p className="mt-1 text-xs text-muted-foreground">{suggestedTarget.reason}</p>
@@ -1923,7 +1908,7 @@ export default function MlTab() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">This selection applies to manual training, independently of the assistant result above.</p>
+                      <p className="text-xs text-muted-foreground">Review or adjust this target before continuing with training.</p>
                     </CardContent>
                   </Card>
                 </motion.div>

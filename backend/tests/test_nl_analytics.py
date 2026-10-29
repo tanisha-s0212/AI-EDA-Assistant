@@ -70,6 +70,24 @@ def test_genuine_prediction_routes_to_ml():
     assert routing2["needs_ml"] is True
 
 
+def test_likely_class_for_a_record_routes_to_reviewable_classification_plan():
+    df = pd.DataFrame({
+        "segment": ["ALPHA", "BETA", "GAMMA", "DELTA"] * 3,
+        "taxable_amt": [100, 120, 140, 160] * 3,
+        "tax_amt": [10, 12, 14, 16] * 3,
+    })
+    question = "Which segment is most likely for a record with this taxable and tax amount?"
+
+    result = answer_question(df, question, dataset_id="monthly-zones")
+
+    assert result["status"] == "ml_required", result.get("message")
+    assert result["intent"] == "classification"
+    assert result["ml_plan"]["target"] == "segment"
+    assert result["ml_plan"]["task"] == "classification"
+    assert {"taxable_amt", "tax_amt"}.issubset(result["ml_plan"]["features"])
+    assert "could not be matched to column" not in result["answer"]
+
+
 def test_ambiguous_question_reports_limitation_not_fabrication():
     df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
     result = answer_question(df, "Which product lines have the highest sales for OEM?", dataset_id="t")

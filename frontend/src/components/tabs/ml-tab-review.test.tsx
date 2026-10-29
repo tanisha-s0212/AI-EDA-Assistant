@@ -24,7 +24,7 @@ beforeEach(() => {
   });
 });
 
-it('shows the chosen target and features before confirming assistant training', async () => {
+it('reveals the target and feature review UI after analyzing a supervised question', async () => {
   let assistantRequests = 0;
   postMock.mockImplementation((path: string) => {
     if (path === '/ml/feature-review') return Promise.resolve({ data: { warnings: [], excluded: {} } });
@@ -35,20 +35,30 @@ it('shows the chosen target and features before confirming assistant training', 
       : { status: 'success', answer: 'Training completed.' } });
   });
   render(<MlTab />);
+  expect(screen.queryByRole('tab', { name: 'Ask Assistant' })).toBeNull();
+  expect(screen.queryByRole('tab', { name: 'Train Manually' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Target column' })).toBeNull();
   fireEvent.change(screen.getByPlaceholderText(/^Example:/), { target: { value: 'Predict outcome from x' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Analyze Problem' }));
-  await screen.findByText('Target: outcome (regression)');
-  expect(screen.getByText('Features: x')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Confirm and train' }));
-  await waitFor(() => expect(assistantRequests).toBe(2));
-  const requests = postMock.mock.calls.filter(([path]) => path === '/assistant/ask');
-  expect(requests[1][1]).toMatchObject({ confirm_training: true, review_token: 'review-token', feature_columns: ['x'] });
+  fireEvent.click(screen.getByRole('button', { name: 'Analyze Question' }));
+  const target = await screen.findByRole('combobox', { name: 'Target column' });
+  expect(target).toHaveTextContent('outcome');
+  expect(screen.getByRole('checkbox', { name: /^x/ })).toBeChecked();
+  expect(screen.getByText(/question identified a supervised prediction task/i)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Confirm and train' })).toBeNull();
+  await waitFor(() => expect(assistantRequests).toBe(1));
+  expect(postMock.mock.calls.filter(([path]) => path === '/assistant/ask')).toHaveLength(1);
 });
 
-it('shows feature leakage warnings before manual training', async () => {
-  postMock.mockResolvedValue({ data: { features: ['x'], warnings: ['The target may be derived from selected inputs.'], excluded: {} } });
+it('shows feature leakage warnings in the question-driven training review', async () => {
+  postMock.mockImplementation((path: string) => path === '/ml/feature-review'
+    ? Promise.resolve({ data: { features: ['x'], warnings: ['The target may be derived from selected inputs.'], excluded: {} } })
+    : Promise.resolve({ data: {
+      status: 'needs_confirmation', answer: 'Review the target and features before training.',
+      ml_plan: { target: 'outcome', task: 'regression', features: ['x'], review_token: 'review-token', warnings: [] },
+    } }));
   render(<MlTab />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Train Manually' }));
+  fireEvent.change(screen.getByPlaceholderText(/^Example:/), { target: { value: 'Estimate outcome from x' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Analyze Question' }));
   await screen.findByText('The target may be derived from selected inputs.');
   const acknowledgement = screen.getByRole('checkbox', { name: /reviewed the feature warnings/i }) as HTMLInputElement;
   expect(acknowledgement.checked).toBe(false);

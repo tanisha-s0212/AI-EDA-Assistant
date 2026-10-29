@@ -8897,6 +8897,54 @@ def score_prediction_batch(frame: pd.DataFrame, model_id: str, dataset_id: str |
     return {'results': results, 'summary': summary}
 
 
+def _assistant_feature_mentions(clause: str, frame: pd.DataFrame, target: str) -> list[str]:
+    """Match feature phrases to this frame's column tokens, including common abbreviations.
+
+    This is schema-driven: aliases normalize generic terms such as ``amt`` and
+    ``qty``; no dataset column names are listed here.
+    """
+    from nl_analytics import _norm
+
+    aliases = {'amt': 'amount', 'qty': 'quantity', 'disc': 'discount'}
+    stop_words = {'a', 'an', 'and', 'are', 'as', 'based', 'by', 'for', 'from',
+                  'given', 'in', 'of', 'on', 'or', 'the', 'this', 'that', 'using', 'with'}
+
+    def canonical_tokens(value: str) -> list[str]:
+        result = []
+        for token in _norm(value).split():
+            token = aliases.get(token, token)
+            if token in stop_words:
+                continue
+            if token.endswith('ies') and len(token) > 4:
+                token = token[:-3] + 'y'
+            elif token.endswith('s') and not token.endswith('ss') and len(token) > 3:
+                token = token[:-1]
+            result.append(token)
+        return result
+
+    requested_chunks = [canonical_tokens(part) for part in
+                        re.split(r'\s*(?:,|\band\b|\bor\b)\s*', clause, flags=re.I)]
+    requested_chunks = [chunk for chunk in requested_chunks if chunk]
+    if not requested_chunks:
+        return []
+
+    matches = []
+    optional_suffixes = {'amount', 'quantity'}
+    for name in frame.columns:
+        if str(name) == target:
+            continue
+        column_tokens = canonical_tokens(str(name))
+        required = column_tokens
+        if len(column_tokens) > 1 and column_tokens[-1] in optional_suffixes:
+            required = column_tokens[:-1]
+        for chunk in requested_chunks:
+            chunk_core = chunk[:-1] if len(chunk) > 1 and chunk[-1] in optional_suffixes else chunk
+            if required and required == chunk_core:
+                matches.append(str(name))
+                break
+    return matches
+
+
 def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
                               question: str, dataset_id: str | None,
                               http_request: Request, feature_columns: list[str] | None = None,
@@ -8931,14 +8979,16 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
         return out
     target, problem_type = picked["target"], picked["problem_type"]
     if feature_columns is None:
-        feature_clause = re.search(r'\b(?:from|using|based on|where)\b(.+)', question, re.I)
+        feature_clause = re.search(r'\b(?:from|using|based on|where|with|given)\b(.+)', question, re.I)
         if feature_clause:
             clause = re.sub(r'[^a-z0-9]+', ' ', feature_clause.group(1).lower()).strip()
             if not re.match(r'^\s*where\b', feature_clause.group(0), re.I):
                 segments = re.split(r'\s*,\s*|\s+and\s+', feature_clause.group(1), flags=re.I)
                 named = [segment.strip().rstrip('?.') for segment in segments]
                 known = {str(name).lower() for name in frame.columns}
-                unknown = [part for part in named if re.fullmatch(r'[A-Za-z_]\w*', part) and part.lower() not in known]
+                unknown = [part for part in named
+                           if re.fullmatch(r'[A-Za-z_]\w*', part) and part.lower() not in known
+                           and not _assistant_feature_mentions(part, frame, target)]
                 if unknown:
                     out = dict(plan)
                     out.update({'status': 'clarify', 'message': 'Unknown input column(s): ' + ', '.join(unknown),
@@ -8948,6 +8998,8 @@ def _assistant_run_supervised(plan: dict[str, Any], frame: pd.DataFrame,
                 re.search(r'(?<!\w)' + re.escape(str(name)) + r'(?!\w)', feature_clause.group(1), re.I)
                 or (re.search(r'[_ ]', str(name)) and re.search(
                     r'(?<!\w)' + re.escape(re.sub(r'[^a-z0-9]+', ' ', str(name).lower()).strip()) + r'(?!\w)', clause)))]
+            if not mentioned:
+                mentioned = _assistant_feature_mentions(feature_clause.group(1), frame, target)
             if not mentioned:
                 out = dict(plan)
                 out.update({'status': 'clarify', 'message': 'Specify valid input column names for this model.',

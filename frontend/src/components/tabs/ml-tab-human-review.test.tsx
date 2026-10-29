@@ -15,7 +15,6 @@ vi.mock('@/lib/api', () => ({
 
 beforeEach(() => {
   postMock.mockReset();
-  postMock.mockResolvedValue({ data: { warnings: [], excluded: {} } });
   const features = Array.from({ length: 12 }, (_, index) => `feature_${index}`);
   const names = ['sales', 'qty', ...features];
   useAppStore.setState({
@@ -25,12 +24,23 @@ beforeEach(() => {
     cleanedData: null,
     columns: names.map(name => ({ name, dtype: 'number', role: 'numeric' as const, nonNull: 4, nullCount: 0, uniqueCount: 4, sample: [] })),
   });
+  postMock.mockImplementation((path: string) => path === '/ml/feature-review'
+    ? Promise.resolve({ data: { warnings: [], excluded: {} } })
+    : Promise.resolve({ data: {
+      status: 'needs_confirmation', answer: 'Review the target and features before training.',
+      ml_plan: { target: 'sales', task: 'regression', features: ['feature_0', 'feature_1', 'feature_2'], review_token: 'review-token', warnings: [] },
+    } }));
 });
+
+async function revealTrainingReview() {
+  fireEvent.change(screen.getByPlaceholderText(/^Example:/), { target: { value: 'Estimate the outcome using the available inputs' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Analyze Question' }));
+  await screen.findByRole('combobox', { name: 'Target column' });
+}
 
 it('keeps manual feature and problem-type choices and reviews features beyond the initial suggestion', async () => {
   render(<MlTab />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Train Manually' }));
-  await screen.findByText('Suggested target: sales');
+  await revealTrainingReview();
   const firstFeature = screen.getByRole('checkbox', { name: /^feature_0/ });
   const laterFeature = screen.getByRole('checkbox', { name: /^feature_11/ });
   expect(firstFeature).toBeChecked();
@@ -54,8 +64,7 @@ it('keeps manual feature and problem-type choices and reviews features beyond th
 
 it('updates the review for a manually chosen target while preserving valid feature choices', async () => {
   render(<MlTab />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Train Manually' }));
-  await screen.findByText('Suggested target: sales');
+  await revealTrainingReview();
   fireEvent.click(screen.getByRole('checkbox', { name: /^feature_11/ }));
   fireEvent.keyDown(screen.getByRole('combobox', { name: 'Target column' }), { key: 'ArrowDown' });
   fireEvent.click(await screen.findByRole('option', { name: /qty/ }));
@@ -69,7 +78,7 @@ it('updates the review for a manually chosen target while preserving valid featu
     expect(lastReview.feature_columns).toContain('feature_11');
     expect(lastReview.feature_columns).not.toContain('qty');
   });
-  expect(screen.getByText('Suggested target: sales')).toBeInTheDocument();
+  expect(screen.queryByText('Suggested target: sales')).toBeNull();
 });
 
 it('labels an assistant training result separately from the manual target suggestion', async () => {
@@ -85,21 +94,19 @@ it('labels an assistant training result separately from the manual target sugges
 
   render(<MlTab />);
   fireEvent.change(screen.getByPlaceholderText(/^Example:/), { target: { value: 'Predict qty' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Analyze Problem' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Analyze Question' }));
 
   expect(await screen.findByText('Assistant training result')).toBeVisible();
   expect(screen.getByText(/target: qty/)).toBeVisible();
-  expect(screen.queryByText('Suggested target: sales')).toBeNull();
+  expect(screen.getByRole('combobox', { name: 'Target column' })).toHaveTextContent('qty');
   expect(screen.getByText(/intent match score: 83% \(not prediction confidence\)/)).toBeVisible();
   expect(screen.getByText('Chronological holdout was used.')).toBeVisible();
   expect(screen.getByText('No single-row prediction was made. Provide input values in the Prediction tab to score a row.')).toBeVisible();
   expect(screen.getByText('Full assistant response').closest('details')).not.toHaveAttribute('open');
-  fireEvent.click(screen.getByRole('tab', { name: 'Train Manually' }));
-  await waitFor(() => expect(screen.getByText('Suggested target: sales')).toBeVisible());
-  expect(screen.queryByText('Assistant training result')).toBeNull();
-  fireEvent.click(screen.getByRole('tab', { name: 'Ask Assistant' }));
+  expect(screen.queryByRole('tab', { name: 'Train Manually' })).toBeNull();
+  expect(screen.queryByRole('tab', { name: 'Ask Assistant' })).toBeNull();
   expect(await screen.findByText('Assistant training result')).toBeVisible();
-  expect(screen.queryByText('Suggested target: sales')).toBeNull();
+  expect(screen.getByRole('combobox', { name: 'Target column' })).toHaveTextContent('qty');
   fireEvent.click(screen.getByRole('button', { name: 'Use this model in Prediction' }));
   expect(useAppStore.getState().modelId).toBe('model-1');
   expect(useAppStore.getState().targetColumn).toBe('qty');
